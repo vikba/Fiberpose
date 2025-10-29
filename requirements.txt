@@ -1,0 +1,11 @@
+pyqt6
+torch
+torchvision
+numpy
+scipy
+scikit-image
+imageio
+matplotlib
+Pillow
+opencv-python
+pyqtgraph

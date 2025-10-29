@@ -1,0 +1,182 @@
+/* ==== Global base (match QPalette Window/Text) ==== */
+QWidget {
+    background-color: #2d2d2d;     /* Window = (45,45,45) */
+    color: #dcdcdc;                /* Text   = (220,220,220) */
+}
+
+/* Disabled text (match QPalette Disabled Text) */
+*:disabled {
+    color: #7f7f7f;                /* Disabled = (127,127,127) */
+}
+
+/* ---- Main containers ---- */
+QMainWindow,
+QFrame {
+    background-color: #2d2d2d;     /* Window */
+}
+
+/* Tooltips (match ToolTipBase / ToolTipText) */
+QToolTip {
+    background-color: #ffffff;     /* ToolTipBase */
+    color: #dcdcdc;                /* ToolTipText */
+    border: 1px solid #666;
+}
+
+/* ---- Inputs use Base / AlternateBase ---- */
+QLineEdit,
+QPlainTextEdit,
+QTextEdit,
+QSpinBox, QDoubleSpinBox,
+QComboBox,
+QDateEdit, QTimeEdit, QDateTimeEdit {
+    background-color: #1e1e1e;     /* Base = (30,30,30) */
+    color: #dcdcdc;                /* Text */
+    border: 1px solid #555;
+    border-radius: 4px;
+    padding: 2px 6px;
+}
+
+/* Dropdown popup for combos uses Window/Base colors */
+QComboBox QAbstractItemView {
+    background-color: #1e1e1e;     /* Base */
+    color: #dcdcdc;                /* Text */
+    alternate-background-color: #282828;  /* AlternateBase = (40,40,40) */
+    selection-background-color: #2a82da;  /* Highlight = (42,130,218) */
+    selection-color: #ffffff;              /* HighlightedText */
+    border: 1px solid #555;
+}
+
+/* Item views (lists/tables/trees) */
+QAbstractItemView {
+    background-color: #1e1e1e;          /* Base */
+    color: #dcdcdc;                      /* Text */
+    alternate-background-color: #282828; /* AlternateBase */
+    selection-background-color: #2a82da; /* Highlight */
+    selection-color: #ffffff;            /* HighlightedText */
+    gridline-color: #444;
+    outline: 0;
+}
+
+/* ---- Buttons (match Button/ButtonText) ---- */
+QPushButton, QToolButton {
+    background-color: #444;     /* normal */
+    color: #f0f0f0;
+    border: 1px solid #666;
+    border-radius: 4px;
+    padding: 4px 10px;
+}
+
+QPushButton:hover, QToolButton:hover {
+    background-color: #555;     /* hover: lighter gray */
+}
+
+QPushButton:pressed, QToolButton:pressed {
+    background-color: #666;     /* pressed: even lighter gray */
+}
+
+QPushButton:disabled, QToolButton:disabled {
+    background-color: #333;     /* disabled: darker gray */
+    color: #7f7f7f;
+    border: 1px solid #444;
+}
+
+/* Group boxes */
+QGroupBox {
+    border: 1px solid #555;
+    border-radius: 6px;
+    margin-top: 8px;
+    padding-top: 12px;
+}
+QGroupBox::title {
+    subcontrol-origin: margin;
+    left: 10px;
+    padding: 0 4px;
+    color: #dcdcdc;                 /* WindowText */
+    background: transparent;
+}
+
+/* ---- Checkboxes ---- */
+QCheckBox {
+    color: #f0f0f0;
+}
+
+QCheckBox::indicator {
+    background-color: #555;       /* lighter gray base */
+    border: 1px solid #777;
+}
+
+QCheckBox::indicator:checked {
+    background-color: #2a82da;    /* same highlight as palette */
+    border: 1px solid #2a82da;
+}
+
+QCheckBox::indicator:hover {
+    background-color: #666;       /* a bit lighter on hover */
+    border: 1px solid #999;
+}
+
+QCheckBox::indicator:disabled {
+    background-color: #444;
+    border: 1px solid #555;
+}
+
+
+/* Focus/selection visuals (global highlight) */
+*:focus {
+    outline: none; /* avoid dotted focus; Qt will show focus rects where needed */
+}
+QLineEdit:focus,
+QPlainTextEdit:focus, QTextEdit:focus,
+QComboBox:focus, QAbstractItemView:focus {
+    border: 1px solid #2a82da;      /* Highlight */
+}
+
+/* Graphics view (image window) */
+QGraphicsView {
+    background-color: #1e1e1e;      /* Base */
+    border: 1px solid #333;
+}
+
+/* Status bar (optional, in case you use it) */
+QStatusBar {
+    background-color: #2d2d2d;      /* Window */
+    color: #dcdcdc;                  /* WindowText */
+}
+
+/* ---- Spinboxes ---- */
+/* Spinboxes: keep default layout; just add light arrows */
+QSpinBox, QDoubleSpinBox {
+    background-color: #1e1e1e;   /* Base */
+    color: #dcdcdc;              /* Text */
+    border: 1px solid #555;
+    border-radius: 4px;
+    padding-right: 18px;         /* room for buttons */
+    padding-left: 6px;
+}
+
+/* Up/Down subcontrols (keep default size/shape) */
+QSpinBox::up-button, QDoubleSpinBox::up-button,
+QSpinBox::down-button, QDoubleSpinBox::down-button {
+    background-color: #353535;   /* Button */
+    border: 1px solid #555;
+    width: 16px;
+}
+
+QSpinBox::up-button:hover, QDoubleSpinBox::up-button:hover,
+QSpinBox::down-button:hover, QDoubleSpinBox::down-button:hover {
+    background-color: #444;
+}
+
+/* Light arrow glyphs via SVG */
+QSpinBox::up-arrow        { image: url(resources/icons/chevron_up_white.svg); }
+QDoubleSpinBox::up-arrow  { image: url(resources/icons/chevron_up_white.svg); }
+QSpinBox::down-arrow      { image: url(resources/icons/chevron_down_white.svg); }
+QDoubleSpinBox::down-arrow{ image: url(resources/icons/chevron_down_white.svg); }
+
+/* Optional: remove arrows when disabled (Fusion does this visually too) */
+QSpinBox::up-arrow:disabled,
+QDoubleSpinBox::up-arrow:disabled,
+QSpinBox::down-arrow:disabled,
+QDoubleSpinBox::down-arrow:disabled {
+    image: none;
+}
