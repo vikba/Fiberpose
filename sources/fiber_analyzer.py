@@ -167,6 +167,39 @@ class FiberAnalyzer:
         if m.any():
             out[m] = base[m] * (1.0 - alpha) + over[m] * alpha
         return out.clip(0, 255).astype(np.uint8)
+    
+
+
+    # --- porosity utilities ---------------------------------------
+
+    def void_mask_and_pore_dt(self, dt_u8: np.ndarray, thr_u8: int) -> tuple[np.ndarray, np.ndarray]:
+        """
+        Returns:
+            void_mask_u8: uint8, {0,1}, where 1 marks void (pores)
+            pore_dt: float32, Euclidean distance (in pixels) inside voids
+        """
+        if dt_u8 is None:
+            return None, None
+        t = float(thr_u8) / 255.0
+        dt01 = dt_u8.astype(np.float32) / 255.0
+        fiber_mask = (dt01 >= t)             # same predicate as labels_from_dt_and_markers
+        void_mask = (~fiber_mask).astype(np.uint8)
+        if void_mask.any():
+            # OpenCV expects 8-bit binary {0,255} or {0,1}; both work for DIST_L2
+            pore_dt = cv2.distanceTransform(void_mask, distanceType=cv2.DIST_L2, maskSize=5).astype(np.float32)
+        else:
+            pore_dt = np.zeros_like(dt01, dtype=np.float32)
+        return void_mask, pore_dt
+
+    def porosity_from_void_mask(self, void_mask_u8: np.ndarray) -> float:
+        """
+        Global 2D porosity (area fraction of voids in the field of view), in [0,1].
+        """
+        if void_mask_u8 is None:
+            return float('nan')
+        # void_mask is {0,1}; mean equals area fraction.
+        return float(void_mask_u8.mean())
+
 
     # ---------- analysis ----------
 

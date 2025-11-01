@@ -179,6 +179,7 @@ class MainWindow(QMainWindow):
         # Connect toggled signals of rb_show_diam and rb_show_direct to update overlay
         self.rb_show_diam.toggled.connect(self._render_vector_overlay)
         self.rb_show_direct.toggled.connect(self._render_vector_overlay)
+        self.rb_show_pores.toggled.connect(self._render_vector_overlay)
 
 
     # ------------------- Display helpers -------------------
@@ -581,6 +582,21 @@ class MainWindow(QMainWindow):
         self._thickness_units = thickness_units
         self._angles_deg = np.array([a for a in angles_deg if np.isfinite(a)], dtype=np.float32)
 
+
+        # --- NEW: pores / porosity ----------------------------------------------------
+        # Use the same segmentation threshold as watershed preview
+        thr_u8 = int(self.sp_segm_threshold.value()) if hasattr(self, "sp_segm_threshold") else 128
+
+        self._void_mask, self._pore_dt = self.analyzer.void_mask_and_pore_dt(self.gray_u8, thr_u8)
+        self._porosity = self.analyzer.porosity_from_void_mask(self._void_mask)  # [0,1]
+
+        # Pore *diameter* map (2*DT). Store samples in physical units for histogram.
+        pore_diam_px = 2.0 * self._pore_dt
+        pixel_size  = float(_getf(self.le_pixelsize, 1.0))  # already present in your code
+        self._pore_sizes_units = (pore_diam_px[self._void_mask > 0].astype(np.float32) * pixel_size)
+
+
+
         # Summary text
         if self._thickness_units.size:
             mean_thickness = np.mean(self._thickness_units)
@@ -599,7 +615,8 @@ class MainWindow(QMainWindow):
         info_text = (
             f"Mean diameter: {mean_thickness:.2f} {units_label}\n"
             f"Std diameter: {std_thickness:.2f} {units_label}\n"
-            f"Orientation index: {orientation_index:.2f}"
+            f"Orientation index: {orientation_index:.2f}\n"
+            f"Porosity (area fraction): {self._porosity*100:.1f} %"
         )
         if hasattr(self, "text_edit2"):
             self.text_edit2.setPlainText(info_text)
@@ -631,7 +648,9 @@ class MainWindow(QMainWindow):
 
         show_diam   = getattr(self, "rb_show_diam", None) and self.rb_show_diam.isChecked()
         show_direct = getattr(self, "rb_show_direct", None) and self.rb_show_direct.isChecked()
-        if not show_diam and not show_direct:
+        show_pores  = getattr(self, "rb_show_pores", None) and self.rb_show_pores.isChecked()
+
+        if not show_diam and not show_direct and not show_pores:
             show_diam = True
 
         MAX_SEGMENTS = 15000
@@ -646,6 +665,33 @@ class MainWindow(QMainWindow):
                 self._draw_line(dbg, p0, p1, color=(255, 255, 0))
             else:
                 self._draw_arrow_centered(dbg, float(y), float(x), float(tx), float(ty), length_px=2.0 * r, color=(255, 255, 0))
+
+        if show_pores and getattr(self, "_pore_dt", None) is not None and getattr(self, "_void_mask", None) is not None:
+            # --- Stand-alone pore size visualization (no overlays) ---
+            H, W = self.gray_u8.shape[:2]
+            vm = (self._void_mask > 0)
+            pore_diam = 2.0 * self._pore_dt  # pixels
+
+            # Background: white (255) to clearly separate pores
+            out = np.full((H, W, 3), 255, dtype=np.uint8)
+
+            if vm.any():
+                # Robust normalization on voids only (to 99th percentile)
+                vmax = float(np.percentile(pore_diam[vm], 99.0))
+                norm = np.zeros_like(pore_diam, dtype=np.float32)
+                if vmax > 0:
+                    norm[vm] = (pore_diam[vm] / vmax).clip(0.0, 1.0)
+
+                heat = cv2.applyColorMap((norm * 255.0).astype(np.uint8), cv2.COLORMAP_TURBO)
+
+                # Paint ONLY pores; keep fibers as white background
+                out[vm] = heat[vm]
+
+            # Important: early return so no arrows/diameters/segmentation are drawn.
+            self._set_pixmap_from_array(out)
+            return
+    
+
 
         self.debug_overlay = dbg
         # Set view to Measurements after rendering vector overlay
@@ -723,21 +769,36 @@ class MainWindow(QMainWindow):
             )
             self.graph_diameters.addItem(bg)
 
+        show_pores = getattr(self, "rb_show_pores", None) and self.rb_show_pores.isChecked()
 
-        # Angles (-90..90]
-        self._style_plotwidget(self.graph_angles, "Fiber orientation", "", "Angle (deg, canonical)")
-        ang = getattr(self, "_angles_deg", np.array([], dtype=np.float32))
-        if ang.size:
-            hist, edges = np.histogram(ang, bins=36, range=(-90, 90))
-            centers = 0.5 * (edges[:-1] + edges[1:])
-            widths  = (edges[1:] - edges[:-1])
-            # Angles (green)
-            bg = pg.BarGraphItem(
-                x=centers, height=hist, width=widths,
-                brush=pg.mkBrush("#76A64E"),      # green fill
-                pen=pg.mkPen(color="#3C6E2C", width=1)  # darker green edge
-            )
-            self.graph_angles.addItem(bg)
+        if not show_pores:
+            # Angles (-90..90)
+            self._style_plotwidget(self.graph_angles, "Fiber orientation", "", "Angle (deg, canonical)")
+            ang = getattr(self, "_angles_deg", np.array([], dtype=np.float32))
+            if ang.size:
+                hist, edges = np.histogram(ang, bins=36, range=(-90, 90))
+                centers = 0.5 * (edges[:-1] + edges[1:])
+                widths  = (edges[1:] - edges[:-1])
+                # Angles (green)
+                bg = pg.BarGraphItem(
+                    x=centers, height=hist, width=widths,
+                    brush=pg.mkBrush("#76A64E"),      # green fill
+                    pen=pg.mkPen(color="#3C6E2C", width=1)  # darker green edge
+                )
+                self.graph_angles.addItem(bg)
+        else:
+            self._style_plotwidget(self.graph_angles, "Pore size distribution","" ,f"Diameter ({units_label})")
+            ps = getattr(self, "_pore_sizes_units", np.array([], dtype=np.float32))
+            if ps.size:
+                hist, edges = np.histogram(ps, bins=40)
+                centers = 0.5 * (edges[:-1] + edges[1:])
+                widths  = (edges[1:] - edges[:-1])
+                bg = pg.BarGraphItem(
+                    x=centers, height=hist, width=widths,
+                    brush=pg.mkBrush("#70AD47"),         # green fill
+                    pen=pg.mkPen(color="#507E2D", width=1),
+                )
+                self.graph_angles.addItem(bg)
 
 
     # ------------------- View & reset -------------------

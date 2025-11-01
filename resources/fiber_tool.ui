@@ -51,7 +51,7 @@
        <property name="geometry">
         <rect>
          <x>10</x>
-         <y>650</y>
+         <y>580</y>
          <width>101</width>
          <height>31</height>
         </rect>
@@ -69,7 +69,7 @@
        <property name="geometry">
         <rect>
          <x>10</x>
-         <y>450</y>
+         <y>390</y>
          <width>231</width>
          <height>181</height>
         </rect>
@@ -250,9 +250,9 @@
        <widget class="QRadioButton" name="rb_show_diam">
         <property name="geometry">
          <rect>
-          <x>20</x>
+          <x>0</x>
           <y>150</y>
-          <width>82</width>
+          <width>71</width>
           <height>17</height>
          </rect>
         </property>
@@ -271,9 +271,9 @@
        <widget class="QRadioButton" name="rb_show_direct">
         <property name="geometry">
          <rect>
-          <x>120</x>
+          <x>80</x>
           <y>150</y>
-          <width>82</width>
+          <width>71</width>
           <height>17</height>
          </rect>
         </property>
@@ -316,12 +316,30 @@
          </property>
         </item>
        </widget>
+       <widget class="QRadioButton" name="rb_show_pores">
+        <property name="geometry">
+         <rect>
+          <x>160</x>
+          <y>150</y>
+          <width>71</width>
+          <height>17</height>
+         </rect>
+        </property>
+        <property name="font">
+         <font>
+          <pointsize>8</pointsize>
+         </font>
+        </property>
+        <property name="text">
+         <string>Pores</string>
+        </property>
+       </widget>
       </widget>
       <widget class="QPushButton" name="btn_save_csv">
        <property name="geometry">
         <rect>
          <x>130</x>
-         <y>650</y>
+         <y>580</y>
          <width>101</width>
          <height>31</height>
         </rect>
@@ -549,23 +567,13 @@
         <number>0</number>
        </property>
       </widget>
-      <widget class="QPlainTextEdit" name="text_edit1">
-       <property name="geometry">
-        <rect>
-         <x>10</x>
-         <y>380</y>
-         <width>221</width>
-         <height>61</height>
-        </rect>
-       </property>
-      </widget>
       <widget class="QPlainTextEdit" name="text_edit2">
        <property name="geometry">
         <rect>
          <x>10</x>
-         <y>690</y>
+         <y>640</y>
          <width>221</width>
-         <height>61</height>
+         <height>101</height>
         </rect>
        </property>
       </widget>
@@ -653,7 +661,6 @@
       <zorder>groupBox_measurement</zorder>
       <zorder>btn_save_csv</zorder>
       <zorder>progress_bar</zorder>
-      <zorder>text_edit1</zorder>
       <zorder>text_edit2</zorder>
       <zorder>cb_view</zorder>
       <zorder>label</zorder>
@@ -717,7 +724,7 @@
      <x>0</x>
      <y>0</y>
      <width>879</width>
-     <height>23</height>
+     <height>24</height>
     </rect>
    </property>
    <widget class="QMenu" name="menuFile">
