@@ -16,12 +16,16 @@
 - [x] Add gx,gy vizualization
 - [x] Build diameter lines based on gradients
 - [ ] Add clustering of fiber fragmetns into one fiber
-
+- [ ] Batch processing
+- [ ] Improve dataset and finetune NN
+- [ ] Segmentation of high quality fibers
+- [ ] Add porosity measurement
 
 ## 🐞 Bugs
 - [x] Fix x,y order for arrow drawing
 - [ ] Harmonize everything to x,y order or add _xy postfix
 - [ ] Arrows work incorrectly again
+- [ ] Save resulting images with original filename
 
 ## 🧹 Refactoring / Cleanup
 - [ ] Split functions in different classes

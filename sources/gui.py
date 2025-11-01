@@ -405,6 +405,7 @@ class MainWindow(QMainWindow):
         )
         logger.info(f"Detected constant segments: {len(constant_segments_xy)}")
         
+        # return segments, normals, visualization, markers
         return constant_segments_xy, normals_xy, centerlines_rgb, markers
 
     def _compute_masks_watershed(self, initial: bool = False):

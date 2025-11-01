@@ -2,10 +2,6 @@
 import sys, os
 from sources.gui import MainWindow
 from PyQt6.QtWidgets import QApplication
-
-
-
-from PyQt6.QtWidgets import QApplication, QStyleFactory
 from PyQt6.QtGui import QPalette, QColor
 
 def apply_dark_palette(app):

@@ -6,6 +6,8 @@ from jpype.types import JFloat
 from jpype import getDefaultJVMPath
 import numpy as np
 import cv2  # used in processing
+import logging
+logger = logging.getLogger(__name__)
 
 JDK_JVM = getDefaultJVMPath()
 
@@ -289,10 +291,16 @@ class RidgeDetector:
             normals_xy = [self._polyline_normals(seg_xy) for seg_xy in constant_segments_xy]
             return constant_segments_xy, normals_xy
         else:
-            print(f"RidgeDetector: Applying high confidence fiber filter, {len(constant_segments_xy)} segments before filtering.")
-            normals_xy = [self._polyline_normals(seg_xy) for seg_xy in constant_segments_xy]
-            return constant_segments_xy, normals_xy
-    
+            logger.info(f"Applying high confidence fiber filter, {len(constant_segments_xy)} segments before filtering.")
+            
+            filtered_segments = []
+            for seg_xy in constant_segments_xy:
+                if len(seg_xy) >= max(2, int(win_len / 2)):
+                    filtered_segments.append(seg_xy)
+
+            normals_xy = [self._polyline_normals(seg_xy) for seg_xy in filtered_segments]
+            return filtered_segments, normals_xy
+
     @staticmethod
     def _polyline_normals(pts_xy: np.ndarray,
                             window: int = 8,
