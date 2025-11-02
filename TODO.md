@@ -23,6 +23,7 @@
 - [ ] Add zoom
 - [ ] Add scalebar tool (or automatic scalebar detection)
 - [ ] Add logbar
+- [ ] Use lighweight alternative for torch for inference only
 
 ## 🐞 Bugs
 - [x] Fix x,y order for arrow drawing

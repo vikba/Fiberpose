@@ -168,9 +168,7 @@ class FiberAnalyzer:
             out[m] = base[m] * (1.0 - alpha) + over[m] * alpha
         return out.clip(0, 255).astype(np.uint8)
     
-
-
-    # --- porosity utilities ---------------------------------------
+    # --- Pore sampling via DT local maxima -----------------------------------
 
     def void_mask_and_pore_dt(self, dt_u8: np.ndarray, thr_u8: int) -> tuple[np.ndarray, np.ndarray]:
         """
@@ -191,14 +189,64 @@ class FiberAnalyzer:
             pore_dt = np.zeros_like(dt01, dtype=np.float32)
         return void_mask, pore_dt
 
-    def porosity_from_void_mask(self, void_mask_u8: np.ndarray) -> float:
-        """
-        Global 2D porosity (area fraction of voids in the field of view), in [0,1].
-        """
-        if void_mask_u8 is None:
-            return float('nan')
-        # void_mask is {0,1}; mean equals area fraction.
-        return float(void_mask_u8.mean())
+    def _local_maxima(self, arr: np.ndarray, footprint: int = 3, mask: np.ndarray | None = None) -> np.ndarray:
+        k = max(3, int(footprint) | 1)  # odd >=3
+        ker = cv2.getStructuringElement(cv2.MORPH_RECT, (k, k))
+        dil = cv2.dilate(arr, ker)
+        lm = (arr > 0) & (arr == dil)
+        if mask is not None:
+            lm &= (mask.astype(bool))
+        return lm
+
+    def sample_inscribed_circles(
+        self,
+        pore_dt: np.ndarray,
+        void_mask: np.ndarray,
+        min_radius_px: float = 1.0,
+        min_peak_px: float = 3.0,          # <- NEW: DT peak threshold
+        peak_footprint: int = 3,
+        max_pores: int | None = None,
+    ) -> list[dict]:
+        if pore_dt is None or void_mask is None:
+            return []
+
+        H, W = pore_dt.shape[:2]
+        current_void = (void_mask.astype(np.uint8) > 0).astype(np.uint8)
+
+        lm = self._local_maxima(pore_dt, footprint=peak_footprint, mask=current_void)
+        ys, xs = np.nonzero(lm)
+        if xs.size == 0:
+            return []
+
+        radii = pore_dt[ys, xs]
+        # --- NEW: apply peak-height (DT) threshold BEFORE sorting
+        keep = radii >= float(min_peak_px)
+        if not np.any(keep):
+            return []
+        xs, ys, radii = xs[keep], ys[keep], radii[keep]
+
+        order = np.argsort(-radii)
+        xs, ys, radii = xs[order], ys[order], radii[order]
+
+        circles: list[dict] = []
+        for x, y, r in zip(xs, ys, radii):
+            if r < float(min_radius_px):
+                continue
+            r_int = int(np.floor(float(r)))
+            if r_int <= 0:
+                continue
+            if x - r_int < 0 or x + r_int >= W or y - r_int < 0 or y + r_int >= H:
+                continue
+
+            cmask = np.zeros_like(current_void, dtype=np.uint8)
+            cv2.circle(cmask, (int(x), int(y)), r_int, 1, thickness=-1)
+            if np.all(cmask <= current_void):
+                circles.append({'x': int(x), 'y': int(y), 'r_px': float(r)})
+                current_void[cmask == 1] = 0
+                if (max_pores is not None) and (len(circles) >= max_pores):
+                    break
+        return circles
+
 
 
     # ---------- analysis ----------

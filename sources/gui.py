@@ -583,17 +583,38 @@ class MainWindow(QMainWindow):
         self._angles_deg = np.array([a for a in angles_deg if np.isfinite(a)], dtype=np.float32)
 
 
-        # --- NEW: pores / porosity ----------------------------------------------------
-        # Use the same segmentation threshold as watershed preview
+        # --- pore splitting + sampling ------------------------------------------
         thr_u8 = int(self.sp_segm_threshold.value()) if hasattr(self, "sp_segm_threshold") else 128
 
-        self._void_mask, self._pore_dt = self.analyzer.void_mask_and_pore_dt(self.gray_u8, thr_u8)
-        self._porosity = self.analyzer.porosity_from_void_mask(self._void_mask)  # [0,1]
+        # Build void mask from your chosen source (DT or grayscale-based threshold).
+        # If you already have self._void_mask, reuse it.
+        void_mask_u8 = getattr(self, "_void_mask", None)
 
-        # Pore *diameter* map (2*DT). Store samples in physical units for histogram.
-        pore_diam_px = 2.0 * self._pore_dt
-        pixel_size  = float(_getf(self.le_pixelsize, 1.0))  # already present in your code
-        self._pore_sizes_units = (pore_diam_px[self._void_mask > 0].astype(np.float32) * pixel_size)
+        if void_mask_u8 is None:
+            # If your pipeline stores grayscale in self.gray_u8, pass that DT/threshold you use
+            self._void_mask, self._pore_dt = self.analyzer.void_mask_and_pore_dt(self.gray_u8, thr_u8)
+
+        self._porosity = float(self._void_mask.mean())
+
+        # --- NEW: sample pores as inscribed circles from DT peaks ---------------------
+        min_radius_px = 1.5   # tweakable; ignores tiny specks
+        peak_footprint     = 5     # local-max window; 3..7 works; larger -> fewer peaks
+        max_pores     = None  # or set an upper cap for speed/UI clarity
+        min_peak_px = 3.0
+
+        self._pores = self.analyzer.sample_inscribed_circles(
+            pore_dt=self._pore_dt,
+            void_mask=self._void_mask,
+            min_radius_px=min_radius_px,
+            min_peak_px=min_peak_px,          # <- NEW param
+            peak_footprint=peak_footprint,
+            max_pores=max_pores,
+        )
+
+        # convenience arrays for hist/units
+        pixel_size  = float(_getf(self.le_pixelsize, 1.0))
+        self._pore_diams_units = np.array([2.0 * p['r_px'] * pixel_size for p in self._pores], dtype=np.float32)
+
 
 
 
@@ -656,40 +677,32 @@ class MainWindow(QMainWindow):
         MAX_SEGMENTS = 15000
         pts = self._viz_points if len(self._viz_points) <= MAX_SEGMENTS else self._viz_points[::int(np.ceil(len(self._viz_points)/MAX_SEGMENTS))]
 
-        for (y, x, r, ny, nx, ty, tx) in pts:
-            if not (0 <= y < H and 0 <= x < W) or r <= 0:
-                continue
-            if show_diam:
-                p0 = (y - ny * r, x - nx * r)
-                p1 = (y + ny * r, x + nx * r)
-                self._draw_line(dbg, p0, p1, color=(255, 255, 0))
-            else:
-                self._draw_arrow_centered(dbg, float(y), float(x), float(tx), float(ty), length_px=2.0 * r, color=(255, 255, 0))
+        if not show_pores:
+            for (y, x, r, ny, nx, ty, tx) in pts:
+                if not (0 <= y < H and 0 <= x < W) or r <= 0:
+                    continue
+                if show_diam:
+                    p0 = (y - ny * r, x - nx * r)
+                    p1 = (y + ny * r, x + nx * r)
+                    self._draw_line(dbg, p0, p1, color=(255, 255, 0))
+                else:
+                    self._draw_arrow_centered(dbg, float(y), float(x), float(tx), float(ty), length_px=2.0 * r, color=(255, 255, 0))
 
-        if show_pores and getattr(self, "_pore_dt", None) is not None and getattr(self, "_void_mask", None) is not None:
-            # --- Stand-alone pore size visualization (no overlays) ---
-            H, W = self.gray_u8.shape[:2]
-            vm = (self._void_mask > 0)
-            pore_diam = 2.0 * self._pore_dt  # pixels
+        else:
+            base = self._pore_dt_to_rgb(self._pore_dt, self._void_mask)
+            if getattr(self, "_pores", None):
+                out = base.copy()
+                for p in self._pores:
+                    x, y = int(p['x']), int(p['y'])
+                    r = int(round(p['r_px']))
+                    if r <= 0:
+                        continue
+                    self._draw_circle(out, (x, y), r, color=(255, 255, 255), thickness=1)  
+                    # optional tiny center mark for readability (kept 1 px too)
+                    # draw_circle(out, (x, y), max(1, r // 12), color=(0, 255, 255), thickness=-1)
+                self._set_pixmap_from_array(out)
+                return
 
-            # Background: white (255) to clearly separate pores
-            out = np.full((H, W, 3), 255, dtype=np.uint8)
-
-            if vm.any():
-                # Robust normalization on voids only (to 99th percentile)
-                vmax = float(np.percentile(pore_diam[vm], 99.0))
-                norm = np.zeros_like(pore_diam, dtype=np.float32)
-                if vmax > 0:
-                    norm[vm] = (pore_diam[vm] / vmax).clip(0.0, 1.0)
-
-                heat = cv2.applyColorMap((norm * 255.0).astype(np.uint8), cv2.COLORMAP_TURBO)
-
-                # Paint ONLY pores; keep fibers as white background
-                out[vm] = heat[vm]
-
-            # Important: early return so no arrows/diameters/segmentation are drawn.
-            self._set_pixmap_from_array(out)
-            return
     
 
 
@@ -737,6 +750,37 @@ class MainWindow(QMainWindow):
         y0, x0 = self._clip_point(*p0, H, W)
         y1, x1 = self._clip_point(*p1, H, W)
         cv2.arrowedLine(img, (x0, y0), (x1, y1), color, int(thickness), tipLength=float(tip))
+
+
+    def _draw_circle(self, img: np.ndarray, center_xy: tuple[int, int], radius_px: int,
+                    color: tuple[int, int, int] = (255, 255, 0),  # yellow 
+                    thickness: int = 1,
+                    lineType: int = cv2.LINE_AA) -> None:
+        """
+        Draw a circle in-place on `img`, consistent with draw_line/draw_arrow helpers.
+        center_xy: (x, y), radius_px: int pixels.
+        """
+        cv2.circle(img, center_xy, int(radius_px), color, thickness=thickness, lineType=lineType)
+
+    def _pore_dt_to_rgb(self, pore_dt: np.ndarray, void_mask_u8: np.ndarray) -> np.ndarray:
+        """
+        Returns an RGB uint8 image where the void region shows the pore DT
+        as a TURBO colormap (normalized robustly), and fibers are black.
+        """
+        vm = (void_mask_u8.astype(np.uint8) > 0)
+        norm = np.zeros_like(pore_dt, dtype=np.float32)
+        if np.any(vm):
+            # robust upper bound to avoid blown highlights
+            vmax = float(np.percentile(pore_dt[vm], 99.0))
+            if vmax <= 0:
+                vmax = float(np.max(pore_dt))
+            if vmax > 0:
+                norm[vm] = (pore_dt[vm] / vmax).clip(0.0, 1.0)
+        base_gray = (norm * 255.0).astype(np.uint8)
+        base_rgb = cv2.applyColorMap(base_gray, cv2.COLORMAP_TURBO)
+        # zero out fibers for clarity
+        base_rgb[~vm] = (0, 0, 0)
+        return base_rgb
 
 
     # ------------------- Plotting -------------------
@@ -787,19 +831,16 @@ class MainWindow(QMainWindow):
                 )
                 self.graph_angles.addItem(bg)
         else:
-            self._style_plotwidget(self.graph_angles, "Pore size distribution","" ,f"Diameter ({units_label})")
-            ps = getattr(self, "_pore_sizes_units", np.array([], dtype=np.float32))
-            if ps.size:
-                hist, edges = np.histogram(ps, bins=40)
+            self._style_plotwidget(self.graph_angles, "Pore size distribution", f"Diameter ({units_label})", "Count")
+            ds = getattr(self, "_pore_diams_units", np.array([], dtype=np.float32))
+            if ds.size:
+                hist, edges = np.histogram(ds, bins=40)
                 centers = 0.5 * (edges[:-1] + edges[1:])
                 widths  = (edges[1:] - edges[:-1])
-                bg = pg.BarGraphItem(
-                    x=centers, height=hist, width=widths,
-                    brush=pg.mkBrush("#70AD47"),         # green fill
-                    pen=pg.mkPen(color="#507E2D", width=1),
-                )
+                bg = pg.BarGraphItem(x=centers, height=hist, width=widths,
+                                    brush=pg.mkBrush("#70AD47"),
+                                    pen=pg.mkPen(color="#507E2D", width=1))
                 self.graph_angles.addItem(bg)
-
 
     # ------------------- View & reset -------------------
 
