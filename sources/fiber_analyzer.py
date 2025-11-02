@@ -189,14 +189,30 @@ class FiberAnalyzer:
             pore_dt = np.zeros_like(dt01, dtype=np.float32)
         return void_mask, pore_dt
 
+
     def _local_maxima(self, arr: np.ndarray, footprint: int = 3, mask: np.ndarray | None = None) -> np.ndarray:
-        k = max(3, int(footprint) | 1)  # odd >=3
+        """
+        Return boolean mask of local maxima in arr using grayscale dilation.
+        - footprint: odd window size (3,5,7...).
+        - mask: optional boolean/uint8 mask to restrict candidates (e.g., void area).
+        Notes:
+            • Pixels with value 0 are treated as background and ignored
+            (set temporarily to 255 so they never appear as maxima).
+        """
+        k = max(3, int(footprint) | 1)  # ensure odd >= 3
+        arr_work = arr.copy()
+
+        # --- NEW: exclude black (0) pixels from maxima search ---------------------
+        arr_work[arr_work == 0] = 255
+
         ker = cv2.getStructuringElement(cv2.MORPH_RECT, (k, k))
-        dil = cv2.dilate(arr, ker)
-        lm = (arr > 0) & (arr == dil)
+        dil = cv2.dilate(arr_work, ker)
+        lm = (arr_work == dil) & (arr > 0)  # ensure real, nonzero peaks
+
         if mask is not None:
             lm &= (mask.astype(bool))
         return lm
+
 
     def sample_inscribed_circles(
         self,

@@ -31,6 +31,7 @@
 - [ ] Arrows work incorrectly again
 - [ ] Save resulting images with original filename
 - [ ] Check algorithm of fiber porosity
+- [x] Dt pore image is not updated
 
 ## 🧹 Refactoring / Cleanup
 - [ ] Split functions in different classes

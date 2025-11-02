@@ -888,6 +888,10 @@ class MainWindow(QMainWindow):
         self._centerlines_dt = None
         self._preview_mask2_u8 = None
 
+        self._void_mask = None
+        self._pore_dt = None
+        self._pores = None
+
         # ---- analysis / debug ----
         self.samples_table = None
         self.fiber_summary = None
