@@ -109,8 +109,10 @@ class MainWindow(QMainWindow):
         self.orig_img = None
         self.gray_u8 = None          # CPNet DT (0..255)
         self.gray_img = None         # normalized float [0..1]
-        self.gray_gauss = None
         self.lapl_img = None
+        self.gx = None
+        self.gy = None
+        self.analyzer = None
 
         self.labels_img = None       # watershed labels (uint16)
         self.overlay_img = None
@@ -168,8 +170,10 @@ class MainWindow(QMainWindow):
         self.device = torch.device('cpu')   # default
         self._init_device_from_checkbox()   # sets checkbox + self.device accordingly
 
-        # create analyzer bound to current device
-        self.analyzer = FiberAnalyzer(self.high_conf_fib)  # added
+        # Analyzer instantiated once DT is available
+        self.analyzer: FiberAnalyzer | None = None
+        self.gx: np.ndarray | None = None
+        self.gy: np.ndarray | None = None
         self.predictor: FiberposeModel | None = None
 
         # react to checkbox changes at runtime
@@ -366,19 +370,34 @@ class MainWindow(QMainWindow):
 
         try:
             # predict DT via analyzer (pads to stride internally)
-            self.dt = self.predict_dt(self.orig_img)
+            dt_pred = self.predict_dt(self.orig_img)
         except Exception as e:
             QMessageBox.critical(self, "Prediction failed", str(e))
             logger.error(f"Segmentation failed: {e}")
             return
+        self.dt = np.asarray(dt_pred, dtype=np.float32)
+
+        # Compute DT gradients now that the field is available
+        dt_smooth = gaussian_filter(self.dt, sigma=1.5)
+        gy, gx = np.gradient(dt_smooth)
+        gy = gaussian_filter(gy, sigma=1.0)
+        gx = gaussian_filter(gx, sigma=1.0)
+        self.gx = np.asarray(gx, dtype=np.float32)
+        self.gy = np.asarray(gy, dtype=np.float32)
+
+        # Recreate analyzer with latest DT + gradients
+        self.analyzer = FiberAnalyzer(
+            dt=self.dt,
+            gx=self.gx,
+            gy=self.gy,
+            high_conf_fib=self.high_conf_fib,
+        )
         
         self.progress_bar.setValue(50)
 
         self.gray_u8 = np.clip(self.dt, 0, 255).astype(np.uint8)
         self.gray_img = self.dt / 255.0
-        self.gray_gauss = gaussian_filter(self.dt, 2)
-        self.lapl_img = laplace(self.gray_gauss)
-
+        self.lapl_img = laplace(dt_smooth)
         self._compute_masks_watershed(initial=True)
 
         # If current view is not one of the allowed ones, default to "Overlay"
@@ -391,11 +410,10 @@ class MainWindow(QMainWindow):
 
 
     def _compute_centerlines(self):
-        if self.gray_img is None:
+        if self.gray_img is None or self.analyzer is None:
             return None, None, None
         # compute via analyzer; stores segments and normals
         constant_segments_xy, normals_xy, centerlines_rgb, markers = self.analyzer.compute_centerlines(
-            dt_u8=self.gray_u8,
             max_angle_deg=float(self.sp_max_cent_angle.value()),
             sigma=2.23, upperThresh=0.17, lowerThresh=0.0,
             minLength=10.0, maxLength=0.0,
@@ -419,7 +437,7 @@ class MainWindow(QMainWindow):
         - self._centerlines_dt, self._preview_mask2_u8
         Also clears any previous analysis (samples, debug overlay, viz points).
         """
-        if self.gray_img is None or self.gray_u8 is None:
+        if self.gray_img is None or self.gray_u8 is None or self.analyzer is None:
             return
 
         self.constant_segments_xy, self.normals_xy, self._centerlines_dt, markers = self._compute_centerlines()
@@ -434,7 +452,6 @@ class MainWindow(QMainWindow):
 
         # watershed via analyzer
         labels = self.analyzer.labels_from_dt_and_markers(
-            dt_u8=self.gray_u8,
             markers=markers,
             thr_u8=int(self.sp_segm_threshold.value())
         )
@@ -555,8 +572,11 @@ class MainWindow(QMainWindow):
             units_label = "px"
 
         # compute via analyzer
-        hist_centers, viz_points, angles_deg, gx, gy = self.analyzer.analyze(
-            dt=self.dt,
+        if self.analyzer is None:
+            QtWidgets.QMessageBox.information(self, "No analyzer", "Segmentation data unavailable.")
+            return
+
+        hist_centers, viz_points, angles_deg = self.analyzer.analyze(
             constant_segments=getattr(self, "constant_segments_xy", None),
             spacing_px=spacing_px
         )
@@ -564,7 +584,6 @@ class MainWindow(QMainWindow):
             QtWidgets.QMessageBox.information(self, "No centerlines", "No centerlines available. Run segmentation first.")
             return
 
-        self.gx, self.gy = gx, gy
         self._viz_points = viz_points
 
         # Build sample table and stats (keep in GUI)
@@ -592,7 +611,7 @@ class MainWindow(QMainWindow):
 
         if void_mask_u8 is None:
             # If your pipeline stores grayscale in self.gray_u8, pass that DT/threshold you use
-            self._void_mask, self._pore_dt = self.analyzer.void_mask_and_pore_dt(self.gray_u8, thr_u8)
+            self._void_mask, self._pore_dt = self.analyzer.void_mask_and_pore_dt(thr_u8)
 
         self._porosity = float(self._void_mask.mean())
 
@@ -878,7 +897,6 @@ class MainWindow(QMainWindow):
         self.orig_img = getattr(self, "orig_img", None)  # keep path context; optional to clear
         self.gray_img = None          # float [0..1] DT view
         self.gray_u8 = None           # uint8 DT (0..255)
-        self.gray_gauss = None
         self.lapl_img = None
 
         # ---- segmentation outputs ----
@@ -973,7 +991,8 @@ class MainWindow(QMainWindow):
 
     def _on_high_conf_toggled(self, checked: bool):
         self.high_conf_fib = checked
-        self.analyzer.set_high_conf_filter(checked)
+        if self.analyzer is not None:
+            self.analyzer.set_high_conf_filter(checked)
 
     # ------------------- New default image loading -------------------
 
