@@ -1,5 +1,5 @@
-# fiberpose_cpnet.py
-# One-file TRAIN + PREDICT script for CPnet
+# fiberpose_ResUnet.py
+# One-file TRAIN + PREDICT script for ResUnet
 
 import os, glob, argparse, pathlib, random
 from typing import List, Tuple, Optional
@@ -21,7 +21,7 @@ torch_CPU = torch.device("cpu")
 def empty_cache():
     torch.cuda.empty_cache() if torch.cuda.is_available() else None
 
-# -------------------- CPnet (your code; minimal-safe load tweak) --------------------
+# -------------------- ResUnet (your code; minimal-safe load tweak) --------------------
 
 def dilation_list(x,N):
     return np.round(np.linspace(1, x, N)).astype(int).tolist()
@@ -191,11 +191,11 @@ def _safe_torch_load(path, map_location, weights_only=True):
     except TypeError:
         return torch.load(path, map_location=map_location)
 
-class CPnet(nn.Module):
+class ResUnet(nn.Module):
     def __init__(self, nbase, nout, sz, residual_on=True,
                  style_on=True, concatenation=False, mkldnn=False, dim=2,
                  checkpoint=False, dropout=False, kernel_size=2, scale_factor=2, dilation=1):
-        super(CPnet, self).__init__()
+        super(ResUnet, self).__init__()
         self.checkpoint = checkpoint
         self.kernel_size = kernel_size
         self.scale_factor = scale_factor
@@ -355,7 +355,7 @@ class PairedFolderDataset(Dataset):
 
 def build_model_from_args(args, device):
     nbase = [int(z) for z in args.nbase.split(",") if z.strip()]
-    model = CPnet(
+    model = ResUnet(
         nbase=nbase,
         nout=args.nout,
         sz=args.sz,
@@ -529,7 +529,7 @@ def run_predict(args):
     nbase = parse_nbase(args.nbase)
     in_channels = nbase[0]
 
-    model = CPnet(
+    model = ResUnet(
         nbase=nbase, nout=args.nout, sz=args.sz,
         residual_on=not args.no_residual,
         style_on=not args.no_style_off,
@@ -584,7 +584,7 @@ def run_predict(args):
 # ---------------------------- CLI ----------------------------
 
 def build_parser():
-    p = argparse.ArgumentParser(description="CPnet: train & predict")
+    p = argparse.ArgumentParser(description="ResUnet: train & predict")
     sub = p.add_subparsers(dest="cmd", required=True)
 
     # Shared arch args
@@ -609,7 +609,7 @@ def build_parser():
         ap.add_argument("--fp16", action="store_true", help="Use fp16 for AMP (default bfloat16)")
 
     # TRAIN
-    t = sub.add_parser("train", help="Train CPnet")
+    t = sub.add_parser("train", help="Train ResUnet")
     add_arch_args(t)
     t.add_argument("--train_in", type=str, required=True)
     t.add_argument("--train_gt", type=str, required=True)

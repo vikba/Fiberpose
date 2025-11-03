@@ -5,7 +5,7 @@
 - [x] Train Neural Network to detect fibers
 - [ ] !Develop criteria for high quality fibers
 - [ ] !Implement detection and segmentation of high confidence fiber fragmetns
-- [ ] Use C++ library instead of Java for ridge detection
+- [ ] Use python instead of Java for ridge detection
 - [ ] Add training support
 - [x] Save svs in pixels and units
 - [x] Add calculation of Mean and OI

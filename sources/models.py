@@ -5,7 +5,7 @@ import numpy as np
 import torch
 from torch.amp import autocast
 
-from .cpnet import CPnet, parse_nbase, _safe_torch_load, torch_GPU, torch_CPU
+from .resunet import ResUnet, parse_nbase, _safe_torch_load, torch_GPU, torch_CPU
 
 class FiberposeModel:
     def __init__(
@@ -60,7 +60,7 @@ class FiberposeModel:
         self.nout = int(nout)
         self.dt_channel = int(dt_channel)
 
-        self.model = CPnet(
+        self.model = ResUnet(
             nbase=self.nbase, nout=self.nout, sz=sz,
             residual_on=residual_on, style_on=style_on, concatenation=concat_style,
             mkldnn=False, dim=2, checkpoint=checkpointing, dropout=dropout,
