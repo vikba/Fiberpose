@@ -8,7 +8,6 @@ from PyQt6.QtCore import Qt, QEvent, QTimer
 from PyQt6.QtWidgets import QMainWindow, QFileDialog, QMessageBox, QGraphicsScene, QGraphicsPixmapItem
 from PyQt6.uic import loadUi
 
-from scipy.ndimage import laplace, gaussian_filter
 import imageio.v3 as iio
 import pyqtgraph as pg
 import torch
@@ -17,8 +16,7 @@ import logging
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
 
-from .fiber_analyzer import FiberAnalyzer  # added: new analyzer class
-from .models import FiberposeModel
+from .fiber_analyzer import FiberAnalyzer
 
 # ------------------- Paths -------------------
 
@@ -107,12 +105,13 @@ class MainWindow(QMainWindow):
         # Working dir & state setup (unchanged)...
         self.working_dir = os.path.dirname(ui_path)
         self.orig_img = None
+        self.dt = None
         self.gray_u8 = None          # CPNet DT (0..255)
         self.gray_img = None         # normalized float [0..1]
         self.lapl_img = None
         self.gx = None
         self.gy = None
-        self.analyzer = None
+        self.analyzer: FiberAnalyzer | None = None
 
         self.labels_img = None       # watershed labels (uint16)
         self.overlay_img = None
@@ -124,6 +123,10 @@ class MainWindow(QMainWindow):
         self._angles_deg = None
         self._thickness_units = None
         self.constant_segments_xy = None
+        self.normals_xy = None
+        self._porosity = None
+        self._pore_diams_units = None
+        self._labels_rgb_cache: tuple[int | None, np.ndarray | None] = (None, None)
 
         self.high_conf_fib = False
         self.chb_high_conf.setChecked(False)
@@ -163,18 +166,18 @@ class MainWindow(QMainWindow):
         # Delay loading default image until the UI is fully shown.
         QTimer.singleShot(0, self.load_default_image)
 
-        import torch
         self.ckpt_path = DEFAULT_CKPT_PATH
 
         # ---- device / CUDA handling ----
         self.device = torch.device('cpu')   # default
         self._init_device_from_checkbox()   # sets checkbox + self.device accordingly
 
-        # Analyzer instantiated once DT is available
-        self.analyzer: FiberAnalyzer | None = None
-        self.gx: np.ndarray | None = None
-        self.gy: np.ndarray | None = None
-        self.predictor: FiberposeModel | None = None
+        # Analyzer instantiated once and reused
+        self.analyzer = FiberAnalyzer(
+            ckpt_path=self.ckpt_path,
+            device=self.device,
+            high_conf_fib=self.high_conf_fib,
+        )
 
         # react to checkbox changes at runtime
         self.chb_usegpu.toggled.connect(self._on_usegpu_toggled)
@@ -229,6 +232,39 @@ class MainWindow(QMainWindow):
         if pm is not None and not pm.isNull():
             self.graphicsView.fitInView(self._pixitem, Qt.AspectRatioMode.KeepAspectRatio)
             self.graphicsView.centerOn(self._pixitem)
+
+    def _create_overlay(
+        self,
+        base_img: np.ndarray | None,
+        labels_img: np.ndarray | None,
+        alpha: float = 0.5,
+        labels_rgb: np.ndarray | None = None,
+    ) -> np.ndarray | None:
+        if base_img is None or labels_img is None:
+            return None
+        base_rgb = ensure_rgb_u8(base_img)
+        if labels_rgb is None:
+            labels_rgb = labels_to_color(labels_img)
+        if base_rgb is None or labels_rgb is None:
+            return None
+        if base_rgb.shape[:2] != labels_rgb.shape[:2]:
+            return None
+        out = base_rgb.astype(np.float32, copy=True)
+        over = labels_rgb.astype(np.float32, copy=False)
+        mask = labels_img > 0
+        if mask.any():
+            out[mask] = out[mask] * (1.0 - alpha) + over[mask] * alpha
+        return out.clip(0, 255).astype(np.uint8)
+
+    def _labels_rgb(self) -> np.ndarray | None:
+        if self.labels_img is None:
+            return None
+        cache_id, cache_img = self._labels_rgb_cache
+        current_id = id(self.labels_img)
+        if cache_id != current_id:
+            cache_img = labels_to_color(self.labels_img)
+            self._labels_rgb_cache = (current_id, cache_img)
+        return cache_img
 
 
     # ------------------- Drag & drop -------------------
@@ -364,186 +400,62 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "Load original", "Please load an original image first.")
             logger.info("Segment: No original image loaded.")
             return
-        
+        if self.analyzer is None:
+            QMessageBox.critical(self, "Analyzer unavailable", "Fiber analyzer has not been initialized.")
+            logger.error("Segmentation failed: analyzer not initialized.")
+            return
+
+        self._reset_internal_state(preserve_original=True)
+
         logger.info("Starting segmentation process.")
         self.progress_bar.setValue(0)
 
         try:
-            # predict DT via analyzer (pads to stride internally)
-            dt_pred = self.predict_dt(self.orig_img)
+            dt, gx, gy = self.analyzer.predict_dt(
+                image=self.orig_img,
+                max_angle_deg=float(self.sp_max_cent_angle.value()),
+            )
         except Exception as e:
             QMessageBox.critical(self, "Prediction failed", str(e))
-            logger.error(f"Segmentation failed: {e}")
+            logger.error("Segmentation failed: %s", e)
             return
-        self.dt = np.asarray(dt_pred, dtype=np.float32)
 
-        # Compute DT gradients now that the field is available
-        dt_smooth = gaussian_filter(self.dt, sigma=1.5)
-        gy, gx = np.gradient(dt_smooth)
-        gy = gaussian_filter(gy, sigma=1.0)
-        gx = gaussian_filter(gx, sigma=1.0)
-        self.gx = np.asarray(gx, dtype=np.float32)
-        self.gy = np.asarray(gy, dtype=np.float32)
+        self.dt = np.asarray(dt, dtype=np.float32, copy=False)
+        self.gx = np.asarray(gx, dtype=np.float32, copy=False)
+        self.gy = np.asarray(gy, dtype=np.float32, copy=False)
+        self.gray_u8 = self.analyzer.get_dt_u8()
+        self.gray_img = self.analyzer.get_dt_norm()
+        self.lapl_img = self.analyzer.get_laplacian()
+        self.constant_segments_xy = self.analyzer.get_centerline_segments()
+        self.normals_xy = self.analyzer.get_centerline_normals()
+        self._centerlines_dt = self.analyzer.get_centerlines_image()
 
-        # Recreate analyzer with latest DT + gradients
-        self.analyzer = FiberAnalyzer(
-            dt=self.dt,
-            gx=self.gx,
-            gy=self.gy,
-            high_conf_fib=self.high_conf_fib,
-        )
-        
-        self.progress_bar.setValue(50)
+        thr_u8 = int(self.sp_segm_threshold.value())
+        try:
+            self.labels_img = self.analyzer.segment(thr_u8=thr_u8)
+        except Exception as e:
+            QMessageBox.critical(self, "Segmentation failed", str(e))
+            logger.error("Watershed failed: %s", e)
+            return
 
-        self.gray_u8 = np.clip(self.dt, 0, 255).astype(np.uint8)
-        self.gray_img = self.dt / 255.0
-        self.lapl_img = laplace(dt_smooth)
-        self._compute_masks_watershed(initial=True)
+        if self.labels_img is not None:
+            labels_rgb = labels_to_color(self.labels_img)
+            self._labels_rgb_cache = (id(self.labels_img), labels_rgb)
+        else:
+            labels_rgb = None
+            self._labels_rgb_cache = (None, None)
 
-        # If current view is not one of the allowed ones, default to "Overlay"
+        self.overlay_img = self._create_overlay(self.orig_img, self.labels_img, alpha=0.5, labels_rgb=labels_rgb)
+
         if self.cb_view.currentText() not in ["Overlay", "Segmentation", "Measurements"]:
             self.cb_view.setCurrentText("Overlay")
-
-        self.action_save_masks_predictions.setEnabled(True)
-        logger.info("Segmentation completed successfully.")
-        self.progress_bar.setValue(80)
-
-
-    def _compute_centerlines(self):
-        if self.gray_img is None or self.analyzer is None:
-            return None, None, None
-        # compute via analyzer; stores segments and normals
-        constant_segments_xy, normals_xy, centerlines_rgb, markers = self.analyzer.compute_centerlines(
-            max_angle_deg=float(self.sp_max_cent_angle.value()),
-            sigma=2.23, upperThresh=0.17, lowerThresh=0.0,
-            minLength=10.0, maxLength=0.0,
-            isDarkLine=False, doCorrectPosition=False,
-            doEstimateWidth=False, doExtendLine=True,
-            overlapOption="NONE", trim=3, tol=3.0,
-            win_len=25.0, std_thresh=0.8
-        )
-        logger.info(f"Detected constant segments: {len(constant_segments_xy)}")
-        
-        # return segments, normals, visualization, markers
-        return constant_segments_xy, normals_xy, centerlines_rgb, markers
-
-    def _compute_masks_watershed(self, initial: bool = False):
-        """
-        Compute watershed labels and visualization previews based on current thresholds.
-        Caches:
-        - self.labels_img  (uint16)
-        - self.labels_rgb  (uint8 HxWx3)  <-- precomputed once here
-        - self.overlay_img (uint8 HxWx3)  <-- base+labels blend
-        - self._centerlines_dt, self._preview_mask2_u8
-        Also clears any previous analysis (samples, debug overlay, viz points).
-        """
-        if self.gray_img is None or self.gray_u8 is None or self.analyzer is None:
-            return
-
-        self.constant_segments_xy, self.normals_xy, self._centerlines_dt, markers = self._compute_centerlines()
-
-
-        m2_T_u8 = int(self.sp_segm_threshold.value())
-        self._preview_mask2_u8 = (self.gray_img >= (m2_T_u8 / 255.0)).astype(np.uint8) * 255
-
-        if markers is None:
-            QMessageBox.information(self, "No markers", "Unable to compute watershed markers.")
-            return
-
-        # watershed via analyzer
-        labels = self.analyzer.labels_from_dt_and_markers(
-            markers=markers,
-            thr_u8=int(self.sp_segm_threshold.value())
-        )
-
-        # cache labels, colored labels and overlay
-        self.labels_img = labels
-        self.labels_rgb = labels_to_color(labels) if labels is not None else None
-        # use analyzer overlay builder to avoid duplicate logic
-        self.overlay_img = None
-        if self.orig_img is not None and self.labels_img is not None:
-            over = self.analyzer.overlay_from_labels(self.orig_img, self.labels_img, alpha=0.5)
-            if over is not None:
-                self.overlay_img = over
-
-        # 4) Clear any prior analysis/plots/debug derived from previous labels
-        self.debug_overlay = None
-        self.samples_table = None
-        self.fiber_summary = None
-        self._viz_points = None
-        self._angles_deg = None
-        self._thickness_units = None
 
         if hasattr(self, "action_save_masks_predictions"):
             self.action_save_masks_predictions.setEnabled(True)
 
         self.refresh_view()
-
-    # ---------- model / DT prediction ----------
-        
-
-    def _ensure_predictor(self) -> FiberposeModel:
-        if self.predictor is not None:
-            return self.predictor
-        # same config as GUI used
-        self.predictor = FiberposeModel(
-            ckpt_path=self.ckpt_path,
-            nbase="1,32,64,128,256",
-            nout=3,
-            sz=3,
-            dilation=1,
-            pool_kernel=2,
-            scale=2,
-            residual_on=True,
-            style_on=True,
-            concat_style=False,
-            checkpointing=False,
-            dropout=False,
-            cpu=False,
-            amp=True,
-            fp16=True,
-            dt_channel=0,
-            device=self.device
-        )
-        return self.predictor
-
-    def _infer_model_stride(self) -> int:
-        stride = 16
-        p = self._ensure_predictor()
-        try:
-            if hasattr(p, "stride"):
-                s = int(p.stride)
-                if s > 0:
-                    return s
-            if hasattr(p, "nbase"):
-                levels = str(p.nbase).split(",")
-                downs = max(0, len(levels) - 1)
-                stride = 2 ** downs
-        except Exception:
-            pass
-        return stride
-
-    def predict_dt(self, img: np.ndarray) -> np.ndarray:
-        """
-        Predict DT for the input image. Pads to stride, runs model, crops back.
-        Returns a 2D float array (same HxW).
-        """
-        p = self._ensure_predictor()
-        stride = self._infer_model_stride()
-        H, W = img.shape[:2]
-        pad_h = (stride - (H % stride)) % stride
-        pad_w = (stride - (W % stride)) % stride
-        if pad_h or pad_w:
-            if img.ndim == 2:
-                pad_width = ((0, pad_h), (0, pad_w))
-            else:
-                pad_width = ((0, pad_h), (0, pad_w), (0, 0))
-            img_pad = np.pad(img, pad_width, mode="reflect")
-        else:
-            img_pad = img
-        dt_pad = p.predict(img_pad)
-        dt = dt_pad[:H, :W] if dt_pad.ndim == 2 else dt_pad[:H, :W, 0]
-        return dt
+        self.progress_bar.setValue(80)
+        logger.info("Segmentation completed successfully.")
 
     def analyze_fibers(self):
         """
@@ -576,14 +488,14 @@ class MainWindow(QMainWindow):
             QtWidgets.QMessageBox.information(self, "No analyzer", "Segmentation data unavailable.")
             return
 
-        hist_centers, viz_points, angles_deg = self.analyzer.analyze(
-            constant_segments=getattr(self, "constant_segments_xy", None),
-            spacing_px=spacing_px
-        )
-        if getattr(self, "constant_segments_xy", None) is None:
+        if not self.analyzer.get_centerline_segments():
             QtWidgets.QMessageBox.information(self, "No centerlines", "No centerlines available. Run segmentation first.")
             return
 
+        hist_centers, viz_points, angles_deg = self.analyzer.analyze(
+            spacing_px=spacing_px
+        )
+        self.constant_segments_xy = self.analyzer.get_centerline_segments()
         self._viz_points = viz_points
 
         # Build sample table and stats (keep in GUI)
@@ -879,11 +791,12 @@ class MainWindow(QMainWindow):
         elif view == "Centerlines":
             img = getattr(self, "_centerlines_dt", None)
         elif view == "Segmentation":
-            img = self.labels_rgb
+            img = self._labels_rgb()
         elif view == "Overlay":
             img = self.overlay_img
         elif view == "Measurements":
-            img = self.debug_overlay if self.debug_overlay is not None else self.labels_rgb
+            seg_rgb = self._labels_rgb()
+            img = self.debug_overlay if self.debug_overlay is not None else seg_rgb
         elif view == "gx": 
             img = to_uint8_for_view(self.gx) if hasattr(self, "gx") else None
         elif view == "gy":
@@ -891,24 +804,24 @@ class MainWindow(QMainWindow):
 
         self._set_pixmap_from_array(img)
 
-    def _reset_internal_state(self):
-        """Clear all data, images, analysis artifacts, and charts."""
+    def _reset_internal_state(self, preserve_original: bool = False):
+        """Clear all derived data, images, analysis artifacts, and charts."""
         # ---- raw / processing buffers ----
-        self.orig_img = getattr(self, "orig_img", None)  # keep path context; optional to clear
-        self.gray_img = None          # float [0..1] DT view
-        self.gray_u8 = None           # uint8 DT (0..255)
+        if not preserve_original:
+            self.orig_img = None
+        self.dt = None
+        self.gray_img = None
+        self.gray_u8 = None
         self.lapl_img = None
+        self.gx = None
+        self.gy = None
 
         # ---- segmentation outputs ----
         self.labels_img = None
-        self.labels_rgb = None        # cached colored labels
         self.overlay_img = None
         self._centerlines_dt = None
-        self._preview_mask2_u8 = None
-
-        self._void_mask = None
-        self._pore_dt = None
-        self._pores = None
+        self.constant_segments_xy = None
+        self.normals_xy = None
 
         # ---- analysis / debug ----
         self.samples_table = None
@@ -917,7 +830,12 @@ class MainWindow(QMainWindow):
         self._viz_points = None
         self._angles_deg = None
         self._thickness_units = None
-        self.constant_segments_xy = None
+        self._void_mask = None
+        self._pore_dt = None
+        self._pores = None
+        self._porosity = None
+        self._pore_diams_units = None
+        self._labels_rgb_cache = (None, None)
 
         # ---- charts (pyqtgraph) ----
         if hasattr(self, "graph_diameters") and isinstance(self.graph_diameters, pg.PlotWidget):
@@ -931,21 +849,15 @@ class MainWindow(QMainWindow):
 
         # ---- UI actions / state ----
         if hasattr(self, "_pixitem"):
-            self._pixitem.setPixmap(QtGui.QPixmap())  # clear image view
+            self._pixitem.setPixmap(QtGui.QPixmap())
 
         if hasattr(self, "action_save_masks_predictions"):
             self.action_save_masks_predictions.setEnabled(False)
         if hasattr(self, "action_save_measurements"):
             self.action_save_measurements.setEnabled(False)
 
-        # Reset view to neutral
         if hasattr(self, "cb_view"):
             self.cb_view.setCurrentText("Original")
-
-        # If predictor should be re-created on next run (optional, e.g., after device change)
-        #self.predictor = None
-
-
 
     def _init_device_from_checkbox(self):
         """On startup: if CUDA is available, check the box and use cuda; else uncheck and use cpu."""
@@ -986,8 +898,8 @@ class MainWindow(QMainWindow):
         else:
             self.device = torch.device('cuda' if checked else 'cpu')
 
-        """Switch device; forces predictor re-init on next prediction."""
-        self.predictor = None
+        if self.analyzer is not None:
+            self.analyzer.set_device(self.device)
 
     def _on_high_conf_toggled(self, checked: bool):
         self.high_conf_fib = checked

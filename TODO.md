@@ -34,7 +34,7 @@
 - [x] Dt pore image is not updated
 
 ## 🧹 Refactoring / Cleanup
-- [ ] Split functions in different classes
+- [x] Improve architecture so each class owns only specialized functions (eg FiberAnalyzer own all image processing)
 
 ## 📝 Documentation
 - [ ] Write minimal documentation

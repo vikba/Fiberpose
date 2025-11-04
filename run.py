@@ -40,7 +40,6 @@ def load_stylesheet(app, filename: str):
 
 def main():
     app = QApplication(sys.argv)
-    #app.setStyle('Fusion')
     #load_stylesheet(app, "resources/dark_theme.qss")
     apply_dark_palette(app)
     win = MainWindow()
