@@ -12,7 +12,13 @@ from skimage.segmentation import watershed
 
 from .models import FiberposeModel
 from .ridgedetector import RidgeDetector
-from .utils import _bilinear, normals_from_dt_2d, resample_polyline_xy
+from .utils import (
+    _bilinear,
+    _sample_vec2,
+    normals_from_dt_2d,
+    resample_polyline_xy,
+    to_uint8_for_view,
+)
 
 
 # ---------- Paths ----------
@@ -69,6 +75,7 @@ class FiberAnalyzer:
 
         self._centerline_kwargs: Dict[str, Any] = self._default_centerline_kwargs()
         self._last_max_angle: float = 0.0
+        self._constant_segments_info: Optional[List[Dict[str, np.ndarray]]] = None
 
         self._reset_prediction_state()
 
@@ -87,6 +94,7 @@ class FiberAnalyzer:
         self._centerlines_rgb: Optional[np.ndarray] = None
         self._markers: Optional[np.ndarray] = None
         self._labels: Optional[np.ndarray] = None
+        self._constant_segments_info = None
 
     @staticmethod
     def _default_centerline_kwargs() -> Dict[str, Any]:
@@ -272,23 +280,19 @@ class FiberAnalyzer:
                 self._sliding_window_filter(
                     seg_xy,
                     image=self._dt_u8,
+                    dt=self._dt,
+                    grad_x=self._gx,
+                    grad_y=self._gy,
                     win_len=win_len,
                     std_thresh=std_thresh,
                     max_angle=max_angle_deg,
+                    enforce_high_conf=self._high_conf_fib,
                 )
             )
 
-        if self._high_conf_fib and constant_segments_xy:
-            logger.info(
-                "Applying high confidence fiber filter, %d segments before filtering.",
-                len(constant_segments_xy),
-            )
-            min_len = max(2, int(win_len / 2))
-            constant_segments_xy = [seg for seg in constant_segments_xy if len(seg) >= min_len]
-
         normals_xy = [self._polyline_normals(seg_xy) for seg_xy in constant_segments_xy]
 
-        base_dt = self._to_uint8_for_view(self._dt_u8)
+        base_dt = to_uint8_for_view(self._dt_u8)
         centerlines_rgb = cv2.cvtColor(base_dt, cv2.COLOR_GRAY2BGR)
         for seg_xy in constant_segments_xy:
             cv2.polylines(centerlines_rgb, [seg_xy.astype(np.int32)], isClosed=False,
@@ -303,6 +307,7 @@ class FiberAnalyzer:
 
         # cache results
         self._constant_segments = constant_segments_xy
+        self._constant_segments_info = self._build_segment_info(constant_segments_xy)
         self._normals_xy = normals_xy
         self._centerlines_rgb = centerlines_rgb
         self._markers = markers
@@ -310,18 +315,126 @@ class FiberAnalyzer:
         logger.info("Detected constant segments: %d", len(constant_segments_xy))
         return constant_segments_xy, normals_xy, centerlines_rgb, markers
 
-    def segment(self, thr_u8: int) -> np.ndarray:
+    def _build_segment_info(self, segments_xy: List[np.ndarray]) -> List[Dict[str, np.ndarray]]:
+        info: List[Dict[str, np.ndarray]] = []
+        if self._dt is None:
+            return info
+
+        for seg_xy in segments_xy:
+            pts_xy = seg_xy.reshape(-1, 2).astype(np.float32)
+            if pts_xy.size == 0:
+                continue
+            radii = np.array(
+                [_bilinear(self._dt, float(p_xy[1]), float(p_xy[0])) for p_xy in pts_xy],
+                dtype=np.float32,
+            )
+            info.append(
+                {
+                    "points_xy": pts_xy,
+                    "radii": radii,
+                }
+            )
+        return info
+
+    def segment(self, thr_u8: int, radius_thresh_px: float | None = None) -> np.ndarray:
         """
         Run watershed segmentation using cached DT and markers.
         """
         if self._dt_u8 is None:
             raise ValueError("Distance transform not available. Call predict_dt first.")
+
+        if self._high_conf_fib and radius_thresh_px is not None:
+            if (self._constant_segments_info is None) or (not self._constant_segments_info):
+                self.compute_centerlines(self._last_max_angle, **self._centerline_kwargs)
+            logger.info("Segmentation of high confidence fibers")
+            labels = self.segment_high_confidence(radius_thresh_px=radius_thresh_px)
+            self._labels = labels
+            return labels
+
         if self._markers is None or self._markers.max() == 0:
             self.compute_centerlines(self._last_max_angle, **self._centerline_kwargs)
 
+        logger.info("Default segmetnation with watershed")
         labels = self.labels_from_dt_and_markers(self._markers, thr_u8=thr_u8)
         self._labels = labels
         return labels
+
+    def segment_high_confidence(
+        self,
+        radius_thresh_px: float,
+        dilate_extra_px: float = 0.0,
+        min_run_points: int = 1,
+    ) -> np.ndarray:
+        """
+        Segment only high-confidence fibers by expanding qualified centerline points using DT radii.
+        """
+        if self._dt is None or self._dt_u8 is None:
+            raise ValueError("Distance transform not available. Call predict_dt first.")
+
+        if not self._constant_segments_info:
+            return np.zeros_like(self._dt_u8, dtype=np.uint16)
+
+        mask = np.zeros(self._dt_u8.shape, dtype=np.uint8)
+        radius_thresh_px = float(radius_thresh_px)
+        extra = float(dilate_extra_px)
+
+        for info in self._constant_segments_info:
+            pts_xy = info.get("points_xy")
+            radii = info.get("radii")
+            if pts_xy is None or radii is None:
+                continue
+            pts_xy = np.asarray(pts_xy, dtype=np.float32)
+            radii = np.asarray(radii, dtype=np.float32)
+            if pts_xy.shape[0] == 0 or radii.shape[0] != pts_xy.shape[0]:
+                continue
+
+            keep_mask = radii >= radius_thresh_px
+            if not np.any(keep_mask):
+                continue
+
+            run_start = None
+            for idx, keep in enumerate(keep_mask):
+                if keep and run_start is None:
+                    run_start = idx
+                elif (not keep) and (run_start is not None):
+                    if idx - run_start >= max(1, int(min_run_points)):
+                        self._draw_centerline_run(mask, pts_xy[run_start:idx], radii[run_start:idx], extra)
+                    run_start = None
+            if run_start is not None:
+                if len(pts_xy) - run_start >= max(1, int(min_run_points)):
+                    self._draw_centerline_run(mask, pts_xy[run_start:], radii[run_start:], extra)
+
+        if not mask.any():
+            return np.zeros_like(self._dt_u8, dtype=np.uint16)
+
+        labeled = cc_label(mask > 0, connectivity=2).astype(np.uint16)
+        return labeled
+
+    @staticmethod
+    def _draw_centerline_run(
+        mask: np.ndarray,
+        pts_xy: np.ndarray,
+        radii: np.ndarray,
+        extra_radius_px: float = 0.0,
+    ) -> None:
+        """
+        Paint a contiguous run of centerline samples onto a binary mask using their DT radii.
+        """
+        if pts_xy.size == 0:
+            return
+        h, w = mask.shape[:2]
+        extra_radius_px = float(extra_radius_px)
+
+        for pt_xy, radius in zip(pts_xy, radii):
+            r_eff = float(radius) + extra_radius_px
+            if r_eff <= 0.0:
+                continue
+            cx = int(round(float(pt_xy[0])))
+            cy = int(round(float(pt_xy[1])))
+            if cx < 0 or cy < 0 or cx >= w or cy >= h:
+                continue
+            radius_px = max(1, int(round(r_eff)))
+            cv2.circle(mask, (cx, cy), radius_px, 255, thickness=-1)
 
     # ------------------------------------------------------------------ #
     # Accessors
@@ -546,35 +659,6 @@ class FiberAnalyzer:
     # Local utilities (used internally and optionally by GUI helpers)
 
     @staticmethod
-    def _to_uint8_for_view(img: np.ndarray | None) -> np.ndarray | None:
-        if img is None:
-            return None
-        arr = img.astype(np.float32, copy=False)
-        if np.isnan(arr).any() or np.isinf(arr).any():
-            arr = np.nan_to_num(arr, nan=0.0, posinf=0.0, neginf=0.0)
-        amin, amax = float(arr.min()), float(arr.max())
-        if amax <= amin:
-            return np.zeros(arr.shape, dtype=np.uint8)
-        arr = (arr - amin) / (amax - amin)
-        return (arr * 255.0).clip(0, 255).astype(np.uint8)
-
-    @staticmethod
-    def _ensure_rgb_u8(img: np.ndarray | None) -> np.ndarray | None:
-        if img is None:
-            return None
-        if img.ndim == 2:
-            u8 = FiberAnalyzer._to_uint8_for_view(img)
-            return np.stack([u8, u8, u8], axis=-1)
-        if img.ndim == 3:
-            if img.shape[2] == 1:
-                ch = FiberAnalyzer._to_uint8_for_view(img[..., 0])
-                return np.stack([ch, ch, ch], axis=-1)
-            if img.dtype != np.uint8:
-                return FiberAnalyzer._to_uint8_for_view(img)[..., :3]
-            return img[..., :3]
-        return FiberAnalyzer._ensure_rgb_u8(FiberAnalyzer._to_uint8_for_view(img))
-
-    @staticmethod
     def _split_and_trim_contour(
         contour: np.ndarray,
         junction_points: List[Tuple[int, int]],
@@ -607,10 +691,20 @@ class FiberAnalyzer:
     def _sliding_window_filter(
         seg_xy: np.ndarray,
         image: np.ndarray,
+        dt: np.ndarray | None = None,
+        grad_x: np.ndarray | None = None,
+        grad_y: np.ndarray | None = None,
         win_len: float = 15.0,
         std_thresh: float = 0.6,
         max_angle: float = 20.0,
+        enforce_high_conf: bool = False,
+        grad_alignment_cos: float = 0.95,
+        radius_rel_tol: float = 0.25,
+        min_valid_fraction: float = 0.7,
     ) -> List[np.ndarray]:
+        if enforce_high_conf and (dt is None or grad_x is None or grad_y is None):
+            raise ValueError("High confidence filtering requires dt, grad_x, and grad_y.")
+
         pts_xy = seg_xy.reshape(-1, 2).astype(np.float32)
         if pts_xy.shape[0] < 2:
             return []
@@ -660,7 +754,19 @@ class FiberAnalyzer:
                         dI = abs(float(intensities[-1]) - float(intensities[0]))
                         angle_deg = np.degrees(np.arctan(dI / ds))
                         if angle_deg < max_angle:
-                            valid_windows.append((start_idx, end_idx))
+                            if enforce_high_conf:
+                                if FiberAnalyzer._window_high_confidence(
+                                    window_pts_xy,
+                                    dt=dt,
+                                    grad_x=grad_x,
+                                    grad_y=grad_y,
+                                    grad_alignment_cos=grad_alignment_cos,
+                                    radius_rel_tol=radius_rel_tol,
+                                    min_valid_fraction=min_valid_fraction,
+                                ):
+                                    valid_windows.append((start_idx, end_idx))
+                            else:
+                                valid_windows.append((start_idx, end_idx))
 
             new_target_s = start_s + half_step
             new_start_idx = int(np.searchsorted(cum_dist, new_target_s, side="left"))
@@ -686,6 +792,77 @@ class FiberAnalyzer:
                 sub_xy = pts_xy[s_idx : e_idx + 1].copy().reshape(-1, 1, 2)
                 out_segments.append(sub_xy)
         return out_segments
+
+    @staticmethod
+    def _window_high_confidence(
+        pts_xy: np.ndarray,
+        dt: np.ndarray,
+        grad_x: np.ndarray,
+        grad_y: np.ndarray,
+        grad_alignment_cos: float = 0.95,
+        radius_rel_tol: float = 0.25,
+        min_valid_fraction: float = 0.7,
+    ) -> bool:
+        """
+        Validate a candidate window against gradient alignment and radius consistency criteria.
+        """
+        pts_xy = np.asarray(pts_xy, dtype=np.float32).reshape(-1, 2)
+        if pts_xy.shape[0] < 2:
+            return False
+
+        n_pts = pts_xy.shape[0]
+        tangents = np.zeros_like(pts_xy, dtype=np.float32)
+        tangents[1:-1] = pts_xy[2:] - pts_xy[:-2]
+        tangents[0] = pts_xy[1] - pts_xy[0]
+        tangents[-1] = pts_xy[-1] - pts_xy[-2]
+
+        tan_norm = np.linalg.norm(tangents, axis=1, keepdims=True) + 1e-6
+        tangents /= tan_norm
+        normals = np.stack([-tangents[:, 1], tangents[:, 0]], axis=1)
+
+        valid = 0
+        total = 0
+        for idx in range(n_pts):
+            px, py = float(pts_xy[idx, 0]), float(pts_xy[idx, 1])
+            r = float(_bilinear(dt, py, px))
+            if r <= 1e-6:
+                continue
+
+            h = 0.5 * r
+            nx, ny = float(normals[idx, 0]), float(normals[idx, 1])
+            if np.isclose(nx, 0.0) and np.isclose(ny, 0.0):
+                continue
+
+            p_plus = (px + nx * h, py + ny * h)
+            p_minus = (px - nx * h, py - ny * h)
+
+            g_plus = _sample_vec2(grad_x, grad_y, p_plus[1], p_plus[0])
+            g_minus = _sample_vec2(grad_x, grad_y, p_minus[1], p_minus[0])
+
+            mag_plus = float(np.linalg.norm(g_plus))
+            mag_minus = float(np.linalg.norm(g_minus))
+            if mag_plus <= 1e-6 or mag_minus <= 1e-6:
+                continue
+
+            g_plus_unit = g_plus / (mag_plus + 1e-6)
+            g_minus_unit = g_minus / (mag_minus + 1e-6)
+            align_score = -float(np.dot(g_plus_unit, g_minus_unit))
+
+            target = 0.5 * r
+            dt_plus = float(_bilinear(dt, p_plus[1], p_plus[0]))
+            dt_minus = float(_bilinear(dt, p_minus[1], p_minus[0]))
+            radius_ok = (
+                abs(dt_plus - target) <= radius_rel_tol * max(r, 1e-6)
+                and abs(dt_minus - target) <= radius_rel_tol * max(r, 1e-6)
+            )
+
+            total += 1
+            if align_score >= grad_alignment_cos and radius_ok:
+                valid += 1
+
+        if total == 0:
+            return False
+        return (valid / float(total)) >= float(min_valid_fraction)
 
     @staticmethod
     def _polyline_normals(

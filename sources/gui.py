@@ -17,6 +17,7 @@ logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
 
 from .fiber_analyzer import FiberAnalyzer
+from .utils import ensure_rgb_u8, to_uint8_for_view
 
 # ------------------- Paths -------------------
 
@@ -26,33 +27,6 @@ DEFAULT_UI_PATH = os.path.join(PROJECT_ROOT, "resources", "fiber_tool.ui")
 DEFAULT_CKPT_PATH = os.path.join(PROJECT_ROOT, "checkpoints", "fiber_2000_epoch.pt")
 
 # ------------------- Image helpers -------------------
-
-def to_uint8_for_view(img: np.ndarray | None) -> np.ndarray | None:
-    if img is None:
-        return None
-    arr = img.astype(np.float32, copy=False)
-    if np.isnan(arr).any() or np.isinf(arr).any():
-        arr = np.nan_to_num(arr, nan=0.0, posinf=0.0, neginf=0.0)
-    amin, amax = float(arr.min()), float(arr.max())
-    if amax <= amin:
-        return np.zeros(arr.shape, dtype=np.uint8)
-    arr = (arr - amin) / (amax - amin)
-    return (arr * 255.0).clip(0, 255).astype(np.uint8)
-
-def ensure_rgb_u8(img: np.ndarray | None) -> np.ndarray | None:
-    if img is None:
-        return None
-    if img.ndim == 2:
-        u8 = to_uint8_for_view(img)
-        return np.stack([u8, u8, u8], axis=-1)
-    if img.ndim == 3:
-        if img.shape[2] == 1:
-            ch = to_uint8_for_view(img[..., 0])
-            return np.stack([ch, ch, ch], axis=-1)
-        if img.dtype != np.uint8:
-            return to_uint8_for_view(img)[..., :3]
-        return img[..., :3]
-    return ensure_rgb_u8(to_uint8_for_view(img))
 
 def labels_to_color(labels: np.ndarray) -> np.ndarray:
     if labels is None:
@@ -122,8 +96,6 @@ class MainWindow(QMainWindow):
         self._viz_points = None
         self._angles_deg = None
         self._thickness_units = None
-        self.constant_segments_xy = None
-        self.normals_xy = None
         self._porosity = None
         self._pore_diams_units = None
         self._labels_rgb_cache: tuple[int | None, np.ndarray | None] = (None, None)
@@ -426,13 +398,15 @@ class MainWindow(QMainWindow):
         self.gray_u8 = self.analyzer.get_dt_u8()
         self.gray_img = self.analyzer.get_dt_norm()
         self.lapl_img = self.analyzer.get_laplacian()
-        self.constant_segments_xy = self.analyzer.get_centerline_segments()
-        self.normals_xy = self.analyzer.get_centerline_normals()
         self._centerlines_dt = self.analyzer.get_centerlines_image()
 
         thr_u8 = int(self.sp_segm_threshold.value())
+        radius_thresh_px: float | None = float(self.sp_segm_threshold.value()) if self.high_conf_fib else None
         try:
-            self.labels_img = self.analyzer.segment(thr_u8=thr_u8)
+            self.labels_img = self.analyzer.segment(
+                thr_u8=thr_u8,
+                radius_thresh_px=radius_thresh_px,
+            )
         except Exception as e:
             QMessageBox.critical(self, "Segmentation failed", str(e))
             logger.error("Watershed failed: %s", e)
@@ -495,7 +469,6 @@ class MainWindow(QMainWindow):
         hist_centers, viz_points, angles_deg = self.analyzer.analyze(
             spacing_px=spacing_px
         )
-        self.constant_segments_xy = self.analyzer.get_centerline_segments()
         self._viz_points = viz_points
 
         # Build sample table and stats (keep in GUI)
@@ -820,8 +793,6 @@ class MainWindow(QMainWindow):
         self.labels_img = None
         self.overlay_img = None
         self._centerlines_dt = None
-        self.constant_segments_xy = None
-        self.normals_xy = None
 
         # ---- analysis / debug ----
         self.samples_table = None
