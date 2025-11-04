@@ -1,10 +1,11 @@
 # app/ui_main.py
 import os
+import math
 import numpy as np
 import cv2
 
 from PyQt6 import QtGui, QtWidgets
-from PyQt6.QtCore import Qt, QEvent, QTimer
+from PyQt6.QtCore import Qt, QEvent, QTimer, QPoint
 from PyQt6.QtWidgets import QMainWindow, QFileDialog, QMessageBox, QGraphicsScene, QGraphicsPixmapItem
 from PyQt6.uic import loadUi
 
@@ -108,6 +109,10 @@ class MainWindow(QMainWindow):
         self._pore_diams_units = None
         self._labels_rgb_cache: tuple[int | None, np.ndarray | None] = (None, None)
         self.current_image_name: str | None = None
+        self._scalebar_pending: bool = False
+        self._scalebar_points: list[tuple[float, float]] = []
+        self._scalebar_length_value: float = 100.0
+        self._scalebar_unit: str = "um"
 
         self.high_conf_fib = False
         self.chb_high_conf.setChecked(False)
@@ -121,6 +126,8 @@ class MainWindow(QMainWindow):
         self.btn_segment.clicked.connect(self.segment)
         self.btn_analyze_fibers.clicked.connect(self.analyze_fibers)
         self.btn_save_csv.clicked.connect(self.save_measurements)
+        if hasattr(self, "btn_set_scalebar"):
+            self.btn_set_scalebar.clicked.connect(self._on_set_scalebar_clicked)
 
         # Remove connection of radiobutton signals and instead hook up the combobox change
         if hasattr(self, "cb_view"):
@@ -259,6 +266,10 @@ class MainWindow(QMainWindow):
     def eventFilter(self, obj, event):
         if obj is self.graphicsView.viewport():
             et = event.type()
+            if self._scalebar_pending and et == QEvent.Type.MouseButtonPress:
+                if isinstance(event, QtGui.QMouseEvent):
+                    self._handle_scalebar_mouse(event)
+                    return True
             if et in (QEvent.Type.DragEnter, QEvent.Type.DragMove):
                 md = event.mimeData()
                 if md and md.hasUrls() and self._urls_are_images(md.urls()):
@@ -384,6 +395,127 @@ class MainWindow(QMainWindow):
         self.working_dir = dest_dir
         QtWidgets.QMessageBox.information(self, "Saved", f"Saved CSV(s) to:\n{dest_dir}")
 
+
+    # ------------------- Scalebar -------------------
+
+    def _on_set_scalebar_clicked(self):
+        if self.orig_img is None:
+            QtWidgets.QMessageBox.information(self, "No image", "Load an image before setting the scalebar.")
+            return
+
+        self._cancel_scalebar_selection()
+
+        dialog = QtWidgets.QDialog(self)
+        dialog.setWindowTitle("Set Scalebar Length")
+        form = QtWidgets.QFormLayout(dialog)
+
+        spin = QtWidgets.QDoubleSpinBox(dialog)
+        spin.setDecimals(2)
+        spin.setMinimum(1e-6)
+        spin.setMaximum(1e9)
+        spin.setValue(float(self._scalebar_length_value or 100.0))
+        form.addRow("Length", spin)
+
+        combo = QtWidgets.QComboBox(dialog)
+        units = ["nm", "um", "mm", "m"]
+        combo.addItems(units)
+        if self._scalebar_unit in units:
+            combo.setCurrentIndex(units.index(self._scalebar_unit))
+        else:
+            combo.setCurrentText(self._scalebar_unit)
+        form.addRow("Units", combo)
+
+        buttons = QtWidgets.QDialogButtonBox(
+            QtWidgets.QDialogButtonBox.StandardButton.Ok
+            | QtWidgets.QDialogButtonBox.StandardButton.Cancel,
+            parent=dialog,
+        )
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        form.addRow(buttons)
+
+        if dialog.exec() != QtWidgets.QDialog.DialogCode.Accepted:
+            return
+
+        length_value = float(spin.value())
+        if length_value <= 0:
+            QtWidgets.QMessageBox.warning(self, "Invalid length", "Scalebar length must be positive.")
+            return
+
+        self._scalebar_length_value = length_value
+        self._scalebar_unit = combo.currentText()
+
+        self._scalebar_points = []
+        self._scalebar_pending = True
+        self.graphicsView.viewport().setCursor(Qt.CursorShape.CrossCursor)
+        QtWidgets.QMessageBox.information(
+            self,
+            "Select Scalebar",
+            "Click the two endpoints of the scalebar on the image. Right-click to cancel.",
+        )
+
+    def _handle_scalebar_mouse(self, event: QtGui.QMouseEvent):
+        if event.button() == Qt.MouseButton.RightButton:
+            self._cancel_scalebar_selection()
+            return
+        if event.button() != Qt.MouseButton.LeftButton:
+            return
+        if self._pixitem.pixmap().isNull():
+            return
+
+        pos = event.position() if hasattr(event, "position") else event.localPos()
+        scene_pos = self.graphicsView.mapToScene(QPoint(int(round(pos.x())), int(round(pos.y()))))
+        x = float(scene_pos.x())
+        y = float(scene_pos.y())
+
+        pix = self._pixitem.pixmap()
+        width = pix.width()
+        height = pix.height()
+        if x < 0 or y < 0 or x >= width or y >= height:
+            return
+
+        self._scalebar_points.append((x, y))
+        if len(self._scalebar_points) == 2:
+            self._finalize_scalebar_selection()
+
+    def _finalize_scalebar_selection(self):
+        if len(self._scalebar_points) < 2:
+            return
+        (x0, y0), (x1, y1) = self._scalebar_points[:2]
+        pixel_length = math.hypot(x1 - x0, y1 - y0)
+        if pixel_length <= 0:
+            QtWidgets.QMessageBox.warning(self, "Invalid selection", "Select two distinct points for the scalebar.")
+            self._cancel_scalebar_selection()
+            return
+
+        pixel_size = self._scalebar_length_value / pixel_length
+        self.le_pixelsize.setText(f"{pixel_size:.6g}")
+        if hasattr(self, "cb_units"):
+            try:
+                index = self.cb_units.findText(self._scalebar_unit)
+            except AttributeError:
+                index = -1
+            if index is not None and index >= 0:
+                self.cb_units.setCurrentIndex(index)
+            else:
+                try:
+                    self.cb_units.setCurrentText(self._scalebar_unit)
+                except AttributeError:
+                    pass
+
+        QtWidgets.QMessageBox.information(
+            self,
+            "Scalebar Set",
+            f"Pixel size set to {pixel_size:.6g} {self._scalebar_unit} per pixel.",
+        )
+        self._cancel_scalebar_selection()
+
+    def _cancel_scalebar_selection(self, reset_cursor: bool = True, clear_points: bool = True):
+        self._scalebar_pending = False
+        if clear_points:
+            self._scalebar_points = []
+        if reset_cursor and hasattr(self, "graphicsView"):
+            self.graphicsView.viewport().unsetCursor()
 
     # ------------------- Segmentation -------------------
 
@@ -828,6 +960,10 @@ class MainWindow(QMainWindow):
         if not preserve_original:
             self.orig_img = None
             self.current_image_name = None
+        self._scalebar_pending = False
+        self._scalebar_points = []
+        if hasattr(self, "graphicsView"):
+            self.graphicsView.viewport().unsetCursor()
         self.dt = None
         self.gray_img = None
         self.gray_u8 = None

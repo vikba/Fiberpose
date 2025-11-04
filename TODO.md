@@ -31,7 +31,7 @@
 - [x] Fix x,y order for arrow drawing
 - [ ] Harmonize everything to x,y order or add _xy postfix
 - [x] Arrows work incorrectly again
-- [ ] Save resulting images with original filename
+- [x] Save resulting images with original filename
 - [ ] Check algorithm of fiber porosity
 - [x] Dt pore image is not updated
 - [x] Don't predict dt, if it was already predicted for that image during change of segmetnation method
