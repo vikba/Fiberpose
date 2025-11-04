@@ -25,14 +25,16 @@
 - [ ] Add logbar
 - [ ] Use lighweight alternative for torch for inference only
 - [ ] Use configuratin file
+- [ ] Create class FiberSegment
 
 ## 🐞 Bugs
 - [x] Fix x,y order for arrow drawing
 - [ ] Harmonize everything to x,y order or add _xy postfix
-- [ ] Arrows work incorrectly again
+- [x] Arrows work incorrectly again
 - [ ] Save resulting images with original filename
 - [ ] Check algorithm of fiber porosity
 - [x] Dt pore image is not updated
+- [x] Don't predict dt, if it was already predicted for that image during change of segmetnation method
 
 ## 🧹 Refactoring / Cleanup
 - [x] Improve architecture so each class owns only specialized functions (eg FiberAnalyzer own all image processing)

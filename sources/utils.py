@@ -1,5 +1,34 @@
 import numpy as np
 
+# ------------- image helpers -------------
+def to_uint8_for_view(img: np.ndarray | None) -> np.ndarray | None:
+    if img is None:
+        return None
+    arr = img.astype(np.float32, copy=False)
+    if np.isnan(arr).any() or np.isinf(arr).any():
+        arr = np.nan_to_num(arr, nan=0.0, posinf=0.0, neginf=0.0)
+    amin, amax = float(arr.min()), float(arr.max())
+    if amax <= amin:
+        return np.zeros(arr.shape, dtype=np.uint8)
+    arr = (arr - amin) / (amax - amin)
+    return (arr * 255.0).clip(0, 255).astype(np.uint8)
+
+
+def ensure_rgb_u8(img: np.ndarray | None) -> np.ndarray | None:
+    if img is None:
+        return None
+    if img.ndim == 2:
+        u8 = to_uint8_for_view(img)
+        return np.stack([u8, u8, u8], axis=-1)
+    if img.ndim == 3:
+        if img.shape[2] == 1:
+            ch = to_uint8_for_view(img[..., 0])
+            return np.stack([ch, ch, ch], axis=-1)
+        if img.dtype != np.uint8:
+            return to_uint8_for_view(img)[..., :3]
+        return img[..., :3]
+    return ensure_rgb_u8(to_uint8_for_view(img))
+
 # ------------- core math helpers -------------
 def _normalize(v, eps=1e-12):
     n = np.linalg.norm(v)

@@ -36,14 +36,22 @@ def labels_to_color(labels: np.ndarray) -> np.ndarray:
     out = np.zeros((h, w, 3), dtype=np.uint8)
     if labels.size == 0:
         return out
-    unique_vals = np.unique(labels)
-    for v in unique_vals:
-        if v == 0:
-            continue
-        r = (v * 37) % 256
-        g = (v * 57) % 256
-        b = (v * 97) % 256
-        out[labels == v] = (r, g, b)
+    unique_vals = [v for v in np.unique(labels) if v != 0]
+    if not unique_vals:
+        return out
+    rng = np.random.default_rng()
+    total_colors = 256 ** 3
+    colors_flat = rng.choice(total_colors, size=len(unique_vals), replace=False)
+    colors = np.stack(
+        (
+            (colors_flat >> 16) & 0xFF,
+            (colors_flat >> 8) & 0xFF,
+            colors_flat & 0xFF,
+        ),
+        axis=1,
+    ).astype(np.uint8)
+    for idx, v in enumerate(unique_vals):
+        out[labels == v] = colors[idx]
     return out
 
 # ------------------- MainWindow -------------------
@@ -377,28 +385,29 @@ class MainWindow(QMainWindow):
             logger.error("Segmentation failed: analyzer not initialized.")
             return
 
-        self._reset_internal_state(preserve_original=True)
+        #Dt not predicted, predict dt
+        if self.analyzer.dt_predicted() is False:
 
-        logger.info("Starting segmentation process.")
-        self.progress_bar.setValue(0)
+            logger.info("Starting Distance transform prediction.")
+            self.progress_bar.setValue(0)
 
-        try:
-            dt, gx, gy = self.analyzer.predict_dt(
-                image=self.orig_img,
-                max_angle_deg=float(self.sp_max_cent_angle.value()),
-            )
-        except Exception as e:
-            QMessageBox.critical(self, "Prediction failed", str(e))
-            logger.error("Segmentation failed: %s", e)
-            return
+            try:
+                dt, gx, gy = self.analyzer.predict_dt(
+                    image=self.orig_img,
+                    max_angle_deg=float(self.sp_max_cent_angle.value()),
+                )
+            except Exception as e:
+                QMessageBox.critical(self, "Prediction failed", str(e))
+                logger.error("Segmentation failed: %s", e)
+                return
 
-        self.dt = np.asarray(dt, dtype=np.float32, copy=False)
-        self.gx = np.asarray(gx, dtype=np.float32, copy=False)
-        self.gy = np.asarray(gy, dtype=np.float32, copy=False)
-        self.gray_u8 = self.analyzer.get_dt_u8()
-        self.gray_img = self.analyzer.get_dt_norm()
-        self.lapl_img = self.analyzer.get_laplacian()
-        self._centerlines_dt = self.analyzer.get_centerlines_image()
+            self.dt = np.asarray(dt, dtype=np.float32, copy=False)
+            self.gx = np.asarray(gx, dtype=np.float32, copy=False)
+            self.gy = np.asarray(gy, dtype=np.float32, copy=False)
+            self.gray_u8 = self.analyzer.get_dt_u8()
+            self.gray_img = self.analyzer.get_dt_norm()
+            self.lapl_img = self.analyzer.get_laplacian()
+            self._centerlines_dt = self.analyzer.get_centerlines_image()
 
         thr_u8 = int(self.sp_segm_threshold.value())
         radius_thresh_px: float | None = float(self.sp_segm_threshold.value()) if self.high_conf_fib else None
@@ -779,6 +788,8 @@ class MainWindow(QMainWindow):
 
     def _reset_internal_state(self, preserve_original: bool = False):
         """Clear all derived data, images, analysis artifacts, and charts."""
+        
+        self.analyzer.reset_prediction_state()
         # ---- raw / processing buffers ----
         if not preserve_original:
             self.orig_img = None

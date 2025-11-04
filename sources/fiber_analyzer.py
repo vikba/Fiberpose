@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import os
+from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
 import cv2
@@ -26,6 +27,14 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.dirname(HERE)
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class FiberSegment:
+    segment_id: int
+    source_line_id: int
+    points_xy: np.ndarray
+    radii: np.ndarray
 
 
 class FiberAnalyzer:
@@ -75,26 +84,33 @@ class FiberAnalyzer:
 
         self._centerline_kwargs: Dict[str, Any] = self._default_centerline_kwargs()
         self._last_max_angle: float = 0.0
-        self._constant_segments_info: Optional[List[Dict[str, np.ndarray]]] = None
+        self._constant_segments_info: Optional[List[Dict[str, Any]]] = None
+        self._segment_counter: int = 0
 
-        self._reset_prediction_state()
+        self.reset_prediction_state()
 
     # ------------------------------------------------------------------ #
     # Internal helpers / state
 
-    def _reset_prediction_state(self):
+    def dt_predicted(self):
+        if self._dt is not None:
+            return True
+        return False
+
+    def reset_prediction_state(self):
         self._dt: Optional[np.ndarray] = None
         self._dt_u8: Optional[np.ndarray] = None
         self._dt_norm: Optional[np.ndarray] = None
         self._gx: Optional[np.ndarray] = None
         self._gy: Optional[np.ndarray] = None
         self._laplacian: Optional[np.ndarray] = None
-        self._constant_segments: Optional[List[np.ndarray]] = None
+        self._constant_segments: Optional[List[FiberSegment]] = None
         self._normals_xy: Optional[List[np.ndarray]] = None
         self._centerlines_rgb: Optional[np.ndarray] = None
         self._markers: Optional[np.ndarray] = None
         self._labels: Optional[np.ndarray] = None
         self._constant_segments_info = None
+        self._segment_counter = 0
 
     @staticmethod
     def _default_centerline_kwargs() -> Dict[str, Any]:
@@ -201,7 +217,7 @@ class FiberAnalyzer:
         if image is None:
             raise ValueError("Input image is None.")
 
-        self._reset_prediction_state()
+        self.reset_prediction_state()
 
         dt = self._run_model(image)
         dt_smooth = gaussian_filter(dt, sigma=float(smooth_sigma))
@@ -263,51 +279,78 @@ class FiberAnalyzer:
             overlap_option=overlapOption,
         )
 
-        processed_segments: List[np.ndarray] = []
-        for contour in contours:
+        processed_segments: List[Tuple[np.ndarray, int]] = []
+        for source_idx, contour in enumerate(contours):
             segs_xy = self._split_and_trim_contour(contour, junction_points, trim=trim, tol=tol)
             if segs_xy:
-                processed_segments.extend(segs_xy)
+                processed_segments.extend((seg, source_idx) for seg in segs_xy)
             else:
                 pts_xy = contour.reshape(-1, 2)
                 if len(pts_xy) > 2 * trim:
                     trimmed_xy = pts_xy[trim:-trim].reshape(-1, 1, 2)
-                    processed_segments.append(trimmed_xy)
+                    processed_segments.append((trimmed_xy, source_idx))
 
+        fiber_segments: List[FiberSegment] = []
         constant_segments_xy: List[np.ndarray] = []
-        for seg_xy in processed_segments:
-            constant_segments_xy.extend(
-                self._sliding_window_filter(
-                    seg_xy,
-                    image=self._dt_u8,
-                    dt=self._dt,
-                    grad_x=self._gx,
-                    grad_y=self._gy,
-                    win_len=win_len,
-                    std_thresh=std_thresh,
-                    max_angle=max_angle_deg,
-                    enforce_high_conf=self._high_conf_fib,
-                )
+        for seg_xy, source_id in processed_segments:
+            filtered_windows = self._sliding_window_filter(
+                seg_xy,
+                image=self._dt_u8,
+                dt=self._dt,
+                grad_x=self._gx,
+                grad_y=self._gy,
+                win_len=win_len,
+                std_thresh=std_thresh,
+                max_angle=max_angle_deg,
+                enforce_high_conf=self._high_conf_fib,
             )
+            for window_xy in filtered_windows:
+                pts_xy = window_xy.reshape(-1, 2).astype(np.float32)
+                if pts_xy.size == 0:
+                    continue
+                radii = np.array(
+                    [_bilinear(self._dt, float(p_xy[1]), float(p_xy[0])) for p_xy in pts_xy],
+                    dtype=np.float32,
+                )
+                self._segment_counter += 1
+                fiber_segments.append(
+                    FiberSegment(
+                        segment_id=self._segment_counter,
+                        source_line_id=source_id,
+                        points_xy=pts_xy,
+                        radii=radii,
+                    )
+                )
+                constant_segments_xy.append(pts_xy.reshape(-1, 1, 2))
 
-        normals_xy = [self._polyline_normals(seg_xy) for seg_xy in constant_segments_xy]
+        normals_xy = [self._polyline_normals(seg.points_xy) for seg in fiber_segments]
 
         base_dt = to_uint8_for_view(self._dt_u8)
         centerlines_rgb = cv2.cvtColor(base_dt, cv2.COLOR_GRAY2BGR)
-        for seg_xy in constant_segments_xy:
-            cv2.polylines(centerlines_rgb, [seg_xy.astype(np.int32)], isClosed=False,
+        for seg in fiber_segments:
+            seg_draw = seg.points_xy.reshape(-1, 1, 2)
+            cv2.polylines(centerlines_rgb, [seg_draw.astype(np.int32)], isClosed=False,
                           color=(255, 0, 0), thickness=1, lineType=cv2.LINE_AA)
 
         centerlines_binary = np.zeros(self._dt_u8.shape, dtype=np.uint8)
-        for seg_xy in constant_segments_xy:
-            cv2.polylines(centerlines_binary, [seg_xy.astype(np.int32)], isClosed=False,
+        for seg in fiber_segments:
+            seg_draw = seg.points_xy.reshape(-1, 1, 2)
+            cv2.polylines(centerlines_binary, [seg_draw.astype(np.int32)], isClosed=False,
                           color=255, thickness=2, lineType=cv2.LINE_8)
         _, centerlines_binary = cv2.threshold(centerlines_binary, 128, 255, cv2.THRESH_BINARY)
         markers = cc_label(centerlines_binary, connectivity=2).astype(np.int32)
 
         # cache results
-        self._constant_segments = constant_segments_xy
-        self._constant_segments_info = self._build_segment_info(constant_segments_xy)
+        self._constant_segments = fiber_segments
+        self._constant_segments_info = [
+            {
+                "segment_id": seg.segment_id,
+                "source_line_id": seg.source_line_id,
+                "points_xy": seg.points_xy,
+                "radii": seg.radii,
+            }
+            for seg in fiber_segments
+        ]
         self._normals_xy = normals_xy
         self._centerlines_rgb = centerlines_rgb
         self._markers = markers
@@ -374,7 +417,7 @@ class FiberAnalyzer:
         if not self._constant_segments_info:
             return np.zeros_like(self._dt_u8, dtype=np.uint16)
 
-        mask = np.zeros(self._dt_u8.shape, dtype=np.uint8)
+        mask = np.zeros(self._dt_u8.shape, dtype=np.int32)
         radius_thresh_px = float(radius_thresh_px)
         extra = float(dilate_extra_px)
 
@@ -398,17 +441,28 @@ class FiberAnalyzer:
                     run_start = idx
                 elif (not keep) and (run_start is not None):
                     if idx - run_start >= max(1, int(min_run_points)):
-                        self._draw_centerline_run(mask, pts_xy[run_start:idx], radii[run_start:idx], extra)
+                        self._draw_centerline_run(
+                            mask,
+                            pts_xy[run_start:idx],
+                            radii[run_start:idx],
+                            extra,
+                            value=int(info.get("segment_id", 0)),
+                        )
                     run_start = None
             if run_start is not None:
                 if len(pts_xy) - run_start >= max(1, int(min_run_points)):
-                    self._draw_centerline_run(mask, pts_xy[run_start:], radii[run_start:], extra)
+                    self._draw_centerline_run(
+                        mask,
+                        pts_xy[run_start:],
+                        radii[run_start:],
+                        extra,
+                        value=int(info.get("segment_id", 0)),
+                    )
 
         if not mask.any():
-            return np.zeros_like(self._dt_u8, dtype=np.uint16)
+            return np.zeros_like(self._dt_u8, dtype=np.uint32)
 
-        labeled = cc_label(mask > 0, connectivity=2).astype(np.uint16)
-        return labeled
+        return mask.astype(np.uint32)
 
     @staticmethod
     def _draw_centerline_run(
@@ -416,6 +470,7 @@ class FiberAnalyzer:
         pts_xy: np.ndarray,
         radii: np.ndarray,
         extra_radius_px: float = 0.0,
+        value: int = 255,
     ) -> None:
         """
         Paint a contiguous run of centerline samples onto a binary mask using their DT radii.
@@ -434,7 +489,7 @@ class FiberAnalyzer:
             if cx < 0 or cy < 0 or cx >= w or cy >= h:
                 continue
             radius_px = max(1, int(round(r_eff)))
-            cv2.circle(mask, (cx, cy), radius_px, 255, thickness=-1)
+            cv2.circle(mask, (cx, cy), radius_px, int(value), thickness=-1)
 
     # ------------------------------------------------------------------ #
     # Accessors
@@ -458,7 +513,9 @@ class FiberAnalyzer:
         return self._centerlines_rgb
 
     def get_centerline_segments(self) -> List[np.ndarray]:
-        return self._constant_segments or []
+        if not self._constant_segments:
+            return []
+        return [seg.points_xy.reshape(-1, 1, 2) for seg in self._constant_segments]
 
     def get_centerline_normals(self) -> List[np.ndarray]:
         return self._normals_xy or []
@@ -597,7 +654,12 @@ class FiberAnalyzer:
         if self._dt is None or self._gx is None or self._gy is None:
             return [], [], []
 
-        constant_segments_xy = constant_segments if constant_segments is not None else (self._constant_segments or [])
+        if constant_segments is not None:
+            constant_segments_xy = constant_segments
+        elif self._constant_segments:
+            constant_segments_xy = [seg.points_xy.reshape(-1, 1, 2) for seg in self._constant_segments]
+        else:
+            constant_segments_xy = []
         dt = self._dt
         gx = self._gx
         gy = self._gy
@@ -699,7 +761,7 @@ class FiberAnalyzer:
         max_angle: float = 20.0,
         enforce_high_conf: bool = False,
         grad_alignment_cos: float = 0.95,
-        radius_rel_tol: float = 0.25,
+        radius_rel_tol: float = 0.1,
         min_valid_fraction: float = 0.7,
     ) -> List[np.ndarray]:
         if enforce_high_conf and (dt is None or grad_x is None or grad_y is None):
@@ -800,7 +862,7 @@ class FiberAnalyzer:
         grad_x: np.ndarray,
         grad_y: np.ndarray,
         grad_alignment_cos: float = 0.95,
-        radius_rel_tol: float = 0.25,
+        radius_rel_tol: float = 0.1,
         min_valid_fraction: float = 0.7,
     ) -> bool:
         """

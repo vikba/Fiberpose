@@ -83,7 +83,6 @@ class FiberposeModel:
             y, _ = self.model(x)
 
         y = y.detach().cpu().numpy()
-        print(f"Predict output shape: {y.shape}")
         dt = y[0, 2, ...].astype(np.float32)
         return dt
 
