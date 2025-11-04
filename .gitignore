@@ -1,0 +1,6 @@
+sources/__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.DS_Store
+resources/.DS_Store
