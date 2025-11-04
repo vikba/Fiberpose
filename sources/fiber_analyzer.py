@@ -761,7 +761,7 @@ class FiberAnalyzer:
         max_angle: float = 20.0,
         enforce_high_conf: bool = False,
         grad_alignment_cos: float = 0.95,
-        radius_rel_tol: float = 0.1,
+        radius_rel_tol: float = 0.25,
         min_valid_fraction: float = 0.7,
     ) -> List[np.ndarray]:
         if enforce_high_conf and (dt is None or grad_x is None or grad_y is None):

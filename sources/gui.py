@@ -107,6 +107,7 @@ class MainWindow(QMainWindow):
         self._porosity = None
         self._pore_diams_units = None
         self._labels_rgb_cache: tuple[int | None, np.ndarray | None] = (None, None)
+        self.current_image_name: str | None = None
 
         self.high_conf_fib = False
         self.chb_high_conf.setChecked(False)
@@ -310,20 +311,25 @@ class MainWindow(QMainWindow):
             QtWidgets.QMessageBox.warning(self, "Unsupported", "Original must be 2D or 3D (H×W×C).")
             return
         self.orig_img = img
+        self.current_image_name = os.path.splitext(os.path.basename(path))[0]
         self.refresh_view()
 
     def save_predictions(self):
         if self.gray_u8 is None and self.labels_img is None and self.overlay_img is None:
             QtWidgets.QMessageBox.information(self, "Nothing to save", "Run segmentation first.")
             return
+        default_base = (self.current_image_name or "fiberpose") + "_results.png"
         base, _ = QtWidgets.QFileDialog.getSaveFileName(
-            self, "Save predictions (choose base name)",
-            os.path.join(self.working_dir, "fiberpose_predictions.png"),
-            "PNG (*.png);;TIFF (*.tif *.tiff)"
+            self,
+            "Save predictions (choose base name)",
+            os.path.join(self.working_dir, default_base),
+            "PNG (*.png);;TIFF (*.tif *.tiff)",
         )
         if not base:
             return
-        root, _ = os.path.splitext(base)
+        dest_dir = os.path.dirname(base)
+        root_name = self.current_image_name or os.path.splitext(os.path.basename(base))[0]
+        root = os.path.join(dest_dir, root_name)
         logger.info(f"Saving predictions with base name: {root}")
 
         try:
@@ -335,8 +341,8 @@ class MainWindow(QMainWindow):
                 iio.imwrite(root + "_overlay.png", self.overlay_img.astype(np.uint8))
             if self.debug_overlay is not None:
                 iio.imwrite(root + "_debug.png", self.debug_overlay.astype(np.uint8))
-            self.working_dir = os.path.dirname(base)
-            QtWidgets.QMessageBox.information(self, "Saved", f"Saved to:\n{os.path.dirname(base)}")
+            self.working_dir = dest_dir
+            QtWidgets.QMessageBox.information(self, "Saved", f"Saved to:\n{dest_dir}")
         except Exception as e:
             QtWidgets.QMessageBox.critical(self, "Error", f"Failed to save:\n{e}")
 
@@ -344,33 +350,39 @@ class MainWindow(QMainWindow):
         if self.samples_table is None or len(self.samples_table) == 0:
             QtWidgets.QMessageBox.information(self, "Nothing to save", "Run Analyze fibers first.")
             return
+        default_csv = (self.current_image_name or "fiberpose") + "_measurements.csv"
         base, _ = QtWidgets.QFileDialog.getSaveFileName(
-            self, "Save measurements (CSV)",
-            os.path.join(self.working_dir, "fiberpose_measurements.csv"),
-            "CSV (*.csv)"
+            self,
+            "Save measurements (CSV)",
+            os.path.join(self.working_dir, default_csv),
+            "CSV (*.csv)",
         )
         if not base:
             return
-        root, _ = os.path.splitext(base)
+        dest_dir = os.path.dirname(base)
+        root_name = self.current_image_name or os.path.splitext(os.path.basename(base))[0]
+        root = os.path.join(dest_dir, root_name)
         logger.info(f"Saving measurements to base: {root}")
 
         try:
             with open(root + "_samples.csv", "w", newline="") as f:
                 # Write header with both thickness in pixels and in units.
-                f.write("x,y,thickness_px,thickness_units,fiber_id\n")
+                f.write("image_name,x,y,thickness_px,thickness_units,fiber_id\n")
                 # Check if a pixel size was provided (if not, leave thickness_units blank).
                 units_set = bool(self.le_pixelsize.text().strip())
+                image_name = self.current_image_name or ""
                 for i, row in enumerate(self.samples_table):
                     x, y, t = row[:3]
                     if units_set and self._thickness_units is not None and len(self._thickness_units) > i:
                         units_value = f"{self._thickness_units[i]:.6f}"
                     else:
                         units_value = ""
-                    f.write(f"{int(x)},{int(y)},{float(t):.6f},{units_value},0\n")
+                    f.write(f"{image_name},{int(x)},{int(y)},{float(t):.6f},{units_value},0\n")
         except Exception as e:
              QtWidgets.QMessageBox.critical(self, "Error", f"Failed to save CSVs:\n{e}")
              return
-        QtWidgets.QMessageBox.information(self, "Saved", f"Saved CSV(s) to:\n{os.path.dirname(base)}")
+        self.working_dir = dest_dir
+        QtWidgets.QMessageBox.information(self, "Saved", f"Saved CSV(s) to:\n{dest_dir}")
 
 
     # ------------------- Segmentation -------------------
@@ -385,29 +397,51 @@ class MainWindow(QMainWindow):
             logger.error("Segmentation failed: analyzer not initialized.")
             return
 
-        #Dt not predicted, predict dt
-        if self.analyzer.dt_predicted() is False:
+        max_angle = float(self.sp_max_cent_angle.value())
 
+        if not self.analyzer.dt_predicted():
             logger.info("Starting Distance transform prediction.")
             self.progress_bar.setValue(0)
 
             try:
-                dt, gx, gy = self.analyzer.predict_dt(
+                self.analyzer.predict_dt(
                     image=self.orig_img,
-                    max_angle_deg=float(self.sp_max_cent_angle.value()),
+                    max_angle_deg=max_angle,
                 )
             except Exception as e:
                 QMessageBox.critical(self, "Prediction failed", str(e))
                 logger.error("Segmentation failed: %s", e)
                 return
 
-            self.dt = np.asarray(dt, dtype=np.float32, copy=False)
-            self.gx = np.asarray(gx, dtype=np.float32, copy=False)
-            self.gy = np.asarray(gy, dtype=np.float32, copy=False)
-            self.gray_u8 = self.analyzer.get_dt_u8()
-            self.gray_img = self.analyzer.get_dt_norm()
-            self.lapl_img = self.analyzer.get_laplacian()
-            self._centerlines_dt = self.analyzer.get_centerlines_image()
+        try:
+            params = getattr(self.analyzer, "_centerline_kwargs", None)
+            if params:
+                params = dict(params)
+            else:
+                params = FiberAnalyzer._default_centerline_kwargs()
+            self.analyzer.compute_centerlines(
+                max_angle_deg=max_angle,
+                **params,
+            )
+        except Exception as e:
+            QMessageBox.critical(self, "Centerline computation failed", str(e))
+            logger.error("Centerline computation failed: %s", e)
+            return
+
+        dt = self.analyzer.get_dt()
+        gx, gy = self.analyzer.get_gradients()
+        if dt is None or gx is None or gy is None:
+            QMessageBox.critical(self, "Segmentation failed", "Distance transform or gradients unavailable.")
+            logger.error("Segmentation failed: DT or gradients unavailable.")
+            return
+
+        self.dt = np.asarray(dt, dtype=np.float32, copy=False)
+        self.gx = np.asarray(gx, dtype=np.float32, copy=False)
+        self.gy = np.asarray(gy, dtype=np.float32, copy=False)
+        self.gray_u8 = self.analyzer.get_dt_u8()
+        self.gray_img = self.analyzer.get_dt_norm()
+        self.lapl_img = self.analyzer.get_laplacian()
+        self._centerlines_dt = self.analyzer.get_centerlines_image()
 
         thr_u8 = int(self.sp_segm_threshold.value())
         radius_thresh_px: float | None = float(self.sp_segm_threshold.value()) if self.high_conf_fib else None
@@ -793,6 +827,7 @@ class MainWindow(QMainWindow):
         # ---- raw / processing buffers ----
         if not preserve_original:
             self.orig_img = None
+            self.current_image_name = None
         self.dt = None
         self.gray_img = None
         self.gray_u8 = None

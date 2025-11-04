@@ -339,7 +339,7 @@
        <property name="geometry">
         <rect>
          <x>130</x>
-         <y>580</y>
+         <y>620</y>
          <width>101</width>
          <height>31</height>
         </rect>
@@ -571,7 +571,7 @@
        <property name="geometry">
         <rect>
          <x>10</x>
-         <y>640</y>
+         <y>660</y>
          <width>221</width>
          <height>101</height>
         </rect>
@@ -655,6 +655,42 @@
         <string>Views</string>
        </property>
       </widget>
+      <widget class="QPushButton" name="btn_plot_profile">
+       <property name="geometry">
+        <rect>
+         <x>10</x>
+         <y>620</y>
+         <width>101</width>
+         <height>31</height>
+        </rect>
+       </property>
+       <property name="font">
+        <font>
+         <pointsize>12</pointsize>
+        </font>
+       </property>
+       <property name="text">
+        <string>Plot Profile</string>
+       </property>
+      </widget>
+      <widget class="QPushButton" name="btn_set_scalebar">
+       <property name="geometry">
+        <rect>
+         <x>130</x>
+         <y>580</y>
+         <width>101</width>
+         <height>31</height>
+        </rect>
+       </property>
+       <property name="font">
+        <font>
+         <pointsize>12</pointsize>
+        </font>
+       </property>
+       <property name="text">
+        <string>Set scalebar</string>
+       </property>
+      </widget>
       <zorder>groupBox_segmentation</zorder>
       <zorder>btn_segment</zorder>
       <zorder>btn_analyze_fibers</zorder>
@@ -664,6 +700,8 @@
       <zorder>text_edit2</zorder>
       <zorder>cb_view</zorder>
       <zorder>label</zorder>
+      <zorder>btn_plot_profile</zorder>
+      <zorder>btn_set_scalebar</zorder>
      </widget>
     </item>
     <item>
