@@ -86,6 +86,13 @@ class FiberAnalyzer:
         self._last_max_angle: float = 0.0
         self._constant_segments_info: Optional[List[Dict[str, Any]]] = None
         self._segment_counter: int = 0
+        self._cluster_segments_enabled: bool = False
+        self._cluster_params: Dict[str, float] = {
+            "max_distance_px": 35.0,
+            "max_angle_deg": 45.0,
+            "angle_weight": 0.2,
+            "bridge_spacing_px": 2.0,
+        }
 
         self.reset_prediction_state()
 
@@ -104,12 +111,7 @@ class FiberAnalyzer:
         self._gx: Optional[np.ndarray] = None
         self._gy: Optional[np.ndarray] = None
         self._laplacian: Optional[np.ndarray] = None
-        self._constant_segments: Optional[List[FiberSegment]] = None
-        self._normals_xy: Optional[List[np.ndarray]] = None
-        self._centerlines_rgb: Optional[np.ndarray] = None
-        self._markers: Optional[np.ndarray] = None
-        self._labels: Optional[np.ndarray] = None
-        self._constant_segments_info = None
+        self._invalidate_centerline_cache(clear_labels=True)
         self._segment_counter = 0
 
     @staticmethod
@@ -131,9 +133,41 @@ class FiberAnalyzer:
             "std_thresh": 0.8,
         }
 
+    def _invalidate_centerline_cache(self, clear_labels: bool = False) -> None:
+        self._constant_segments = None
+        self._normals_xy = None
+        self._centerlines_rgb = None
+        self._markers = None
+        self._constant_segments_info = None
+        if clear_labels:
+            self._labels = None
+
     def set_high_conf_filter(self, high_conf_fib: bool):
         self._high_conf_fib = bool(high_conf_fib)
         # downstream calls recompute centerlines via predict_dt/compute_centerlines
+
+    def set_cluster_enabled(self, enabled: bool, params: Optional[Dict[str, Any]] = None):
+        enabled_flag = bool(enabled)
+        if params:
+            for key in ("max_distance_px", "max_angle_deg", "angle_weight", "bridge_spacing_px"):
+                if key in params and params[key] is not None:
+                    try:
+                        self._cluster_params[key] = float(params[key])
+                    except (TypeError, ValueError):
+                        logger.warning("Invalid clustering parameter %s=%s", key, params[key])
+        if enabled_flag == self._cluster_segments_enabled:
+            return
+        self._cluster_segments_enabled = enabled_flag
+        self._invalidate_centerline_cache()
+
+        if self._dt_u8 is None or not self._centerline_kwargs:
+            return
+
+        angle = self._last_max_angle if self._last_max_angle > 0 else 45.0
+        try:
+            self.compute_centerlines(max_angle_deg=angle, **self._centerline_kwargs)
+        except Exception as exc:
+            logger.warning("Failed to recompute centerlines after cluster toggle: %s", exc)
 
     def set_device(self, device: Any):
         if device == self.device:
@@ -291,7 +325,6 @@ class FiberAnalyzer:
                     processed_segments.append((trimmed_xy, source_idx))
 
         fiber_segments: List[FiberSegment] = []
-        constant_segments_xy: List[np.ndarray] = []
         for seg_xy, source_id in processed_segments:
             filtered_windows = self._sliding_window_filter(
                 seg_xy,
@@ -321,7 +354,15 @@ class FiberAnalyzer:
                         radii=radii,
                     )
                 )
-                constant_segments_xy.append(pts_xy.reshape(-1, 1, 2))
+
+        if self._cluster_segments_enabled and fiber_segments:
+            fiber_segments = self._cluster_fiber_segments(fiber_segments)
+
+        constant_segments_xy: List[np.ndarray] = [
+            seg.points_xy.reshape(-1, 1, 2) for seg in fiber_segments
+        ]
+
+        self._segment_counter = len(fiber_segments)
 
         normals_xy = [self._polyline_normals(seg.points_xy) for seg in fiber_segments]
 
@@ -358,6 +399,18 @@ class FiberAnalyzer:
         logger.info("Detected constant segments: %d", len(constant_segments_xy))
         return constant_segments_xy, normals_xy, centerlines_rgb, markers
 
+    def _sample_radii(self, pts_xy: np.ndarray) -> np.ndarray:
+        pts = np.asarray(pts_xy, dtype=np.float32).reshape(-1, 2)
+        if pts.size == 0:
+            return np.zeros(0, dtype=np.float32)
+        dt = self._dt
+        if dt is None:
+            return np.zeros(len(pts), dtype=np.float32)
+        radii = np.array([
+            _bilinear(dt, float(p[1]), float(p[0])) for p in pts
+        ], dtype=np.float32)
+        return radii
+
     def _build_segment_info(self, segments_xy: List[np.ndarray]) -> List[Dict[str, np.ndarray]]:
         info: List[Dict[str, np.ndarray]] = []
         if self._dt is None:
@@ -378,6 +431,204 @@ class FiberAnalyzer:
                 }
             )
         return info
+
+    def _cluster_fiber_segments(self, segments: List[FiberSegment]) -> List[FiberSegment]:
+        if len(segments) <= 1:
+            for idx, seg in enumerate(segments, start=1):
+                seg.segment_id = idx
+            return segments
+
+        params = dict(self._cluster_params)
+        max_dist = float(params.get("max_distance_px", 15.0))
+        max_angle = float(params.get("max_angle_deg", 45.0))
+        angle_weight = float(params.get("angle_weight", 0.2))
+        bridge_spacing = float(params.get("bridge_spacing_px", 2.0))
+
+        valid_segments: List[Tuple[FiberSegment, np.ndarray]] = []
+        skipped_short = 0
+        for seg in segments:
+            pts = np.asarray(seg.points_xy, dtype=np.float32)
+            if pts.shape[0] < 2:
+                skipped_short += 1
+            else:
+                valid_segments.append((seg, pts))
+
+        if not valid_segments:
+            if skipped_short:
+                logger.debug("Clustering skipped %d short segments (<2 points).", skipped_short)
+            return []
+
+        clusters: Dict[int, Dict[str, Any]] = {}
+        for seg, pts in valid_segments:
+            clusters[seg.segment_id] = {
+                "points": np.ascontiguousarray(pts.copy()),
+                "members": [int(seg.segment_id)],
+                "sources": [int(seg.source_line_id)],
+            }
+
+        def _orientation(points: np.ndarray) -> Dict[str, Dict[str, np.ndarray]]:
+            head_forward = self._endpoint_forward_vector(points, head=True)
+            tail_forward = self._endpoint_forward_vector(points, head=False)
+            return {
+                "head": {
+                    "point": points[0].astype(np.float32, copy=False),
+                    "forward": head_forward,
+                },
+                "tail": {
+                    "point": points[-1].astype(np.float32, copy=False),
+                    "forward": tail_forward,
+                },
+            }
+
+        def _connection_cost(data_a: Dict[str, Dict[str, np.ndarray]],
+                              data_b: Dict[str, Dict[str, np.ndarray]]) -> Optional[float]:
+            tail = data_a["tail"]
+            head = data_b["head"]
+            pt_a = tail["point"].astype(np.float32, copy=False)
+            pt_b = head["point"].astype(np.float32, copy=False)
+            delta = pt_b - pt_a
+            dist = float(np.linalg.norm(delta))
+            if dist > max_dist:
+                return None
+            if dist <= 1e-6:
+                dir_vec = np.zeros(2, dtype=np.float32)
+            else:
+                dir_vec = delta / dist
+
+            out_a = -tail["forward"]
+            out_b = -head["forward"]
+            norm_a = float(np.linalg.norm(out_a))
+            norm_b = float(np.linalg.norm(out_b))
+            if norm_a <= 1e-6 or norm_b <= 1e-6:
+                return None
+            out_a = out_a / norm_a
+            out_b = out_b / norm_b
+
+            if dist <= 1e-6:
+                cos_a = 1.0
+                cos_b = 1.0
+            else:
+                cos_a = float(np.clip(np.dot(out_a, dir_vec), -1.0, 1.0))
+                cos_b = float(np.clip(np.dot(out_b, -dir_vec), -1.0, 1.0))
+
+            angle_a = float(np.degrees(np.arccos(np.clip(cos_a, -1.0, 1.0))))
+            angle_b = float(np.degrees(np.arccos(np.clip(cos_b, -1.0, 1.0))))
+            if angle_a > max_angle or angle_b > max_angle:
+                return None
+
+            return dist + angle_weight * (angle_a + angle_b)
+
+        def _best_candidate(id_a: int, id_b: int) -> Optional[Dict[str, Any]]:
+            cluster_a = clusters[id_a]
+            cluster_b = clusters[id_b]
+            best: Optional[Dict[str, Any]] = None
+
+            orientations_a = [
+                (False, cluster_a["points"], _orientation(cluster_a["points"]))
+            ]
+            reversed_a = np.ascontiguousarray(cluster_a["points"][::-1])
+            orientations_a.append((True, reversed_a, _orientation(reversed_a)))
+
+            orientations_b = [
+                (False, cluster_b["points"], _orientation(cluster_b["points"]))
+            ]
+            reversed_b = np.ascontiguousarray(cluster_b["points"][::-1])
+            orientations_b.append((True, reversed_b, _orientation(reversed_b)))
+
+            for rev_a, pts_a, orient_a in orientations_a:
+                for rev_b, pts_b, orient_b in orientations_b:
+                    cost = _connection_cost(orient_a, orient_b)
+                    if cost is None:
+                        continue
+                    if best is None or cost < best["cost"]:
+                        best = {
+                            "cost": cost,
+                            "rev_a": rev_a,
+                            "rev_b": rev_b,
+                        }
+            return best
+
+        def _merge_points(points_a: np.ndarray, points_b: np.ndarray) -> np.ndarray:
+            pt_a = points_a[-1]
+            pt_b = points_b[0]
+            delta = pt_b - pt_a
+            dist = float(np.linalg.norm(delta))
+            arrays: List[np.ndarray] = [points_a]
+            if bridge_spacing > 0.0 and dist > bridge_spacing * 1.5:
+                steps = int(np.floor(dist / bridge_spacing))
+                if steps > 1:
+                    step_vec = delta / steps
+                    bridge_pts = [pt_a + step_vec * k for k in range(1, steps)]
+                    if bridge_pts:
+                        arrays.append(np.asarray(bridge_pts, dtype=np.float32))
+            if dist <= 1e-6:
+                arrays.append(points_b[1:])
+            else:
+                arrays.append(points_b)
+            return np.ascontiguousarray(np.vstack([arr for arr in arrays if arr.size > 0]))
+
+        improved = True
+        while improved and len(clusters) > 1:
+            improved = False
+            best_choice: Optional[Dict[str, Any]] = None
+            ids = list(clusters.keys())
+            for idx_a, id_a in enumerate(ids[:-1]):
+                for id_b in ids[idx_a + 1:]:
+                    candidate = _best_candidate(id_a, id_b)
+                    if candidate is None:
+                        continue
+                    if best_choice is None or candidate["cost"] < best_choice["cost"]:
+                        best_choice = {
+                            "cost": candidate["cost"],
+                            "rev_a": candidate["rev_a"],
+                            "rev_b": candidate["rev_b"],
+                            "id_a": id_a,
+                            "id_b": id_b,
+                        }
+            if best_choice is None:
+                break
+
+            id_a = best_choice["id_a"]
+            id_b = best_choice["id_b"]
+            cluster_a = clusters[id_a]
+            cluster_b = clusters[id_b]
+
+            pts_a = cluster_a["points"]
+            pts_b = cluster_b["points"]
+            if best_choice["rev_a"]:
+                pts_a = np.ascontiguousarray(pts_a[::-1])
+            if best_choice["rev_b"]:
+                pts_b = np.ascontiguousarray(pts_b[::-1])
+
+            merged_points = _merge_points(pts_a, pts_b)
+            clusters[id_a] = {
+                "points": merged_points,
+                "members": sorted(cluster_a["members"] + cluster_b["members"]),
+                "sources": cluster_a["sources"] + cluster_b["sources"],
+            }
+            del clusters[id_b]
+            improved = True
+
+        cluster_values = sorted(clusters.values(), key=lambda c: c["members"][0])
+        output_segments: List[FiberSegment] = []
+        next_id = 1
+        for data in cluster_values:
+            pts = np.asarray(data["points"], dtype=np.float32)
+            if pts.shape[0] < 2:
+                continue
+            radii = self._sample_radii(pts)
+            source_id = data["sources"][0] if data["sources"] else -1
+            output_segments.append(
+                FiberSegment(
+                    segment_id=next_id,
+                    source_line_id=int(source_id),
+                    points_xy=pts,
+                    radii=radii,
+                )
+            )
+            next_id += 1
+
+        return output_segments
 
     def segment(self, thr_u8: int, radius_thresh_px: float | None = None) -> np.ndarray:
         """
@@ -761,7 +1012,7 @@ class FiberAnalyzer:
         max_angle: float = 20.0,
         enforce_high_conf: bool = False,
         grad_alignment_cos: float = 0.95,
-        radius_rel_tol: float = 0.25,
+        radius_rel_tol: float = 0.35,
         min_valid_fraction: float = 0.7,
     ) -> List[np.ndarray]:
         if enforce_high_conf and (dt is None or grad_x is None or grad_y is None):
@@ -925,6 +1176,29 @@ class FiberAnalyzer:
         if total == 0:
             return False
         return (valid / float(total)) >= float(min_valid_fraction)
+
+    @staticmethod
+    def _endpoint_forward_vector(points: np.ndarray, head: bool) -> np.ndarray:
+        pts = np.asarray(points, dtype=np.float32).reshape(-1, 2)
+        n = pts.shape[0]
+        if n < 2:
+            return np.zeros(2, dtype=np.float32)
+        eps = 1e-6
+        if head:
+            anchor = pts[0]
+            for idx in range(1, n):
+                vec = pts[idx] - anchor
+                norm = float(np.linalg.norm(vec))
+                if norm > eps:
+                    return (vec / norm).astype(np.float32)
+        else:
+            anchor = pts[-1]
+            for idx in range(n - 2, -1, -1):
+                vec = pts[idx] - anchor
+                norm = float(np.linalg.norm(vec))
+                if norm > eps:
+                    return (vec / norm).astype(np.float32)
+        return np.zeros(2, dtype=np.float32)
 
     @staticmethod
     def _polyline_normals(

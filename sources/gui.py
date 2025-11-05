@@ -215,7 +215,10 @@ class MainWindow(QMainWindow):
         self._profile_dialog: ProfilePlotDialog | None = None
 
         self.high_conf_fib = False
+        self.cluster_enabled = False
         self.chb_high_conf.setChecked(False)
+        if hasattr(self, "chb_cluster"):
+            self.chb_cluster.setChecked(False)
 
         # Menu & actions: updated UI element names (rb_mask1_cent -> rb_centerlines; rb_mask2_segm -> rb_segmentation;
         # sp_threshold1 -> sp_max_cent_angle; sp_threshold2 -> sp_segm_threshold)
@@ -274,6 +277,8 @@ class MainWindow(QMainWindow):
         # react to checkbox changes at runtime
         self.chb_usegpu.toggled.connect(self._on_usegpu_toggled)
         self.chb_high_conf.toggled.connect(self._on_high_conf_toggled)
+        if hasattr(self, "chb_cluster"):
+            self.chb_cluster.toggled.connect(self._on_cluster_toggled)
 
         # Connect toggled signals of rb_show_diam and rb_show_direct to update overlay
         self.rb_show_diam.toggled.connect(self._render_vector_overlay)
@@ -1066,6 +1071,7 @@ class MainWindow(QMainWindow):
                 logger.error("Segmentation failed: %s", e)
                 return
 
+        self.progress_bar.setValue(50)
         try:
             params = getattr(self.analyzer, "_centerline_kwargs", None)
             if params:
@@ -1587,6 +1593,26 @@ class MainWindow(QMainWindow):
         self.high_conf_fib = checked
         if self.analyzer is not None:
             self.analyzer.set_high_conf_filter(checked)
+
+    def _on_cluster_toggled(self, checked: bool):
+        self.cluster_enabled = bool(checked)
+        logger.info("Fiber fragment clustering %s", "enabled" if checked else "disabled")
+        if self.analyzer is not None:
+            self.analyzer.set_cluster_enabled(checked)
+            self._centerlines_dt = self.analyzer.get_centerlines_image()
+        self._viz_points = None
+        self.debug_overlay = None
+        self.samples_table = None
+        self._thickness_units = None
+        self._angles_deg = None
+        self._pore_diams_units = None
+        self._porosity = None
+        if hasattr(self, "action_save_measurements"):
+            self.action_save_measurements.setEnabled(False)
+        if hasattr(self, "text_edit2"):
+            self.text_edit2.clear()
+        if hasattr(self, "cb_view"):
+            self.refresh_view()
 
     # ------------------- New default image loading -------------------
 
