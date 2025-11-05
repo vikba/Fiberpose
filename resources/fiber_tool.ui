@@ -772,6 +772,7 @@
     <addaction name="action_load_image"/>
     <addaction name="action_save_masks_predictions"/>
     <addaction name="action_save_measurements"/>
+    <addaction name="action_batch_processing"/>
    </widget>
    <widget class="QMenu" name="menuEdit">
     <property name="title">
@@ -819,6 +820,11 @@
   <action name="actionRemove_torch_model">
    <property name="text">
     <string>Remove torch model</string>
+   </property>
+  </action>
+  <action name="action_batch_processing">
+   <property name="text">
+    <string>Load folder (batch processing)</string>
    </property>
   </action>
  </widget>

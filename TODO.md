@@ -16,11 +16,11 @@
 - [x] Add gx,gy vizualization
 - [x] Build diameter lines based on gradients
 - [ ] !Add clustering of fiber fragmetns into one fiber
-- [ ] Batch processing
+- [x] Batch processing
 - [ ] !Improve dataset and finetune NN
 - [ ] Tiling for predictions
 - [x] !Add porosity measurement 
-- [ ] Add zoom
+- [x] Add zoom
 - [x] Add scalebar tool (or automatic scalebar detection)
 - [ ] Add logbar
 - [ ] Use lighweight alternative for torch for inference only

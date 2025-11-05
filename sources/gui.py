@@ -1,6 +1,7 @@
 # app/ui_main.py
 import os
 import math
+from datetime import datetime
 import numpy as np
 import cv2
 
@@ -9,7 +10,6 @@ from PyQt6.QtCore import Qt, QEvent, QTimer, QPoint, QLineF, QSize, pyqtSignal
 from PyQt6.QtWidgets import (
     QMainWindow,
     QFileDialog,
-    QMessageBox,
     QGraphicsScene,
     QGraphicsPixmapItem,
     QGraphicsEllipseItem,
@@ -203,6 +203,9 @@ class MainWindow(QMainWindow):
         self.btn_reset_view.clicked.connect(self.reset_zoom)
         self.btn_reset_view.hide()
 
+        # Batch mode state
+        self._batch_mode_active: bool = False
+
         # Profile plotting tool state
         self._profile_mode_active: bool = False
         self._profile_points_scene: list[tuple[float, float]] = []
@@ -227,6 +230,8 @@ class MainWindow(QMainWindow):
             self.btn_set_scalebar.clicked.connect(self._on_set_scalebar_clicked)
         if hasattr(self, "btn_plot_profile"):
             self.btn_plot_profile.clicked.connect(self._on_plot_profile_clicked)
+        if hasattr(self, "action_batch_processing"):
+            self.action_batch_processing.triggered.connect(self._on_batch_processing)
 
         # Remove connection of radiobutton signals and instead hook up the combobox change
         if hasattr(self, "cb_view"):
@@ -375,10 +380,10 @@ class MainWindow(QMainWindow):
 
     def _ensure_dt_ready(self) -> bool:
         if self.orig_img is None:
-            QtWidgets.QMessageBox.information(self, "Load original", "Load an image before using the profile tool.")
+            self._show_info("Load original", "Load an image before using the profile tool.")
             return False
         if self.analyzer is None:
-            QtWidgets.QMessageBox.critical(self, "Analyzer unavailable", "Fiber analyzer has not been initialized.")
+            self._show_error("Analyzer unavailable", "Fiber analyzer has not been initialized.")
             return False
 
         max_angle = float(self.sp_max_cent_angle.value()) if hasattr(self, "sp_max_cent_angle") else 45.0
@@ -387,13 +392,13 @@ class MainWindow(QMainWindow):
             try:
                 self.analyzer.predict_dt(image=self.orig_img, max_angle_deg=max_angle)
             except Exception as exc:
-                QtWidgets.QMessageBox.critical(self, "Prediction failed", str(exc))
+                self._show_error("Prediction failed", str(exc))
                 logger.error("Profile DT ensure failed: %s", exc)
                 return False
 
         dt = self.analyzer.get_dt()
         if dt is None:
-            QtWidgets.QMessageBox.critical(self, "DT unavailable", "Distance transform could not be computed.")
+            self._show_error("DT unavailable", "Distance transform could not be computed.")
             return False
 
         self.dt = np.asarray(dt, dtype=np.float32, copy=False)
@@ -417,6 +422,24 @@ class MainWindow(QMainWindow):
             self.gy = np.asarray(gy, dtype=np.float32, copy=False)
 
         return True
+
+    def _show_info(self, title: str, message: str):
+        if self._batch_mode_active:
+            logger.info("[Batch] %s: %s", title, message)
+        else:
+            QtWidgets.QMessageBox.information(self, title, message)
+
+    def _show_warning(self, title: str, message: str):
+        if self._batch_mode_active:
+            logger.warning("[Batch] %s: %s", title, message)
+        else:
+            QtWidgets.QMessageBox.warning(self, title, message)
+
+    def _show_error(self, title: str, message: str):
+        if self._batch_mode_active:
+            logger.error("[Batch] %s: %s", title, message)
+        else:
+            QtWidgets.QMessageBox.critical(self, title, message)
 
 
     # ------------------- Drag & drop -------------------
@@ -486,14 +509,14 @@ class MainWindow(QMainWindow):
             img = iio.imread(path)
             self.working_dir = os.path.dirname(path)
         except Exception as e:
-            QtWidgets.QMessageBox.critical(self, "Error", f"Failed to read image:\n{e}")
+            self._show_error("Error", f"Failed to read image:\n{e}")
             logger.error(f"Failed to read image: {e}")
             return
         
         logger.info(f"Image loaded successfully: {path}")
 
         if img.ndim not in (2, 3):
-            QtWidgets.QMessageBox.warning(self, "Unsupported", "Original must be 2D or 3D (H×W×C).")
+            self._show_warning("Unsupported", "Original must be 2D or 3D (H×W×C).")
             return
         self.orig_img = img
         self.current_image_name = os.path.splitext(os.path.basename(path))[0]
@@ -501,7 +524,7 @@ class MainWindow(QMainWindow):
 
     def save_predictions(self):
         if self.gray_u8 is None and self.labels_img is None and self.overlay_img is None:
-            QtWidgets.QMessageBox.information(self, "Nothing to save", "Run segmentation first.")
+            self._show_info("Nothing to save", "Run segmentation first.")
             return
         default_base = (self.current_image_name or "fiberpose") + "_results.png"
         base, _ = QtWidgets.QFileDialog.getSaveFileName(
@@ -527,13 +550,13 @@ class MainWindow(QMainWindow):
             if self.debug_overlay is not None:
                 iio.imwrite(root + "_debug.png", self.debug_overlay.astype(np.uint8))
             self.working_dir = dest_dir
-            QtWidgets.QMessageBox.information(self, "Saved", f"Saved to:\n{dest_dir}")
+            self._show_info("Saved", f"Saved to:\n{dest_dir}")
         except Exception as e:
-            QtWidgets.QMessageBox.critical(self, "Error", f"Failed to save:\n{e}")
+            self._show_error("Error", f"Failed to save:\n{e}")
 
     def save_measurements(self):
         if self.samples_table is None or len(self.samples_table) == 0:
-            QtWidgets.QMessageBox.information(self, "Nothing to save", "Run Analyze fibers first.")
+            self._show_info("Nothing to save", "Run Analyze fibers first.")
             return
         default_csv = (self.current_image_name or "fiberpose") + "_measurements.csv"
         base, _ = QtWidgets.QFileDialog.getSaveFileName(
@@ -564,17 +587,17 @@ class MainWindow(QMainWindow):
                         units_value = ""
                     f.write(f"{image_name},{int(x)},{int(y)},{float(t):.6f},{units_value},0\n")
         except Exception as e:
-             QtWidgets.QMessageBox.critical(self, "Error", f"Failed to save CSVs:\n{e}")
+             self._show_error("Error", f"Failed to save CSVs:\n{e}")
              return
         self.working_dir = dest_dir
-        QtWidgets.QMessageBox.information(self, "Saved", f"Saved CSV(s) to:\n{dest_dir}")
+        self._show_info("Saved", f"Saved CSV(s) to:\n{dest_dir}")
 
 
     # ------------------- Scalebar -------------------
 
     def _on_set_scalebar_clicked(self):
         if self.orig_img is None:
-            QtWidgets.QMessageBox.information(self, "No image", "Load an image before setting the scalebar.")
+            self._show_info("No image", "Load an image before setting the scalebar.")
             return
 
         self._cancel_scalebar_selection()
@@ -613,7 +636,7 @@ class MainWindow(QMainWindow):
 
         length_value = float(spin.value())
         if length_value <= 0:
-            QtWidgets.QMessageBox.warning(self, "Invalid length", "Scalebar length must be positive.")
+            self._show_warning("Invalid length", "Scalebar length must be positive.")
             return
 
         self._scalebar_length_value = length_value
@@ -622,8 +645,7 @@ class MainWindow(QMainWindow):
         self._scalebar_points = []
         self._scalebar_pending = True
         self.graphicsView.viewport().setCursor(Qt.CursorShape.CrossCursor)
-        QtWidgets.QMessageBox.information(
-            self,
+        self._show_info(
             "Select Scalebar",
             "Click the two endpoints of the scalebar on the image. Right-click to cancel.",
         )
@@ -658,7 +680,7 @@ class MainWindow(QMainWindow):
         (x0, y0), (x1, y1) = self._scalebar_points[:2]
         pixel_length = math.hypot(x1 - x0, y1 - y0)
         if pixel_length <= 0:
-            QtWidgets.QMessageBox.warning(self, "Invalid selection", "Select two distinct points for the scalebar.")
+            self._show_warning("Invalid selection", "Select two distinct points for the scalebar.")
             self._cancel_scalebar_selection()
             return
 
@@ -677,8 +699,7 @@ class MainWindow(QMainWindow):
                 except AttributeError:
                     pass
 
-        QtWidgets.QMessageBox.information(
-            self,
+        self._show_info(
             "Scalebar Set",
             f"Pixel size set to {pixel_size:.6g} {self._scalebar_unit} per pixel.",
         )
@@ -736,6 +757,123 @@ class MainWindow(QMainWindow):
         self._current_zoom = relative
         self._update_reset_button_visibility()
         return True
+
+    # ------------------- Batch processing -------------------
+
+    @staticmethod
+    def _supported_image_extensions() -> set[str]:
+        return {".tif", ".tiff", ".png", ".jpg", ".jpeg", ".bmp", ".webp"}
+
+    def _collect_images_in_directory(self, directory: str) -> list[str]:
+        files: list[str] = []
+        try:
+            entries = sorted(os.listdir(directory))
+        except Exception as exc:
+            logger.error("Failed to list directory %s: %s", directory, exc)
+            return files
+        exts = self._supported_image_extensions()
+        for name in entries:
+            path = os.path.join(directory, name)
+            if not os.path.isfile(path):
+                continue
+            if os.path.splitext(name)[1].lower() in exts:
+                files.append(path)
+        return files
+
+    def _save_batch_outputs(self, dest_dir: str, base_name: str):
+        if self.gray_u8 is not None:
+            dt_path = os.path.join(dest_dir, f"{base_name}_dt.png")
+            iio.imwrite(dt_path, np.asarray(self.gray_u8, dtype=np.uint8))
+        if self.labels_img is not None and np.max(self.labels_img) > 0:
+            labels_path = os.path.join(dest_dir, f"{base_name}_labels.png")
+            iio.imwrite(labels_path, labels_to_color(self.labels_img))
+        if self.overlay_img is not None:
+            overlay_path = os.path.join(dest_dir, f"{base_name}_overlay.png")
+            iio.imwrite(overlay_path, np.asarray(self.overlay_img, dtype=np.uint8))
+        if self.debug_overlay is not None:
+            debug_path = os.path.join(dest_dir, f"{base_name}_debug.png")
+            iio.imwrite(debug_path, np.asarray(self.debug_overlay, dtype=np.uint8))
+
+        if self.samples_table is not None and len(self.samples_table) > 0:
+            samples_path = os.path.join(dest_dir, f"{base_name}_samples.csv")
+            units_set = bool(self.le_pixelsize.text().strip())
+            image_name = base_name
+            with open(samples_path, "w", newline="") as f:
+                f.write("image_name,x,y,thickness_px,thickness_units,fiber_id\n")
+                for i, row in enumerate(self.samples_table):
+                    x, y, t = row[:3]
+                    if units_set and self._thickness_units is not None and len(self._thickness_units) > i:
+                        units_value = f"{self._thickness_units[i]:.6f}"
+                    else:
+                        units_value = ""
+                    f.write(f"{image_name},{int(x)},{int(y)},{float(t):.6f},{units_value},0\n")
+
+    def _on_batch_processing(self):
+        directory = QFileDialog.getExistingDirectory(self, "Select folder with images", self.working_dir)
+        if not directory:
+            return
+
+        image_paths = self._collect_images_in_directory(directory)
+        if not image_paths:
+            self._show_info("Batch processing", "No supported images were found in the selected folder.")
+            return
+
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        output_root = os.path.join(directory, f"fiberpose_batch_{timestamp}")
+        os.makedirs(output_root, exist_ok=True)
+
+        previous_batch_state = self._batch_mode_active
+        self._batch_mode_active = True
+        QtWidgets.QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+
+        failures: list[tuple[str, str]] = []
+        processed = 0
+
+        try:
+            for idx, path in enumerate(image_paths, start=1):
+                base_name = os.path.splitext(os.path.basename(path))[0]
+                if hasattr(self, "statusbar") and self.statusbar is not None:
+                    self.statusbar.showMessage(f"Processing {idx}/{len(image_paths)}: {os.path.basename(path)}")
+                try:
+                    self.load_original_from_path(path)
+                    QtWidgets.QApplication.processEvents()
+
+                    self.segment()
+                    QtWidgets.QApplication.processEvents()
+                    if self.gray_u8 is None or self.labels_img is None:
+                        failures.append((path, "Segmentation did not produce results"))
+                        continue
+
+                    self.analyze_fibers()
+                    QtWidgets.QApplication.processEvents()
+
+                    self._save_batch_outputs(output_root, base_name)
+                    processed += 1
+                except Exception as exc:
+                    logger.exception("Batch processing failed for %s", path)
+                    failures.append((path, str(exc)))
+        finally:
+            QtWidgets.QApplication.restoreOverrideCursor()
+            self._batch_mode_active = previous_batch_state
+            if hasattr(self, "statusbar") and self.statusbar is not None:
+                self.statusbar.clearMessage()
+
+        summary_lines = [
+            f"Processed {processed} of {len(image_paths)} images.",
+            f"Results saved in: {output_root}",
+        ]
+        if failures:
+            summary_lines.append("Failures:")
+            for path, reason in failures[:10]:
+                summary_lines.append(f"  - {os.path.basename(path)}: {reason}")
+            if len(failures) > 10:
+                summary_lines.append(f"  ... ({len(failures) - 10} more)")
+
+        summary = "\n".join(summary_lines)
+        if failures:
+            self._show_warning("Batch processing complete with issues", summary)
+        else:
+            self._show_info("Batch processing complete", summary)
 
     # ------------------- Profile plot tool -------------------
 
@@ -904,11 +1042,11 @@ class MainWindow(QMainWindow):
 
     def segment(self):
         if self.orig_img is None:
-            QMessageBox.information(self, "Load original", "Please load an original image first.")
+            self._show_info("Load original", "Please load an original image first.")
             logger.info("Segment: No original image loaded.")
             return
         if self.analyzer is None:
-            QMessageBox.critical(self, "Analyzer unavailable", "Fiber analyzer has not been initialized.")
+            self._show_error("Analyzer unavailable", "Fiber analyzer has not been initialized.")
             logger.error("Segmentation failed: analyzer not initialized.")
             return
 
@@ -924,7 +1062,7 @@ class MainWindow(QMainWindow):
                     max_angle_deg=max_angle,
                 )
             except Exception as e:
-                QMessageBox.critical(self, "Prediction failed", str(e))
+                self._show_error("Prediction failed", str(e))
                 logger.error("Segmentation failed: %s", e)
                 return
 
@@ -939,14 +1077,14 @@ class MainWindow(QMainWindow):
                 **params,
             )
         except Exception as e:
-            QMessageBox.critical(self, "Centerline computation failed", str(e))
+            self._show_error("Centerline computation failed", str(e))
             logger.error("Centerline computation failed: %s", e)
             return
 
         dt = self.analyzer.get_dt()
         gx, gy = self.analyzer.get_gradients()
         if dt is None or gx is None or gy is None:
-            QMessageBox.critical(self, "Segmentation failed", "Distance transform or gradients unavailable.")
+            self._show_error("Segmentation failed", "Distance transform or gradients unavailable.")
             logger.error("Segmentation failed: DT or gradients unavailable.")
             return
 
@@ -966,7 +1104,7 @@ class MainWindow(QMainWindow):
                 radius_thresh_px=radius_thresh_px,
             )
         except Exception as e:
-            QMessageBox.critical(self, "Segmentation failed", str(e))
+            self._show_error("Segmentation failed", str(e))
             logger.error("Watershed failed: %s", e)
             return
 
@@ -996,7 +1134,7 @@ class MainWindow(QMainWindow):
         if self.gray_u8 is None or self.labels_img is None:
             self.segment()
             if self.gray_u8 is None or self.labels_img is None:
-                QtWidgets.QMessageBox.information(self, "No segmentation", "Segmentation could not be performed.")
+                self._show_info("No segmentation", "Segmentation could not be performed.")
                 return
         logger.info("Starting fiber analysis.")
         self._viz_points = []
@@ -1017,11 +1155,11 @@ class MainWindow(QMainWindow):
 
         # compute via analyzer
         if self.analyzer is None:
-            QtWidgets.QMessageBox.information(self, "No analyzer", "Segmentation data unavailable.")
+            self._show_info("No analyzer", "Segmentation data unavailable.")
             return
 
         if not self.analyzer.get_centerline_segments():
-            QtWidgets.QMessageBox.information(self, "No centerlines", "No centerlines available. Run segmentation first.")
+            self._show_info("No centerlines", "No centerlines available. Run segmentation first.")
             return
 
         hist_centers, viz_points, angles_deg = self.analyzer.analyze(
@@ -1109,8 +1247,8 @@ class MainWindow(QMainWindow):
         self._update_distributions_pyqtgraph(units_label)
         self.progress_bar.setValue(100)
 
-        QtWidgets.QMessageBox.information(
-            self, "Analysis complete",
+        self._show_info(
+            "Analysis complete",
             f"Histogram samples: {len(hist_centers)} (spacing={int(spacing_px)} px)\n"
             f"Stored viz points: {len(self._viz_points)}\n"
             f"Mean diameter: {mean_thickness:.2f} {units_label}\n"
@@ -1421,8 +1559,8 @@ class MainWindow(QMainWindow):
                 self.device = torch.device('cpu')
                 # notify once at init if the UI is asking for GPU (edge case: pre-checked in .ui)
                 if getattr(self.chb_usegpu, "isChecked", lambda: False)():
-                    QtWidgets.QMessageBox.information(
-                        self, "CUDA not available",
+                    self._show_info(
+                        "CUDA not available",
                         "No CUDA-capable GPU detected. Falling back to CPU."
                     )
         else:
@@ -1432,8 +1570,8 @@ class MainWindow(QMainWindow):
         """When user toggles the GPU checkbox, validate and set device; notify if not available."""
         cuda_ok = torch.cuda.is_available()
         if checked and not cuda_ok:
-            QtWidgets.QMessageBox.warning(
-                self, "CUDA not available",
+            self._show_warning(
+                "CUDA not available",
                 "CUDA GPU not detected on this system. Using CPU instead."
             )
             # force UI to reflect reality
