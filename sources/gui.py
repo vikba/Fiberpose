@@ -5,13 +5,22 @@ import numpy as np
 import cv2
 
 from PyQt6 import QtGui, QtWidgets
-from PyQt6.QtCore import Qt, QEvent, QTimer, QPoint
-from PyQt6.QtWidgets import QMainWindow, QFileDialog, QMessageBox, QGraphicsScene, QGraphicsPixmapItem
+from PyQt6.QtCore import Qt, QEvent, QTimer, QPoint, QLineF, pyqtSignal
+from PyQt6.QtWidgets import (
+    QMainWindow,
+    QFileDialog,
+    QMessageBox,
+    QGraphicsScene,
+    QGraphicsPixmapItem,
+    QGraphicsEllipseItem,
+    QGraphicsItem,
+)
 from PyQt6.uic import loadUi
 
 import imageio.v3 as iio
 import pyqtgraph as pg
 import torch
+from skimage.measure import profile_line
 
 import logging
 logger = logging.getLogger(__name__)
@@ -56,6 +65,66 @@ def labels_to_color(labels: np.ndarray) -> np.ndarray:
     return out
 
 # ------------------- MainWindow -------------------
+
+
+class ProfilePlotDialog(QtWidgets.QDialog):
+    closed = pyqtSignal()
+    clearRequested = pyqtSignal()
+
+    def __init__(self, parent: QtWidgets.QWidget | None = None):
+        super().__init__(parent)
+        self.setWindowTitle("Distance Transform Profile")
+        self.setModal(False)
+        self.resize(520, 420)
+
+        self._empty_text = "Select two points on the image to plot the distance transform profile."
+
+        layout = QtWidgets.QVBoxLayout(self)
+
+        self.info_label = QtWidgets.QLabel(self._empty_text)
+        self.info_label.setWordWrap(True)
+        layout.addWidget(self.info_label)
+
+        self.plot_widget = pg.PlotWidget()
+        layout.addWidget(self.plot_widget, 1)
+        self._style_plot()
+
+        button_row = QtWidgets.QHBoxLayout()
+        self.btn_clear = QtWidgets.QPushButton("Clear selection")
+        self.btn_clear.clicked.connect(self._on_clear_clicked)
+        button_row.addWidget(self.btn_clear)
+        button_row.addStretch(1)
+        btn_close = QtWidgets.QPushButton("Close")
+        btn_close.clicked.connect(self.close)
+        button_row.addWidget(btn_close)
+        layout.addLayout(button_row)
+
+    def _style_plot(self):
+        self.plot_widget.setBackground("w")
+        self.plot_widget.showGrid(x=True, y=True, alpha=0.25)
+        self.plot_widget.setTitle("Distance transform profile", color="k", size="12pt")
+        self.plot_widget.setLabel("bottom", "Distance (px)")
+        self.plot_widget.setLabel("left", "DT value")
+
+    def reset_plot(self):
+        self.plot_widget.clear()
+        self._style_plot()
+        self.info_label.setText(self._empty_text)
+
+    def update_profile(self, distances_px: np.ndarray, values: np.ndarray, summary: str):
+        self.plot_widget.clear()
+        self._style_plot()
+        pen = pg.mkPen(color="#D9534F", width=2)
+        self.plot_widget.plot(distances_px, values, pen=pen)
+        self.info_label.setText(summary)
+
+    def _on_clear_clicked(self):
+        self.clearRequested.emit()
+
+    def closeEvent(self, event: QtGui.QCloseEvent):
+        self.closed.emit()
+        super().closeEvent(event)
+
 
 class MainWindow(QMainWindow):
     """
@@ -113,6 +182,15 @@ class MainWindow(QMainWindow):
         self._scalebar_points: list[tuple[float, float]] = []
         self._scalebar_length_value: float = 100.0
         self._scalebar_unit: str = "um"
+        self._pixmap_source_shape: tuple[int, int] | None = None
+
+        # Profile plotting tool state
+        self._profile_mode_active: bool = False
+        self._profile_points_scene: list[tuple[float, float]] = []
+        self._profile_points_img: list[tuple[float, float]] = []
+        self._profile_line_item: QGraphicsItem | None = None
+        self._profile_point_items: list[QGraphicsItem] = []
+        self._profile_dialog: ProfilePlotDialog | None = None
 
         self.high_conf_fib = False
         self.chb_high_conf.setChecked(False)
@@ -128,6 +206,8 @@ class MainWindow(QMainWindow):
         self.btn_save_csv.clicked.connect(self.save_measurements)
         if hasattr(self, "btn_set_scalebar"):
             self.btn_set_scalebar.clicked.connect(self._on_set_scalebar_clicked)
+        if hasattr(self, "btn_plot_profile"):
+            self.btn_plot_profile.clicked.connect(self._on_plot_profile_clicked)
 
         # Remove connection of radiobutton signals and instead hook up the combobox change
         if hasattr(self, "cb_view"):
@@ -182,7 +262,10 @@ class MainWindow(QMainWindow):
     def _set_pixmap_from_array(self, img: np.ndarray | None):
         if img is None:
             self._pixitem.setPixmap(QtGui.QPixmap())
+            self._pixmap_source_shape = None
+            self._remove_profile_items()
             return
+        self._pixmap_source_shape = img.shape[:2]
         qimg = self._numpy_to_qimage(img)
         pix = QtGui.QPixmap.fromImage(qimg)
         # Scale pixmap if it is smaller than the viewport
@@ -254,6 +337,51 @@ class MainWindow(QMainWindow):
             self._labels_rgb_cache = (current_id, cache_img)
         return cache_img
 
+    def _ensure_dt_ready(self) -> bool:
+        if self.orig_img is None:
+            QtWidgets.QMessageBox.information(self, "Load original", "Load an image before using the profile tool.")
+            return False
+        if self.analyzer is None:
+            QtWidgets.QMessageBox.critical(self, "Analyzer unavailable", "Fiber analyzer has not been initialized.")
+            return False
+
+        max_angle = float(self.sp_max_cent_angle.value()) if hasattr(self, "sp_max_cent_angle") else 45.0
+
+        if not self.analyzer.dt_predicted():
+            try:
+                self.analyzer.predict_dt(image=self.orig_img, max_angle_deg=max_angle)
+            except Exception as exc:
+                QtWidgets.QMessageBox.critical(self, "Prediction failed", str(exc))
+                logger.error("Profile DT ensure failed: %s", exc)
+                return False
+
+        dt = self.analyzer.get_dt()
+        if dt is None:
+            QtWidgets.QMessageBox.critical(self, "DT unavailable", "Distance transform could not be computed.")
+            return False
+
+        self.dt = np.asarray(dt, dtype=np.float32, copy=False)
+
+        dt_u8 = self.analyzer.get_dt_u8()
+        if dt_u8 is not None:
+            self.gray_u8 = np.asarray(dt_u8, dtype=np.uint8, copy=False)
+
+        dt_norm = self.analyzer.get_dt_norm()
+        if dt_norm is not None:
+            self.gray_img = np.asarray(dt_norm, dtype=np.float32, copy=False)
+
+        lap = self.analyzer.get_laplacian()
+        if lap is not None:
+            self.lapl_img = np.asarray(lap, dtype=np.float32, copy=False)
+
+        gx, gy = self.analyzer.get_gradients()
+        if gx is not None:
+            self.gx = np.asarray(gx, dtype=np.float32, copy=False)
+        if gy is not None:
+            self.gy = np.asarray(gy, dtype=np.float32, copy=False)
+
+        return True
+
 
     # ------------------- Drag & drop -------------------
 
@@ -269,6 +397,10 @@ class MainWindow(QMainWindow):
             if self._scalebar_pending and et == QEvent.Type.MouseButtonPress:
                 if isinstance(event, QtGui.QMouseEvent):
                     self._handle_scalebar_mouse(event)
+                    return True
+            if self._profile_mode_active and et == QEvent.Type.MouseButtonPress:
+                if isinstance(event, QtGui.QMouseEvent):
+                    self._handle_profile_mouse(event)
                     return True
             if et in (QEvent.Type.DragEnter, QEvent.Type.DragMove):
                 md = event.mimeData()
@@ -516,6 +648,169 @@ class MainWindow(QMainWindow):
             self._scalebar_points = []
         if reset_cursor and hasattr(self, "graphicsView"):
             self.graphicsView.viewport().unsetCursor()
+
+    # ------------------- Profile plot tool -------------------
+
+    def _ensure_profile_dialog(self) -> ProfilePlotDialog:
+        if self._profile_dialog is None:
+            self._profile_dialog = ProfilePlotDialog(self)
+            self._profile_dialog.clearRequested.connect(self._on_profile_clear_requested)
+            self._profile_dialog.closed.connect(self._on_profile_dialog_closed)
+        return self._profile_dialog
+
+    def _on_plot_profile_clicked(self):
+        if not self._ensure_dt_ready():
+            return
+        dialog = self._ensure_profile_dialog()
+        if not dialog.isVisible():
+            dialog.reset_plot()
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
+        self._profile_mode_active = True
+        self._reset_profile_selection(keep_dialog=True)
+
+    def _on_profile_clear_requested(self):
+        self._reset_profile_selection(keep_dialog=True)
+
+    def _on_profile_dialog_closed(self):
+        self._profile_mode_active = False
+        self._profile_dialog = None
+        self._reset_profile_selection()
+
+    def _reset_profile_selection(self, keep_dialog: bool = False):
+        self._profile_points_scene = []
+        self._profile_points_img = []
+        self._remove_profile_items()
+        dialog = self._profile_dialog
+        if dialog is not None and (keep_dialog or self._profile_mode_active):
+            dialog.reset_plot()
+        if hasattr(self, "graphicsView"):
+            if self._profile_mode_active:
+                self.graphicsView.viewport().setCursor(Qt.CursorShape.CrossCursor)
+            else:
+                self.graphicsView.viewport().unsetCursor()
+
+    def _remove_profile_line(self):
+        if self._profile_line_item is not None and self._profile_line_item.scene() is not None:
+            self._scene.removeItem(self._profile_line_item)
+        self._profile_line_item = None
+
+    def _remove_profile_items(self):
+        self._remove_profile_line()
+        if not self._profile_point_items:
+            self._profile_point_items = []
+            return
+        for item in self._profile_point_items:
+            if item is not None and item.scene() is not None:
+                self._scene.removeItem(item)
+        self._profile_point_items = []
+
+    def _add_profile_marker(self, x: float, y: float):
+        if self._scene is None:
+            return
+        radius = 4.0
+        marker = QGraphicsEllipseItem(x - radius, y - radius, 2 * radius, 2 * radius)
+        pen = QtGui.QPen(QtGui.QColor("#FFD966"))
+        pen.setWidth(2)
+        marker.setPen(pen)
+        marker.setBrush(QtGui.QBrush(QtGui.QColor(255, 217, 102, 120)))
+        marker.setZValue(1000)
+        self._scene.addItem(marker)
+        self._profile_point_items.append(marker)
+
+    def _draw_profile_line(self):
+        if len(self._profile_points_scene) < 2 or self._scene is None:
+            return
+        self._remove_profile_line()
+        (x0, y0), (x1, y1) = self._profile_points_scene[:2]
+        pen = QtGui.QPen(QtGui.QColor("#FAD000"))
+        pen.setWidth(2)
+        pen.setCosmetic(True)
+        line_item = self._scene.addLine(QLineF(x0, y0, x1, y1), pen)
+        line_item.setZValue(999)
+        self._profile_line_item = line_item
+
+    def _scene_to_image_coords(self, scene_x: float, scene_y: float) -> tuple[float, float] | None:
+        if self._pixmap_source_shape is None:
+            return None
+        pix = self._pixitem.pixmap()
+        if pix.isNull():
+            return None
+        display_w = float(pix.width())
+        display_h = float(pix.height())
+        if display_w <= 0 or display_h <= 0:
+            return None
+        src_h, src_w = self._pixmap_source_shape
+        scale_x = float(src_w) / display_w
+        scale_y = float(src_h) / display_h
+        return scene_x * scale_x, scene_y * scale_y
+
+    def _handle_profile_mouse(self, event: QtGui.QMouseEvent):
+        if event.button() == Qt.MouseButton.RightButton:
+            self._reset_profile_selection(keep_dialog=True)
+            return
+        if event.button() != Qt.MouseButton.LeftButton:
+            return
+        if self._pixitem.pixmap().isNull():
+            return
+
+        pos = event.position() if hasattr(event, "position") else event.localPos()
+        scene_pos = self.graphicsView.mapToScene(QPoint(int(round(pos.x())), int(round(pos.y()))))
+        sx = float(scene_pos.x())
+        sy = float(scene_pos.y())
+
+        pix = self._pixitem.pixmap()
+        if sx < 0 or sy < 0 or sx >= pix.width() or sy >= pix.height():
+            return
+
+        img_coords = self._scene_to_image_coords(sx, sy)
+        if img_coords is None:
+            return
+
+        ix, iy = img_coords
+        if self._pixmap_source_shape is None:
+            return
+        src_h, src_w = self._pixmap_source_shape
+        if ix < 0 or iy < 0 or ix >= src_w or iy >= src_h:
+            return
+
+        if len(self._profile_points_scene) >= 2:
+            self._reset_profile_selection(keep_dialog=True)
+
+        self._profile_points_scene.append((sx, sy))
+        self._profile_points_img.append((ix, iy))
+        self._add_profile_marker(sx, sy)
+
+        if len(self._profile_points_scene) == 2:
+            self._finalize_profile_selection()
+
+    def _finalize_profile_selection(self):
+        if len(self._profile_points_scene) < 2 or len(self._profile_points_img) < 2:
+            return
+        self._draw_profile_line()
+        self._update_profile_plot()
+
+    def _update_profile_plot(self):
+        if self.dt is None or len(self._profile_points_img) < 2:
+            return
+        (x0, y0), (x1, y1) = self._profile_points_img[:2]
+        length_px = float(np.hypot(x1 - x0, y1 - y0))
+        if length_px <= 0:
+            return
+        profile_vals = profile_line(self.dt, (y0, x0), (y1, x1), mode="reflect", order=1)
+        if profile_vals is None or profile_vals.size == 0:
+            return
+
+        profile_vals = np.asarray(profile_vals, dtype=np.float32, copy=False)
+        distances = np.linspace(0.0, length_px, profile_vals.size, dtype=np.float32)
+        delta = float(profile_vals[-1] - profile_vals[0])
+        summary = (
+            f"Length: {length_px:.2f} px · ΔDT: {delta:+.2f} · "
+            f"Min/Max: {float(profile_vals.min()):.2f} / {float(profile_vals.max()):.2f}"
+        )
+        dialog = self._ensure_profile_dialog()
+        dialog.update_profile(distances, profile_vals, summary)
 
     # ------------------- Segmentation -------------------
 
@@ -956,6 +1251,8 @@ class MainWindow(QMainWindow):
         """Clear all derived data, images, analysis artifacts, and charts."""
         
         self.analyzer.reset_prediction_state()
+        if self._profile_dialog is not None:
+            self._profile_dialog.close()
         # ---- raw / processing buffers ----
         if not preserve_original:
             self.orig_img = None
@@ -989,6 +1286,10 @@ class MainWindow(QMainWindow):
         self._porosity = None
         self._pore_diams_units = None
         self._labels_rgb_cache = (None, None)
+        self._profile_mode_active = False
+        self._profile_points_scene = []
+        self._profile_points_img = []
+        self._remove_profile_items()
 
         # ---- charts (pyqtgraph) ----
         if hasattr(self, "graph_diameters") and isinstance(self.graph_diameters, pg.PlotWidget):

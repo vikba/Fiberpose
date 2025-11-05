@@ -21,11 +21,12 @@
 - [ ] Tiling for predictions
 - [x] !Add porosity measurement 
 - [ ] Add zoom
-- [ ] Add scalebar tool (or automatic scalebar detection)
+- [x] Add scalebar tool (or automatic scalebar detection)
 - [ ] Add logbar
 - [ ] Use lighweight alternative for torch for inference only
 - [ ] Use configuratin file
 - [x] Create class FiberSegment
+- [ ] Add plotprofile
 
 ## 🐞 Bugs
 - [x] Fix x,y order for arrow drawing
