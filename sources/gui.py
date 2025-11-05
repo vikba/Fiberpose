@@ -5,7 +5,7 @@ import numpy as np
 import cv2
 
 from PyQt6 import QtGui, QtWidgets
-from PyQt6.QtCore import Qt, QEvent, QTimer, QPoint, QLineF, pyqtSignal
+from PyQt6.QtCore import Qt, QEvent, QTimer, QPoint, QLineF, QSize, pyqtSignal
 from PyQt6.QtWidgets import (
     QMainWindow,
     QFileDialog,
@@ -14,6 +14,7 @@ from PyQt6.QtWidgets import (
     QGraphicsPixmapItem,
     QGraphicsEllipseItem,
     QGraphicsItem,
+    QToolButton,
 )
 from PyQt6.uic import loadUi
 
@@ -184,6 +185,24 @@ class MainWindow(QMainWindow):
         self._scalebar_unit: str = "um"
         self._pixmap_source_shape: tuple[int, int] | None = None
 
+        # View/zoom state
+        self._zoom_mode_active: bool = False
+        self._base_scale: float = 1.0
+        self._current_zoom: float = 1.0
+        self._min_zoom_factor: float = 0.2
+        self._max_zoom_factor: float = 5.0
+
+        self.btn_reset_view = QToolButton(self.graphicsView.viewport())
+        icon = self.style().standardIcon(QtWidgets.QStyle.StandardPixmap.SP_TitleBarNormalButton)
+        self.btn_reset_view.setIcon(icon)
+        self.btn_reset_view.setIconSize(QSize(16, 16))
+        self.btn_reset_view.setCursor(Qt.CursorShape.ArrowCursor)
+        self.btn_reset_view.setToolTip("Reset zoom to fit the image")
+        self.btn_reset_view.setAutoRaise(True)
+        self.btn_reset_view.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.btn_reset_view.clicked.connect(self.reset_zoom)
+        self.btn_reset_view.hide()
+
         # Profile plotting tool state
         self._profile_mode_active: bool = False
         self._profile_points_scene: list[tuple[float, float]] = []
@@ -260,9 +279,14 @@ class MainWindow(QMainWindow):
     # ------------------- Display helpers -------------------
 
     def _set_pixmap_from_array(self, img: np.ndarray | None):
+        prev_shape = self._pixmap_source_shape
         if img is None:
             self._pixitem.setPixmap(QtGui.QPixmap())
             self._pixmap_source_shape = None
+            self._zoom_mode_active = False
+            self._current_zoom = 1.0
+            self._base_scale = 1.0
+            self.btn_reset_view.hide()
             self._remove_profile_items()
             return
         self._pixmap_source_shape = img.shape[:2]
@@ -273,12 +297,16 @@ class MainWindow(QMainWindow):
         if pix.width() < view_size.width() or pix.height() < view_size.height():
             pix = pix.scaled(view_size, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
         self._pixitem.setPixmap(pix)
-        self._fit_view_to_pixmap()
+        self._scene.setSceneRect(self._pixitem.boundingRect())
+        force_fit = (not self._zoom_mode_active) or (prev_shape != self._pixmap_source_shape)
+        self._fit_view_to_pixmap(force=force_fit)
+        self._update_reset_button_position()
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
-        self._fit_view_to_pixmap()
-
+        self._update_reset_button_position()
+        if not self._zoom_mode_active:
+            self._fit_view_to_pixmap(force=True)
 
     @staticmethod
     def _numpy_to_qimage(img: np.ndarray) -> QtGui.QImage:
@@ -298,11 +326,19 @@ class MainWindow(QMainWindow):
             u8 = to_uint8_for_view(img)
             return MainWindow._numpy_to_qimage(u8)
         
-    def _fit_view_to_pixmap(self):
+    def _fit_view_to_pixmap(self, force: bool = False):
         pm = self._pixitem.pixmap()
         if pm is not None and not pm.isNull():
+            if self._zoom_mode_active and not force:
+                return
+            self.graphicsView.resetTransform()
             self.graphicsView.fitInView(self._pixitem, Qt.AspectRatioMode.KeepAspectRatio)
             self.graphicsView.centerOn(self._pixitem)
+            scale = self.graphicsView.transform().m11()
+            self._base_scale = scale if scale not in (0.0, None) else 1.0
+            self._current_zoom = 1.0
+            self._zoom_mode_active = False
+            self._update_reset_button_visibility()
 
     def _create_overlay(
         self,
@@ -394,11 +430,17 @@ class MainWindow(QMainWindow):
     def eventFilter(self, obj, event):
         if obj is self.graphicsView.viewport():
             et = event.type()
-            if self._scalebar_pending and et == QEvent.Type.MouseButtonPress:
+            if et == QEvent.Type.Resize:
+                self._update_reset_button_position()
+            elif et == QEvent.Type.Wheel:
+                if isinstance(event, QtGui.QWheelEvent):
+                    if self._handle_wheel_zoom(event):
+                        return True
+            if getattr(self, "_scalebar_pending", False) and et == QEvent.Type.MouseButtonPress:
                 if isinstance(event, QtGui.QMouseEvent):
                     self._handle_scalebar_mouse(event)
                     return True
-            if self._profile_mode_active and et == QEvent.Type.MouseButtonPress:
+            if getattr(self, "_profile_mode_active", False) and et == QEvent.Type.MouseButtonPress:
                 if isinstance(event, QtGui.QMouseEvent):
                     self._handle_profile_mouse(event)
                     return True
@@ -648,6 +690,52 @@ class MainWindow(QMainWindow):
             self._scalebar_points = []
         if reset_cursor and hasattr(self, "graphicsView"):
             self.graphicsView.viewport().unsetCursor()
+
+    # ------------------- Zoom helpers -------------------
+
+    def reset_zoom(self):
+        self._fit_view_to_pixmap(force=True)
+
+    def _update_reset_button_position(self):
+        if not hasattr(self, "btn_reset_view") or self.btn_reset_view is None:
+            return
+        viewport = self.graphicsView.viewport()
+        if viewport is None:
+            return
+        margin = 8
+        hint = self.btn_reset_view.sizeHint()
+        x = viewport.width() - hint.width() - margin
+        y = margin
+        self.btn_reset_view.move(max(margin, x), y)
+
+    def _update_reset_button_visibility(self):
+        if not hasattr(self, "btn_reset_view") or self.btn_reset_view is None:
+            return
+        self.btn_reset_view.setVisible(self._zoom_mode_active)
+
+    def _handle_wheel_zoom(self, event: QtGui.QWheelEvent) -> bool:
+        if self._pixitem.pixmap().isNull():
+            return False
+        angle = event.angleDelta().y()
+        if angle == 0:
+            return False
+        zoom_factor = 1.25 if angle > 0 else 0.8
+        current_scale = self.graphicsView.transform().m11()
+        if current_scale == 0:
+            current_scale = 1.0
+        target_scale = current_scale * zoom_factor
+        base = self._base_scale if self._base_scale not in (0.0, None) else 1.0
+        relative = target_scale / base
+        if relative < self._min_zoom_factor or relative > self._max_zoom_factor:
+            return True
+        was_anchor = self.graphicsView.transformationAnchor()
+        self.graphicsView.setTransformationAnchor(QtWidgets.QGraphicsView.ViewportAnchor.AnchorUnderMouse)
+        self.graphicsView.scale(zoom_factor, zoom_factor)
+        self.graphicsView.setTransformationAnchor(was_anchor)
+        self._zoom_mode_active = True
+        self._current_zoom = relative
+        self._update_reset_button_visibility()
+        return True
 
     # ------------------- Profile plot tool -------------------
 
@@ -1290,6 +1378,8 @@ class MainWindow(QMainWindow):
         self._profile_points_scene = []
         self._profile_points_img = []
         self._remove_profile_items()
+        if hasattr(self, "btn_reset_view") and self.btn_reset_view is not None:
+            self.btn_reset_view.hide()
 
         # ---- charts (pyqtgraph) ----
         if hasattr(self, "graph_diameters") and isinstance(self.graph_diameters, pg.PlotWidget):

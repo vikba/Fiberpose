@@ -26,7 +26,7 @@
 - [ ] Use lighweight alternative for torch for inference only
 - [ ] Use configuratin file
 - [x] Create class FiberSegment
-- [ ] Add plotprofile
+- [x] Add plotprofile
 
 ## 🐞 Bugs
 - [x] Fix x,y order for arrow drawing
