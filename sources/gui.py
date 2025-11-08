@@ -1051,10 +1051,10 @@ class MainWindow(QMainWindow):
 
         max_angle = float(self.sp_max_cent_angle.value())
 
+        self.progress_bar.setValue(0)
+
         if not self.analyzer.dt_predicted():
             logger.info("Starting Distance transform prediction.")
-            self.progress_bar.setValue(0)
-
             try:
                 self.analyzer.predict_dt(
                     image=self.orig_img,
@@ -1064,6 +1064,8 @@ class MainWindow(QMainWindow):
                 self._show_error("Prediction failed", str(e))
                 logger.error("Segmentation failed: %s", e)
                 return
+
+        self.progress_bar.setValue(40)
 
         try:
             params = getattr(self.analyzer, "_centerline_kwargs", None)
@@ -1079,6 +1081,8 @@ class MainWindow(QMainWindow):
             self._show_error("Centerline computation failed", str(e))
             logger.error("Centerline computation failed: %s", e)
             return
+
+        self.progress_bar.setValue(50)
 
         dt = self.analyzer.get_dt()
         gx, gy = self.analyzer.get_gradients()
@@ -1123,7 +1127,7 @@ class MainWindow(QMainWindow):
             self.action_save_masks_predictions.setEnabled(True)
 
         self.refresh_view()
-        self.progress_bar.setValue(80)
+        self.progress_bar.setValue(70)
         logger.info("Segmentation completed successfully.")
 
     def analyze_fibers(self):
@@ -1165,6 +1169,8 @@ class MainWindow(QMainWindow):
             spacing_px=spacing_px
         )
         self._viz_points = viz_points
+
+        self.progress_bar.setValue(80)
 
         # Build sample table and stats (keep in GUI)
         if hist_centers:
