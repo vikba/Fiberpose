@@ -1,4 +1,6 @@
 sources/__pycache__/
+__pycache__/
+tests/
 *.pyc
 *.pyo
 *.pyd
