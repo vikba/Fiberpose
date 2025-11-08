@@ -15,7 +15,7 @@
 - [x] add loading bar
 - [x] Add gx,gy vizualization
 - [x] Build diameter lines based on gradients
-- [ ] !Add clustering of fiber fragmetns into one fiber
+- [x] !Add clustering of fiber fragmetns into one fiber
 - [x] Batch processing
 - [ ] !Improve dataset and finetune NN
 - [ ] Tiling for predictions

@@ -1,4 +1,16 @@
+import colorsys
 import numpy as np
+
+
+def label_to_rgb(label: int) -> tuple[int, int, int]:
+    """Deterministically map a positive label ID to a vivid RGB color."""
+    if label <= 0:
+        return (0, 0, 0)
+    hue = (label * 0.6180339887498949) % 1.0  # golden ratio multiplier for good spacing
+    sat = 0.55 + 0.35 * (((label * 0.2171) % 1.0))
+    val = 0.85
+    r, g, b = colorsys.hsv_to_rgb(hue, sat, val)
+    return int(round(r * 255)), int(round(g * 255)), int(round(b * 255))
 
 # ------------- image helpers -------------
 def to_uint8_for_view(img: np.ndarray | None) -> np.ndarray | None:

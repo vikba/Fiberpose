@@ -28,7 +28,7 @@ logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
 
 from .fiber_analyzer import FiberAnalyzer
-from .utils import ensure_rgb_u8, to_uint8_for_view
+from .utils import ensure_rgb_u8, label_to_rgb, to_uint8_for_view
 
 # ------------------- Paths -------------------
 
@@ -47,22 +47,14 @@ def labels_to_color(labels: np.ndarray) -> np.ndarray:
     out = np.zeros((h, w, 3), dtype=np.uint8)
     if labels.size == 0:
         return out
-    unique_vals = [v for v in np.unique(labels) if v != 0]
-    if not unique_vals:
-        return out
-    rng = np.random.default_rng()
-    total_colors = 256 ** 3
-    colors_flat = rng.choice(total_colors, size=len(unique_vals), replace=False)
-    colors = np.stack(
-        (
-            (colors_flat >> 16) & 0xFF,
-            (colors_flat >> 8) & 0xFF,
-            colors_flat & 0xFF,
-        ),
-        axis=1,
-    ).astype(np.uint8)
-    for idx, v in enumerate(unique_vals):
-        out[labels == v] = colors[idx]
+    for value in np.unique(labels):
+        if value == 0:
+            continue
+        mask = labels == value
+        if not mask.any():
+            continue
+        color = label_to_rgb(int(value))
+        out[mask] = color
     return out
 
 # ------------------- MainWindow -------------------
@@ -216,6 +208,9 @@ class MainWindow(QMainWindow):
 
         self.high_conf_fib = False
         self.chb_high_conf.setChecked(False)
+        self.cluster_enabled = False
+        if hasattr(self, "chb_cluster"):
+            self.chb_cluster.setChecked(False)
 
 
         # Menu & actions: updated UI element names (rb_mask1_cent -> rb_centerlines; rb_mask2_segm -> rb_segmentation;
@@ -275,6 +270,9 @@ class MainWindow(QMainWindow):
         # react to checkbox changes at runtime
         self.chb_usegpu.toggled.connect(self._on_usegpu_toggled)
         self.chb_high_conf.toggled.connect(self._on_high_conf_toggled)
+        if hasattr(self, "chb_cluster"):
+            self.chb_cluster.toggled.connect(self._on_cluster_toggled)
+            self._on_cluster_toggled(self.chb_cluster.isChecked())
 
         # Connect toggled signals of rb_show_diam and rb_show_direct to update overlay
         self.rb_show_diam.toggled.connect(self._render_vector_overlay)
@@ -1589,6 +1587,11 @@ class MainWindow(QMainWindow):
         if self.analyzer is not None:
             self.analyzer.set_high_conf_filter(checked)
 
+    def _on_cluster_toggled(self, checked: bool):
+        self.cluster_enabled = bool(checked)
+        if self.analyzer is not None:
+            self.analyzer.enable_fiber_clustering(self.cluster_enabled)
+
     # ------------------- New default image loading -------------------
 
     def load_default_image(self):
@@ -1597,5 +1600,3 @@ class MainWindow(QMainWindow):
             self.load_original_from_path(default_img_path)
         else:
             logger.info("Default image not found: resources/test.png")
-
-

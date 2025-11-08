@@ -2,15 +2,15 @@ from __future__ import annotations
 
 import logging
 import os
-from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
 import cv2
 import numpy as np
 from scipy.ndimage import gaussian_filter, laplace
-from skimage.measure import label as cc_label
 from skimage.segmentation import watershed
 
+from .clustering import stitch_and_cluster
+from .fiber_graph import FiberFragment
 from .models import FiberposeModel
 from .ridgedetector import RidgeDetector
 from .utils import (
@@ -27,52 +27,6 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.dirname(HERE)
 
 logger = logging.getLogger(__name__)
-
-
-@dataclass
-class SegmentEndpoint:
-    segment_id: int
-    endpoint_id: int  # 0 = start, 1 = end
-    xy: np.ndarray  # shape (2,), float32
-    tangent: np.ndarray  # unit vector pointing outward
-    neighbor: Optional[Tuple[int, int]] = None  # (segment_id, endpoint_id)
-    cost: float = float("inf")
-
-    def is_free(self) -> bool:
-        return self.neighbor is None
-
-    def attach(self, neighbor: Tuple[int, int], cost: float) -> None:
-        if not self.is_free():
-            raise ValueError(f"Endpoint {self.endpoint_id} of segment {self.segment_id} already connected.")
-        self.neighbor = neighbor
-        self.cost = float(cost)
-
-
-@dataclass
-class FiberSegment:
-    segment_id: int
-    parent_fiber_id: int
-    points_xy: np.ndarray
-    radii: np.ndarray
-    endpoints: Tuple[SegmentEndpoint, SegmentEndpoint]
-
-    def connect(self, local_idx: int, other: SegmentEndpoint, cost: float) -> None:
-        endpoint = self.endpoints[local_idx]
-        if not endpoint.is_free():
-            raise ValueError(f"Endpoint {local_idx} of segment {self.segment_id} already connected.")
-        if not other.is_free():
-            raise ValueError(f"Target endpoint {other.endpoint_id} of segment {other.segment_id} already connected.")
-        endpoint.attach((other.segment_id, other.endpoint_id), cost)
-        other.attach((self.segment_id, local_idx), cost)
-
-    def endpoint(self, idx: int) -> SegmentEndpoint:
-        return self.endpoints[idx]
-
-    def length(self) -> float:
-        if len(self.points_xy) < 2:
-            return 0.0
-        diffs = np.diff(self.points_xy, axis=0)
-        return float(np.linalg.norm(diffs, axis=1).sum())
 
 
 class FiberAnalyzer:
@@ -124,6 +78,15 @@ class FiberAnalyzer:
         self._last_max_angle: float = 0.0
         self._constant_segments_info: Optional[List[Dict[str, Any]]] = None
         self._segment_counter: int = 0
+        self._cluster_fibers: bool = False
+        self._cluster_connection_pairs: List[Tuple[np.ndarray, np.ndarray]] = []
+        self._cluster_config: Dict[str, Any] = {
+            "d_max": 150.0,
+            "threshold": 10.0,
+            "max_neighbors": None,
+            "length_weight": 0.1,
+            "radius_weight": 0.0,
+        }
 
         self.reset_prediction_state()
 
@@ -142,13 +105,14 @@ class FiberAnalyzer:
         self._gx: Optional[np.ndarray] = None
         self._gy: Optional[np.ndarray] = None
         self._laplacian: Optional[np.ndarray] = None
-        self._constant_segments: Optional[List[FiberSegment]] = None
+        self._constant_segments: Optional[List[FiberFragment]] = None
         self._normals_xy: Optional[List[np.ndarray]] = None
         self._centerlines_rgb: Optional[np.ndarray] = None
         self._markers: Optional[np.ndarray] = None
         self._labels: Optional[np.ndarray] = None
         self._constant_segments_info = None
         self._segment_counter = 0
+        self._cluster_connection_pairs = []
 
     @staticmethod
     def _default_centerline_kwargs() -> Dict[str, Any]:
@@ -169,41 +133,17 @@ class FiberAnalyzer:
             "std_thresh": 0.8,
         }
 
-    @staticmethod
-    def _unit_vector(vec: np.ndarray) -> np.ndarray:
-        v = np.asarray(vec, dtype=np.float32)
-        norm = float(np.linalg.norm(v))
-        if norm <= 1e-8:
-            return np.zeros_like(v, dtype=np.float32)
-        return v / norm
-
-    def _segment_endpoints(self, segment_id: int, points_xy: np.ndarray) -> Tuple[SegmentEndpoint, SegmentEndpoint]:
-        pts = np.asarray(points_xy, dtype=np.float32)
-        if pts.shape[0] == 0:
-            zero = np.zeros(2, dtype=np.float32)
-            start = SegmentEndpoint(segment_id, 0, zero.copy(), zero.copy())
-            end = SegmentEndpoint(segment_id, 1, zero.copy(), zero.copy())
-            return start, end
-        if pts.shape[0] == 1:
-            tangent = np.zeros(2, dtype=np.float32)
-            xy = pts[0].astype(np.float32)
-            start = SegmentEndpoint(segment_id, 0, xy.copy(), tangent.copy())
-            end = SegmentEndpoint(segment_id, 1, xy.copy(), tangent.copy())
-            return start, end
-
-        start_vec = pts[1] - pts[0]
-        end_vec = pts[-1] - pts[-2]
-        start_tangent = self._unit_vector(start_vec)
-        end_tangent = self._unit_vector(end_vec)
-        start_xy = pts[0].astype(np.float32)
-        end_xy = pts[-1].astype(np.float32)
-        start = SegmentEndpoint(segment_id, 0, start_xy.copy(), start_tangent.copy())
-        end = SegmentEndpoint(segment_id, 1, end_xy.copy(), end_tangent.copy())
-        return start, end
-
     def set_high_conf_filter(self, high_conf_fib: bool):
         self._high_conf_fib = bool(high_conf_fib)
         # downstream calls recompute centerlines via predict_dt/compute_centerlines
+
+    def enable_fiber_clustering(self, enabled: bool, **cluster_kwargs: Any) -> None:
+        """Toggle clustering of centerline fragments before segmentation."""
+        self._cluster_fibers = bool(enabled)
+        if cluster_kwargs:
+            self._cluster_config.update(cluster_kwargs)
+        # force downstream consumers to refresh markers if clustering state changes
+        self._markers = None
 
     def set_device(self, device: Any):
         if device == self.device:
@@ -360,7 +300,7 @@ class FiberAnalyzer:
                     trimmed_xy = pts_xy[trim:-trim].reshape(-1, 1, 2)
                     processed_segments.append((trimmed_xy, source_idx))
 
-        fiber_segments: List[FiberSegment] = []
+        fragments: List[FiberFragment] = []
         constant_segments_xy: List[np.ndarray] = []
         for seg_xy, source_id in processed_segments:
             filtered_windows = self._sliding_window_filter(
@@ -384,49 +324,67 @@ class FiberAnalyzer:
                 )
                 self._segment_counter += 1
                 seg_id = self._segment_counter
-                endpoints = self._segment_endpoints(seg_id, pts_xy)
-                fiber_segments.append(
-                    FiberSegment(
-                        segment_id=seg_id,
-                        parent_fiber_id=source_id,
-                        points_xy=pts_xy,
+                fragments.append(
+                    FiberFragment(
+                        fragment_id=seg_id,
+                        centerline_xy=pts_xy,
                         radii=radii,
-                        endpoints=endpoints,
+                        parent_fiber_id=source_id,
                     )
                 )
                 constant_segments_xy.append(pts_xy.reshape(-1, 1, 2))
 
-        normals_xy = [self._polyline_normals(seg.points_xy) for seg in fiber_segments]
+        normals_xy = [self._polyline_normals(seg.points_xy) for seg in fragments]
+
+        cluster_connections: List[Tuple[np.ndarray, np.ndarray]] = []
+        if fragments:
+            if self._cluster_fibers:
+                cluster_connections = self._cluster_segments(fragments)
+            self._normalize_parent_ids(fragments)
 
         base_dt = to_uint8_for_view(self._dt_u8)
         centerlines_rgb = cv2.cvtColor(base_dt, cv2.COLOR_GRAY2BGR)
-        for seg in fiber_segments:
-            seg_draw = seg.points_xy.reshape(-1, 1, 2)
-            cv2.polylines(centerlines_rgb, [seg_draw.astype(np.int32)], isClosed=False,
-                          color=(255, 0, 0), thickness=1, lineType=cv2.LINE_AA)
+        centerline_color = (255, 0, 0)  
+        for seg in fragments:
+            pts = seg.points_xy.reshape(-1, 1, 2).astype(np.int32)
+            if len(pts) < 2:
+                x, y = pts[0, 0]
+                cv2.circle(centerlines_rgb, (x, y), 1, centerline_color, thickness=-1, lineType=cv2.LINE_AA)
+            else:
+                cv2.polylines(
+                    centerlines_rgb,
+                    [pts],
+                    isClosed=False,
+                    color=centerline_color,
+                    thickness=1,
+                    lineType=cv2.LINE_AA,
+                )
 
-        centerlines_binary = np.zeros(self._dt_u8.shape, dtype=np.uint8)
-        for seg in fiber_segments:
-            seg_draw = seg.points_xy.reshape(-1, 1, 2)
-            cv2.polylines(centerlines_binary, [seg_draw.astype(np.int32)], isClosed=False,
-                          color=255, thickness=2, lineType=cv2.LINE_8)
-        _, centerlines_binary = cv2.threshold(centerlines_binary, 128, 255, cv2.THRESH_BINARY)
-        markers = cc_label(centerlines_binary, connectivity=2).astype(np.int32)
+        connection_color = (0, 0, 255)  # blue in BGR
+        for p_xy, q_xy in cluster_connections:
+            px = int(round(float(p_xy[0])))
+            py = int(round(float(p_xy[1])))
+            qx = int(round(float(q_xy[0])))
+            qy = int(round(float(q_xy[1])))
+            cv2.line(centerlines_rgb, (px, py), (qx, qy), connection_color, 1, cv2.LINE_AA)
+
+        markers = self._render_markers(fragments) if fragments else np.zeros(self._dt_u8.shape, dtype=np.int32)
 
         # cache results
-        self._constant_segments = fiber_segments
+        self._constant_segments = fragments
         self._constant_segments_info = [
             {
-                "segment_id": seg.segment_id,
+                "segment_id": seg.fragment_id,
                 "parent_fiber_id": seg.parent_fiber_id,
                 "points_xy": seg.points_xy,
                 "radii": seg.radii,
             }
-            for seg in fiber_segments
+            for seg in fragments
         ]
         self._normals_xy = normals_xy
         self._centerlines_rgb = centerlines_rgb
         self._markers = markers
+        self._cluster_connection_pairs = cluster_connections
 
         logger.info("Detected constant segments: %d", len(constant_segments_xy))
         return constant_segments_xy, normals_xy, centerlines_rgb, markers
@@ -519,7 +477,7 @@ class FiberAnalyzer:
                             pts_xy[run_start:idx],
                             radii[run_start:idx],
                             extra,
-                            value=int(info.get("segment_id", 0)),
+                            value=int(info.get("parent_fiber_id", info.get("segment_id", 0))),
                         )
                     run_start = None
             if run_start is not None:
@@ -529,7 +487,7 @@ class FiberAnalyzer:
                         pts_xy[run_start:],
                         radii[run_start:],
                         extra,
-                        value=int(info.get("segment_id", 0)),
+                        value=int(info.get("parent_fiber_id", info.get("segment_id", 0))),
                     )
 
         if not mask.any():
@@ -563,6 +521,71 @@ class FiberAnalyzer:
                 continue
             radius_px = max(1, int(round(r_eff)))
             cv2.circle(mask, (cx, cy), radius_px, int(value), thickness=-1)
+
+    # ------------------------------------------------------------------ #
+    # Clustering helpers
+
+    def _cluster_segments(self, segments: List[FiberFragment]) -> List[Tuple[np.ndarray, np.ndarray]]:
+        if not segments:
+            return []
+
+        try:
+            stitch_and_cluster(segments, **self._cluster_config)
+        except Exception as exc:
+            logger.warning("Fiber clustering failed: %s", exc)
+            return []
+
+        connections: List[Tuple[np.ndarray, np.ndarray]] = []
+        seen_pairs: set[tuple[int, int]] = set()
+        for frag in segments:
+            for ep in frag.endpoints():
+                other = ep.connected_to
+                if other is None:
+                    continue
+                fid = frag.fragment_id
+                oid = other.fragment.fragment_id
+                key = (min(fid, oid), max(fid, oid))
+                if key in seen_pairs:
+                    continue
+                seen_pairs.add(key)
+                connections.append((ep.pos().copy(), other.pos().copy()))
+        return connections
+
+    def _normalize_parent_ids(self, segments: List[FiberFragment]) -> Dict[int, int]:
+        remap: Dict[int, int] = {}
+        next_id = 1
+        for seg in segments:
+            pid = int(seg.parent_fiber_id)
+            if pid <= 0:
+                pid = int(seg.fragment_id)
+            if pid not in remap:
+                remap[pid] = next_id
+                next_id += 1
+            seg.parent_fiber_id = remap[pid]
+        return remap
+
+    def _render_markers(self, segments: List[FiberFragment]) -> np.ndarray:
+        if self._dt_u8 is None:
+            raise ValueError("Distance transform not available. Call predict_dt first.")
+        markers = np.zeros(self._dt_u8.shape, dtype=np.int32)
+        for seg in segments:
+            pts = np.asarray(seg.points_xy, dtype=np.float32)
+            if pts.size == 0:
+                continue
+            pts_int = np.round(pts).astype(np.int32).reshape(-1, 1, 2)
+            if len(pts_int) < 2:
+                cx, cy = pts_int[0, 0]
+                cv2.circle(markers, (cx, cy), 1, int(seg.parent_fiber_id), thickness=-1)
+                continue
+            cv2.polylines(
+                markers,
+                [pts_int],
+                isClosed=False,
+                color=int(seg.parent_fiber_id),
+                thickness=1,
+                lineType=cv2.LINE_8,
+            )
+        return markers
 
     # ------------------------------------------------------------------ #
     # Accessors
