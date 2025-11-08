@@ -51,7 +51,7 @@ class SegmentEndpoint:
 @dataclass
 class FiberSegment:
     segment_id: int
-    source_line_id: int
+    parent_fiber_id: int
     points_xy: np.ndarray
     radii: np.ndarray
     endpoints: Tuple[SegmentEndpoint, SegmentEndpoint]
@@ -388,7 +388,7 @@ class FiberAnalyzer:
                 fiber_segments.append(
                     FiberSegment(
                         segment_id=seg_id,
-                        source_line_id=source_id,
+                        parent_fiber_id=source_id,
                         points_xy=pts_xy,
                         radii=radii,
                         endpoints=endpoints,
@@ -418,7 +418,7 @@ class FiberAnalyzer:
         self._constant_segments_info = [
             {
                 "segment_id": seg.segment_id,
-                "source_line_id": seg.source_line_id,
+                "parent_fiber_id": seg.parent_fiber_id,
                 "points_xy": seg.points_xy,
                 "radii": seg.radii,
             }
