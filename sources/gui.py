@@ -2,6 +2,7 @@
 import os
 import math
 from datetime import datetime
+from typing import Any, Dict
 import numpy as np
 import cv2
 
@@ -267,6 +268,9 @@ class MainWindow(QMainWindow):
             high_conf_fib=self.high_conf_fib,
         )
 
+        self.pipeline_config: Dict[str, Dict[str, Any]] = {}
+        self._init_pipeline_config()
+
         # react to checkbox changes at runtime
         self.chb_usegpu.toggled.connect(self._on_usegpu_toggled)
         self.chb_high_conf.toggled.connect(self._on_high_conf_toggled)
@@ -385,11 +389,18 @@ class MainWindow(QMainWindow):
             self._show_error("Analyzer unavailable", "Fiber analyzer has not been initialized.")
             return False
 
-        max_angle = float(self.sp_max_cent_angle.value()) if hasattr(self, "sp_max_cent_angle") else 45.0
+        self._sync_pipeline_config_from_ui()
+        ridge_cfg = self.pipeline_config.get("ridge_detection", {}) if hasattr(self, "pipeline_config") else {}
+        max_angle = float(ridge_cfg.get("max_angle_deg", self._current_max_angle()))
+        centerline_kwargs = dict(ridge_cfg.get("centerline_kwargs", {}))
 
         if not self.analyzer.dt_predicted():
             try:
-                self.analyzer.predict_dt(image=self.orig_img, max_angle_deg=max_angle)
+                self.analyzer.predict_dt(
+                    image=self.orig_img,
+                    max_angle_deg=max_angle,
+                    centerline_kwargs=centerline_kwargs or None,
+                )
             except Exception as exc:
                 self._show_error("Prediction failed", str(exc))
                 logger.error("Profile DT ensure failed: %s", exc)
@@ -1049,7 +1060,23 @@ class MainWindow(QMainWindow):
             logger.error("Segmentation failed: analyzer not initialized.")
             return
 
-        max_angle = float(self.sp_max_cent_angle.value())
+        self._sync_pipeline_config_from_ui()
+        config = self.pipeline_config if hasattr(self, "pipeline_config") else {}
+        ridge_cfg = config.get("ridge_detection", {})
+        seg_cfg = config.get("segmentation", {})
+        watershed_cfg = seg_cfg.get("watershed", {}) if isinstance(seg_cfg, dict) else {}
+        high_conf_cfg = seg_cfg.get("high_confidence", {}) if isinstance(seg_cfg, dict) else {}
+
+        max_angle = float(ridge_cfg.get("max_angle_deg", self._current_max_angle()))
+        centerline_params = dict(
+            ridge_cfg.get("centerline_kwargs", FiberAnalyzer._default_centerline_kwargs())
+        )
+        if not centerline_params:
+            params = getattr(self.analyzer, "_centerline_kwargs", None)
+            if params:
+                centerline_params = dict(params)
+            else:
+                centerline_params = FiberAnalyzer._default_centerline_kwargs()
 
         self.progress_bar.setValue(0)
 
@@ -1059,6 +1086,7 @@ class MainWindow(QMainWindow):
                 self.analyzer.predict_dt(
                     image=self.orig_img,
                     max_angle_deg=max_angle,
+                    centerline_kwargs=centerline_params,
                 )
             except Exception as e:
                 self._show_error("Prediction failed", str(e))
@@ -1068,14 +1096,9 @@ class MainWindow(QMainWindow):
         self.progress_bar.setValue(40)
 
         try:
-            params = getattr(self.analyzer, "_centerline_kwargs", None)
-            if params:
-                params = dict(params)
-            else:
-                params = FiberAnalyzer._default_centerline_kwargs()
             self.analyzer.compute_centerlines(
                 max_angle_deg=max_angle,
-                **params,
+                **centerline_params,
             )
         except Exception as e:
             self._show_error("Centerline computation failed", str(e))
@@ -1099,12 +1122,23 @@ class MainWindow(QMainWindow):
         self.lapl_img = self.analyzer.get_laplacian()
         self._centerlines_dt = self.analyzer.get_centerlines_image()
 
-        thr_u8 = int(self.sp_segm_threshold.value())
-        radius_thresh_px: float | None = float(self.sp_segm_threshold.value()) if self.high_conf_fib else None
+        thr_u8 = int(watershed_cfg.get("threshold_u8", self._current_segmentation_threshold()))
+        if self.high_conf_fib:
+            radius_thresh_px_val = high_conf_cfg.get("radius_thresh_px")
+            radius_thresh_px = float(radius_thresh_px_val) if radius_thresh_px_val is not None else None
+            high_conf_options = {
+                "dilate_extra_px": float(high_conf_cfg.get("dilate_extra_px", 0.0)),
+                "min_run_points": int(high_conf_cfg.get("min_run_points", 1)),
+            }
+        else:
+            radius_thresh_px_val = watershed_cfg.get("radius_thresh_px")
+            radius_thresh_px = float(radius_thresh_px_val) if radius_thresh_px_val is not None else None
+            high_conf_options = None
         try:
             self.labels_img = self.analyzer.segment(
                 thr_u8=thr_u8,
                 radius_thresh_px=radius_thresh_px,
+                high_conf_options=high_conf_options,
             )
         except Exception as e:
             self._show_error("Segmentation failed", str(e))
@@ -1134,6 +1168,10 @@ class MainWindow(QMainWindow):
         """
         Computes thickness samples via analyzer and renders overlays/plots.
         """
+        self._sync_pipeline_config_from_ui()
+        seg_cfg = {}
+        if hasattr(self, "pipeline_config"):
+            seg_cfg = self.pipeline_config.get("segmentation", {})
         if self.gray_u8 is None or self.labels_img is None:
             self.segment()
             if self.gray_u8 is None or self.labels_img is None:
@@ -1189,7 +1227,8 @@ class MainWindow(QMainWindow):
 
 
         # --- pore splitting + sampling ------------------------------------------
-        thr_u8 = int(self.sp_segm_threshold.value()) if hasattr(self, "sp_segm_threshold") else 128
+        watershed_cfg = seg_cfg.get("watershed", {}) if isinstance(seg_cfg, dict) else {}
+        thr_u8 = int(watershed_cfg.get("threshold_u8", self._current_segmentation_threshold()))
 
         # Build void mask from your chosen source (DT or grayscale-based threshold).
         # If you already have self._void_mask, reuse it.
@@ -1590,13 +1629,17 @@ class MainWindow(QMainWindow):
 
     def _on_high_conf_toggled(self, checked: bool):
         self.high_conf_fib = checked
+        self._sync_pipeline_config_from_ui()
         if self.analyzer is not None:
             self.analyzer.set_high_conf_filter(checked)
 
     def _on_cluster_toggled(self, checked: bool):
         self.cluster_enabled = bool(checked)
+        self._sync_pipeline_config_from_ui()
+        cluster_cfg = self.pipeline_config.get("clustering", {}) if hasattr(self, "pipeline_config") else {}
+        cluster_params = dict(cluster_cfg.get("params", {}))
         if self.analyzer is not None:
-            self.analyzer.enable_fiber_clustering(self.cluster_enabled)
+            self.analyzer.enable_fiber_clustering(self.cluster_enabled, **cluster_params)
 
     # ------------------- New default image loading -------------------
 
@@ -1606,3 +1649,76 @@ class MainWindow(QMainWindow):
             self.load_original_from_path(default_img_path)
         else:
             logger.info("Default image not found: resources/test.png")
+
+    # ------------------- Processing configuration -------------------
+
+    def _init_pipeline_config(self):
+        ridge_defaults = FiberAnalyzer._default_centerline_kwargs()
+        cluster_defaults: Dict[str, Any] = {}
+        if self.analyzer is not None and hasattr(self.analyzer, "get_cluster_config"):
+            try:
+                cluster_defaults = self.analyzer.get_cluster_config()
+            except Exception:
+                cluster_defaults = {}
+        self.pipeline_config = {
+            "ridge_detection": {
+                "max_angle_deg": self._current_max_angle(),
+                "centerline_kwargs": dict(ridge_defaults),
+            },
+            "segmentation": {
+                "watershed": {
+                    "threshold_u8": self._current_segmentation_threshold(),
+                    "radius_thresh_px": None,
+                },
+                "high_confidence": {
+                    "radius_thresh_px": self._current_radius_threshold(),
+                    "dilate_extra_px": 0.0,
+                    "min_run_points": 1,
+                },
+            },
+            "clustering": {
+                "enabled": bool(self.cluster_enabled),
+                "params": dict(cluster_defaults),
+            },
+        }
+
+    def _sync_pipeline_config_from_ui(self):
+        if not getattr(self, "pipeline_config", None):
+            self._init_pipeline_config()
+            return
+
+        ridge_cfg = self.pipeline_config.setdefault("ridge_detection", {})
+        ridge_cfg["max_angle_deg"] = self._current_max_angle()
+        ridge_cfg.setdefault("centerline_kwargs", dict(FiberAnalyzer._default_centerline_kwargs()))
+
+        seg_cfg = self.pipeline_config.setdefault("segmentation", {})
+        watershed_cfg = seg_cfg.setdefault("watershed", {})
+        watershed_cfg["threshold_u8"] = self._current_segmentation_threshold()
+        watershed_cfg.setdefault("radius_thresh_px", None)
+
+        high_conf_cfg = seg_cfg.setdefault("high_confidence", {})
+        high_conf_cfg["radius_thresh_px"] = self._current_radius_threshold()
+        high_conf_cfg.setdefault("dilate_extra_px", 0.0)
+        high_conf_cfg.setdefault("min_run_points", 1)
+
+        cluster_cfg = self.pipeline_config.setdefault("clustering", {})
+        cluster_cfg["enabled"] = bool(self.cluster_enabled)
+        if "params" not in cluster_cfg or not cluster_cfg["params"]:
+            if self.analyzer is not None and hasattr(self.analyzer, "get_cluster_config"):
+                try:
+                    cluster_cfg["params"] = self.analyzer.get_cluster_config()
+                except Exception:
+                    cluster_cfg["params"] = {}
+            else:
+                cluster_cfg["params"] = {}
+
+    def _current_max_angle(self) -> float:
+        return float(self.sp_max_cent_angle.value()) if hasattr(self, "sp_max_cent_angle") else 45.0
+
+    def _current_segmentation_threshold(self) -> int:
+        return int(self.sp_segm_threshold.value()) if hasattr(self, "sp_segm_threshold") else 128
+
+    def _current_radius_threshold(self) -> float | None:
+        if not self.high_conf_fib:
+            return None
+        return float(self._current_segmentation_threshold())
