@@ -18,13 +18,15 @@
 - [x] !Add clustering of fiber fragmetns into one fiber
 - [x] Batch processing
 - [ ] !Improve dataset and finetune NN
+- [ ] Train NN on pores dataset
 - [ ] Tiling for predictions
 - [x] !Add porosity measurement 
 - [x] Add zoom
 - [x] Add scalebar tool (or automatic scalebar detection)
 - [ ] Add logbar
 - [ ] Use lighweight alternative for torch for inference only
-- [ ] Use configuratin file
+- [x] Add default configuration variable
+- [ ] Load configuration from file
 - [x] Create class FiberSegment
 - [x] Add plotprofile
 

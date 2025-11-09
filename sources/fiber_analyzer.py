@@ -145,6 +145,10 @@ class FiberAnalyzer:
         # force downstream consumers to refresh markers if clustering state changes
         self._markers = None
 
+    def get_cluster_config(self) -> Dict[str, Any]:
+        """Return a shallow copy of the current clustering configuration."""
+        return dict(self._cluster_config)
+
     def set_device(self, device: Any):
         if device == self.device:
             return
@@ -410,18 +414,29 @@ class FiberAnalyzer:
             )
         return info
 
-    def segment(self, thr_u8: int, radius_thresh_px: float | None = None) -> np.ndarray:
+    def segment(
+        self,
+        thr_u8: int,
+        radius_thresh_px: float | None = None,
+        high_conf_options: Optional[Dict[str, Any]] = None,
+    ) -> np.ndarray:
         """
         Run watershed segmentation using cached DT and markers.
         """
         if self._dt_u8 is None:
             raise ValueError("Distance transform not available. Call predict_dt first.")
 
+        high_conf_opts = high_conf_options or {}
+
         if self._high_conf_fib and radius_thresh_px is not None:
             if (self._constant_segments_info is None) or (not self._constant_segments_info):
                 self.compute_centerlines(self._last_max_angle, **self._centerline_kwargs)
             logger.info("Segmentation of high confidence fibers")
-            labels = self.segment_high_confidence(radius_thresh_px=radius_thresh_px)
+            labels = self.segment_high_confidence(
+                radius_thresh_px=radius_thresh_px,
+                dilate_extra_px=float(high_conf_opts.get("dilate_extra_px", 0.0)),
+                min_run_points=int(high_conf_opts.get("min_run_points", 1)),
+            )
             self._labels = labels
             return labels
 
