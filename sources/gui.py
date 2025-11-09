@@ -16,6 +16,7 @@ from PyQt6.QtWidgets import (
     QGraphicsEllipseItem,
     QGraphicsItem,
     QToolButton,
+    QDialogButtonBox,
 )
 from PyQt6.uic import loadUi
 
@@ -120,6 +121,49 @@ class ProfilePlotDialog(QtWidgets.QDialog):
         super().closeEvent(event)
 
 
+class BatchSaveOptionsDialog(QtWidgets.QDialog):
+    """Modal dialog that lets the user choose which batch artifacts to produce per sample."""
+
+    def __init__(
+        self,
+        parent: QtWidgets.QWidget | None = None,
+        initial_options: Dict[str, bool] | None = None,
+    ):
+        super().__init__(parent)
+        self.setWindowTitle("Batch export options")
+        self.setModal(True)
+
+        layout = QtWidgets.QVBoxLayout(self)
+        info_label = QtWidgets.QLabel(
+            "Select the result files to save for each processed image."
+        )
+        info_label.setWordWrap(True)
+        layout.addWidget(info_label)
+
+        self._checkboxes: Dict[str, QtWidgets.QCheckBox] = {
+            "dt": QtWidgets.QCheckBox("Distance transform (DT PNG)"),
+            "labels": QtWidgets.QCheckBox("Segmentation labels (colored PNG)"),
+            "overlay": QtWidgets.QCheckBox("Overlay visualization"),
+            "debug": QtWidgets.QCheckBox("Debug visualization"),
+            "samples": QtWidgets.QCheckBox("Samples table (CSV)"),
+        }
+
+        defaults = initial_options or {}
+        for key, checkbox in self._checkboxes.items():
+            checkbox.setChecked(defaults.get(key, True))
+            layout.addWidget(checkbox)
+
+        button_box = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        button_box.accepted.connect(self.accept)
+        button_box.rejected.connect(self.reject)
+        layout.addWidget(button_box)
+
+    def options(self) -> Dict[str, bool]:
+        return {key: checkbox.isChecked() for key, checkbox in self._checkboxes.items()}
+
+
 class MainWindow(QMainWindow):
     """
     Single-file refactor notes:
@@ -198,6 +242,7 @@ class MainWindow(QMainWindow):
 
         # Batch mode state
         self._batch_mode_active: bool = False
+        self._batch_save_options: Dict[str, bool] | None = None
 
         # Profile plotting tool state
         self._profile_mode_active: bool = False
@@ -790,21 +835,32 @@ class MainWindow(QMainWindow):
                 files.append(path)
         return files
 
-    def _save_batch_outputs(self, dest_dir: str, base_name: str):
-        if self.gray_u8 is not None:
+    def _save_batch_outputs(
+        self,
+        dest_dir: str,
+        base_name: str,
+        save_options: Dict[str, bool] | None = None,
+    ):
+        """Persist batch artifacts according to the save options selected by the user."""
+        options = save_options or {}
+
+        def wants(key: str) -> bool:
+            return bool(options.get(key, True))
+
+        if wants("dt") and self.gray_u8 is not None:
             dt_path = os.path.join(dest_dir, f"{base_name}_dt.png")
             iio.imwrite(dt_path, np.asarray(self.gray_u8, dtype=np.uint8))
-        if self.labels_img is not None and np.max(self.labels_img) > 0:
+        if wants("labels") and self.labels_img is not None and np.max(self.labels_img) > 0:
             labels_path = os.path.join(dest_dir, f"{base_name}_labels.png")
             iio.imwrite(labels_path, labels_to_color(self.labels_img))
-        if self.overlay_img is not None:
+        if wants("overlay") and self.overlay_img is not None:
             overlay_path = os.path.join(dest_dir, f"{base_name}_overlay.png")
             iio.imwrite(overlay_path, np.asarray(self.overlay_img, dtype=np.uint8))
-        if self.debug_overlay is not None:
+        if wants("debug") and self.debug_overlay is not None:
             debug_path = os.path.join(dest_dir, f"{base_name}_debug.png")
             iio.imwrite(debug_path, np.asarray(self.debug_overlay, dtype=np.uint8))
 
-        if self.samples_table is not None and len(self.samples_table) > 0:
+        if wants("samples") and self.samples_table is not None and len(self.samples_table) > 0:
             samples_path = os.path.join(dest_dir, f"{base_name}_samples.csv")
             units_set = bool(self.le_pixelsize.text().strip())
             image_name = base_name
@@ -818,6 +874,15 @@ class MainWindow(QMainWindow):
                         units_value = ""
                     f.write(f"{image_name},{int(x)},{int(y)},{float(t):.6f},{units_value},0\n")
 
+    def _prompt_batch_save_options(self) -> Dict[str, bool] | None:
+        dialog = BatchSaveOptionsDialog(self, self._batch_save_options)
+        result = dialog.exec()
+        if result == QtWidgets.QDialog.DialogCode.Accepted:
+            options = dialog.options()
+            self._batch_save_options = options
+            return options
+        return None
+
     def _on_batch_processing(self):
         directory = QFileDialog.getExistingDirectory(self, "Select folder with images", self.working_dir)
         if not directory:
@@ -826,6 +891,10 @@ class MainWindow(QMainWindow):
         image_paths = self._collect_images_in_directory(directory)
         if not image_paths:
             self._show_info("Batch processing", "No supported images were found in the selected folder.")
+            return
+
+        save_options = self._prompt_batch_save_options()
+        if not save_options:
             return
 
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -857,7 +926,7 @@ class MainWindow(QMainWindow):
                     self.analyze_fibers()
                     QtWidgets.QApplication.processEvents()
 
-                    self._save_batch_outputs(output_root, base_name)
+                    self._save_batch_outputs(output_root, base_name, save_options)
                     processed += 1
                 except Exception as exc:
                     logger.exception("Batch processing failed for %s", path)
