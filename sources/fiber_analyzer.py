@@ -155,6 +155,16 @@ class FiberAnalyzer:
         self.device = device
         self._model_kwargs["device"] = device
         self._predictor = None  # force re-init on next predict
+        logger.info("FiberAnalyzer device set to %s", device)
+
+    def set_checkpoint_path(self, ckpt_path: str):
+        """Update model checkpoint and reset predictor/predictions."""
+        if ckpt_path == self.ckpt_path:
+            return
+        self.ckpt_path = ckpt_path
+        self._predictor = None
+        self.reset_prediction_state()
+        logger.info("FiberAnalyzer checkpoint switched to %s", ckpt_path)
 
     def _ensure_predictor(self) -> FiberposeModel:
         if self._predictor is not None:

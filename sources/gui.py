@@ -17,6 +17,7 @@ from PyQt6.QtWidgets import (
     QGraphicsItem,
     QToolButton,
     QDialogButtonBox,
+    QMessageBox,
 )
 from PyQt6.uic import loadUi
 
@@ -332,17 +333,42 @@ class MainWindow(QMainWindow):
             return
         checkpoints = self._discover_checkpoint_files()
         rel_default = os.path.relpath(DEFAULT_CKPT_PATH, PROJECT_ROOT)
+        self.cb_model.blockSignals(True)
         self.cb_model.clear()
         if not checkpoints:
             self.cb_model.addItem(rel_default)
-            return
-        for rel_path in checkpoints:
-            self.cb_model.addItem(rel_path)
-        default_index = self.cb_model.findText(rel_default)
-        if default_index >= 0:
-            self.cb_model.setCurrentIndex(default_index)
         else:
-            self.cb_model.setCurrentIndex(0)
+            for rel_path in checkpoints:
+                self.cb_model.addItem(rel_path)
+            default_index = self.cb_model.findText(rel_default)
+            if default_index >= 0:
+                self.cb_model.setCurrentIndex(default_index)
+            else:
+                self.cb_model.setCurrentIndex(0)
+        self.cb_model.blockSignals(False)
+        if not getattr(self, "_ckpt_selector_connected", False):
+            self.cb_model.currentIndexChanged.connect(self._on_checkpoint_selection_changed)
+            self._ckpt_selector_connected = True
+
+    def _on_checkpoint_selection_changed(self, index: int):
+        new_path = self._current_checkpoint_path()
+        if not new_path:
+            return
+        if not os.path.isfile(new_path):
+            QMessageBox.warning(
+                self,
+                "Checkpoint missing",
+                f"Selected checkpoint was not found:\n{new_path}",
+            )
+            return
+        prev_path = getattr(self, "ckpt_path", None)
+        if new_path == prev_path:
+            return
+        self.ckpt_path = new_path
+        if self.analyzer is not None:
+            self.analyzer.set_checkpoint_path(new_path)
+        else:
+            logger.info("Checkpoint selection stored for later init: %s", new_path)
 
     def _discover_checkpoint_files(self) -> list[str]:
         if not os.path.isdir(CHECKPOINTS_DIR):

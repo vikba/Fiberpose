@@ -1,4 +1,5 @@
 # app/nn_predictor.py
+import logging
 import os
 from typing import Optional
 import numpy as np
@@ -6,6 +7,8 @@ import torch
 from torch.amp import autocast
 
 from .resunet import ResUnet, parse_nbase, _safe_torch_load, torch_GPU, torch_CPU
+
+logger = logging.getLogger(__name__)
 
 class FiberposeModel:
     def __init__(
@@ -67,7 +70,12 @@ class FiberposeModel:
             kernel_size=pool_kernel, scale_factor=scale, dilation=dilation,
         ).to(self.device)
 
-        self.model.load_model(ckpt_path, cpu=(self.device.type == "cpu"))
+        try:
+            self.model.load_model(ckpt_path, cpu=(self.device.type == "cpu"))
+        except Exception as exc:
+            logger.exception("Failed to load checkpoint '%s'", ckpt_path)
+            raise
+        logger.info("Loaded checkpoint '%s' on device '%s'", ckpt_path, self.device)
         self.model.eval()
 
     @torch.no_grad()
