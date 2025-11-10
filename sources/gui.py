@@ -38,6 +38,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.dirname(HERE)
 DEFAULT_UI_PATH = os.path.join(PROJECT_ROOT, "resources", "fiber_tool.ui")
 DEFAULT_CKPT_PATH = os.path.join(PROJECT_ROOT, "checkpoints", "fiber_2000_epoch.pt")
+CHECKPOINTS_DIR = os.path.join(PROJECT_ROOT, "checkpoints")
 
 # ------------------- Image helpers -------------------
 
@@ -286,9 +287,7 @@ class MainWindow(QMainWindow):
         self.le_samspacing.setText("5")
         self.le_pixelsize.setText("")
 
-        if hasattr(self, "cb_model"):
-            self.cb_model.clear()
-            self.cb_model.addItem("checkpoints/fiber_2000_epoch.pt")
+        self._init_checkpoint_selector()
 
         # Disable saves initially
         self.action_save_masks_predictions.setEnabled(False)
@@ -300,7 +299,7 @@ class MainWindow(QMainWindow):
         # Delay loading default image until the UI is fully shown.
         QTimer.singleShot(0, self.load_default_image)
 
-        self.ckpt_path = DEFAULT_CKPT_PATH
+        self.ckpt_path = self._current_checkpoint_path() or DEFAULT_CKPT_PATH
 
         # ---- device / CUDA handling ----
         self.device = torch.device('cpu')   # default
@@ -327,6 +326,45 @@ class MainWindow(QMainWindow):
         self.rb_show_diam.toggled.connect(self._render_vector_overlay)
         self.rb_show_direct.toggled.connect(self._render_vector_overlay)
         self.rb_show_pores.toggled.connect(self._render_vector_overlay)
+
+    def _init_checkpoint_selector(self) -> None:
+        if not hasattr(self, "cb_model"):
+            return
+        checkpoints = self._discover_checkpoint_files()
+        rel_default = os.path.relpath(DEFAULT_CKPT_PATH, PROJECT_ROOT)
+        self.cb_model.clear()
+        if not checkpoints:
+            self.cb_model.addItem(rel_default)
+            return
+        for rel_path in checkpoints:
+            self.cb_model.addItem(rel_path)
+        default_index = self.cb_model.findText(rel_default)
+        if default_index >= 0:
+            self.cb_model.setCurrentIndex(default_index)
+        else:
+            self.cb_model.setCurrentIndex(0)
+
+    def _discover_checkpoint_files(self) -> list[str]:
+        if not os.path.isdir(CHECKPOINTS_DIR):
+            return []
+        candidates = []
+        for name in sorted(os.listdir(CHECKPOINTS_DIR)):
+            if not name.lower().endswith(".pt"):
+                continue
+            abs_path = os.path.join(CHECKPOINTS_DIR, name)
+            rel_path = os.path.relpath(abs_path, PROJECT_ROOT)
+            candidates.append(rel_path)
+        return candidates
+
+    def _current_checkpoint_path(self) -> str | None:
+        if not hasattr(self, "cb_model"):
+            return None
+        entry = self.cb_model.currentText().strip()
+        if not entry:
+            return None
+        if os.path.isabs(entry):
+            return entry
+        return os.path.join(PROJECT_ROOT, entry)
 
 
     # ------------------- Display helpers -------------------

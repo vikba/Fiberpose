@@ -29,6 +29,8 @@
 - [ ] Load configuration from file
 - [x] Create class FiberSegment
 - [x] Add plotprofile
+- [ ] Add CLI support
+- [x] Dynamically add checkpoints from checkpoints folder
 
 ## 🐞 Bugs
 - [x] Fix x,y order for arrow drawing

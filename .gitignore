@@ -5,3 +5,4 @@ tests/
 *.pyd
 .DS_Store
 resources/.DS_Store
+checkpoints/
