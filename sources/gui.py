@@ -255,8 +255,15 @@ class MainWindow(QMainWindow):
         self._profile_point_items: list[QGraphicsItem] = []
         self._profile_dialog: ProfilePlotDialog | None = None
 
-        self.high_conf_fib = False
-        self.chb_high_conf.setChecked(False)
+        self.segmentation_mode = "watershed"
+        if hasattr(self, "rb_watershed"):
+            self.rb_watershed.blockSignals(True)
+            self.rb_watershed.setChecked(True)
+            self.rb_watershed.blockSignals(False)
+        if hasattr(self, "rb_strict_ridge"):
+            self.rb_strict_ridge.blockSignals(True)
+            self.rb_strict_ridge.setChecked(False)
+            self.rb_strict_ridge.blockSignals(False)
         self.cluster_enabled = False
         if hasattr(self, "chb_cluster"):
             self.chb_cluster.setChecked(False)
@@ -311,7 +318,7 @@ class MainWindow(QMainWindow):
         self.analyzer = FiberAnalyzer(
             ckpt_path=self.ckpt_path,
             device=self.device,
-            high_conf_fib=self.high_conf_fib,
+            high_conf_fib=self._is_strict_segmentation(),
         )
 
         self.pipeline_config: Dict[str, Dict[str, Any]] = {}
@@ -319,10 +326,13 @@ class MainWindow(QMainWindow):
 
         # react to checkbox changes at runtime
         self.chb_usegpu.toggled.connect(self._on_usegpu_toggled)
-        self.chb_high_conf.toggled.connect(self._on_high_conf_toggled)
         if hasattr(self, "chb_cluster"):
             self.chb_cluster.toggled.connect(self._on_cluster_toggled)
             self._on_cluster_toggled(self.chb_cluster.isChecked())
+        if hasattr(self, "rb_watershed"):
+            self.rb_watershed.toggled.connect(self._on_segmentation_mode_changed)
+        if hasattr(self, "rb_strict_ridge"):
+            self.rb_strict_ridge.toggled.connect(self._on_segmentation_mode_changed)
 
         # Connect toggled signals of rb_show_diam and rb_show_direct to update overlay
         self.rb_show_diam.toggled.connect(self._render_vector_overlay)
@@ -1256,26 +1266,32 @@ class MainWindow(QMainWindow):
         self.lapl_img = self.analyzer.get_laplacian()
 
         thr_u8 = int(watershed_cfg.get("threshold_u8", self._current_segmentation_threshold()))
-        if self.high_conf_fib:
+        strict_mode = self._is_strict_segmentation()
+        high_conf_options = None
+        radius_thresh_px = None
+        if strict_mode:
             radius_thresh_px_val = high_conf_cfg.get("radius_thresh_px")
+            if radius_thresh_px_val is None:
+                radius_thresh_px_val = self._current_radius_threshold()
             radius_thresh_px = float(radius_thresh_px_val) if radius_thresh_px_val is not None else None
             high_conf_options = {
                 "dilate_extra_px": float(high_conf_cfg.get("dilate_extra_px", 0.0)),
                 "min_run_points": int(high_conf_cfg.get("min_run_points", 1)),
             }
-        else:
-            radius_thresh_px_val = watershed_cfg.get("radius_thresh_px")
-            radius_thresh_px = float(radius_thresh_px_val) if radius_thresh_px_val is not None else None
-            high_conf_options = None
         try:
-            self.labels_img = self.analyzer.segment(
-                thr_u8=thr_u8,
-                radius_thresh_px=radius_thresh_px,
-                high_conf_options=high_conf_options,
-            )
+            if strict_mode:
+                if radius_thresh_px is None:
+                    raise ValueError("Strict ridge mode requires a radius threshold.")
+                self.labels_img = self.analyzer.segment_strict_ridge(
+                    radius_thresh_px=radius_thresh_px,
+                    dilate_extra_px=float(high_conf_options.get("dilate_extra_px", 0.0)) if high_conf_options else 0.0,
+                    min_run_points=int(high_conf_options.get("min_run_points", 1)) if high_conf_options else 1,
+                )
+            else:
+                self.labels_img = self.analyzer.segment_watershed(thr_u8=thr_u8)
         except Exception as e:
             self._show_error("Segmentation failed", str(e))
-            logger.error("Watershed failed: %s", e)
+            logger.error("Segmentation failed: %s", e)
             return
 
         if self.labels_img is not None:
@@ -1798,11 +1814,14 @@ class MainWindow(QMainWindow):
         if self.analyzer is not None:
             self.analyzer.set_device(self.device)
 
-    def _on_high_conf_toggled(self, checked: bool):
-        self.high_conf_fib = checked
+    def _on_segmentation_mode_changed(self, checked: bool | None = None):
+        new_mode = "strict" if (hasattr(self, "rb_strict_ridge") and self.rb_strict_ridge.isChecked()) else "watershed"
+        if new_mode == getattr(self, "segmentation_mode", "watershed"):
+            return
+        self.segmentation_mode = new_mode
         self._sync_pipeline_config_from_ui()
         if self.analyzer is not None:
-            self.analyzer.set_high_conf_filter(checked)
+            self.analyzer.set_high_conf_filter(self._is_strict_segmentation())
 
     def _on_cluster_toggled(self, checked: bool):
         self.cluster_enabled = bool(checked)
@@ -1837,6 +1856,7 @@ class MainWindow(QMainWindow):
                 "centerline_kwargs": dict(ridge_defaults),
             },
             "segmentation": {
+                "mode": self._current_segmentation_mode(),
                 "watershed": {
                     "threshold_u8": self._current_segmentation_threshold(),
                     "radius_thresh_px": None,
@@ -1863,6 +1883,7 @@ class MainWindow(QMainWindow):
         ridge_cfg.setdefault("centerline_kwargs", dict(FiberAnalyzer._default_centerline_kwargs()))
 
         seg_cfg = self.pipeline_config.setdefault("segmentation", {})
+        seg_cfg["mode"] = self._current_segmentation_mode()
         watershed_cfg = seg_cfg.setdefault("watershed", {})
         watershed_cfg["threshold_u8"] = self._current_segmentation_threshold()
         watershed_cfg.setdefault("radius_thresh_px", None)
@@ -1886,10 +1907,16 @@ class MainWindow(QMainWindow):
     def _current_max_angle(self) -> float:
         return float(self.sp_max_cent_angle.value()) if hasattr(self, "sp_max_cent_angle") else 45.0
 
+    def _is_strict_segmentation(self) -> bool:
+        return getattr(self, "segmentation_mode", "watershed") == "strict"
+
+    def _current_segmentation_mode(self) -> str:
+        return "strict" if self._is_strict_segmentation() else "watershed"
+
     def _current_segmentation_threshold(self) -> int:
         return int(self.sp_segm_threshold.value()) if hasattr(self, "sp_segm_threshold") else 128
 
     def _current_radius_threshold(self) -> float | None:
-        if not self.high_conf_fib:
+        if not self._is_strict_segmentation():
             return None
         return float(self._current_segmentation_threshold())

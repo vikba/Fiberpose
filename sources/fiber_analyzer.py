@@ -431,47 +431,47 @@ class FiberAnalyzer:
         high_conf_options: Optional[Dict[str, Any]] = None,
     ) -> np.ndarray:
         """
-        Run watershed segmentation using cached DT and markers.
+        Backward-compatible dispatcher that calls either watershed or high-confidence segmentation.
         """
-        if self._dt_u8 is None:
-            raise ValueError("Distance transform not available. Call predict_dt first.")
-
-        high_conf_opts = high_conf_options or {}
-
         if self._high_conf_fib and radius_thresh_px is not None:
-            if (self._constant_segments_info is None) or (not self._constant_segments_info):
-                self.compute_centerlines(self._last_max_angle, **self._centerline_kwargs)
-            logger.info("Segmentation of high confidence fibers")
-            labels = self.segment_high_confidence(
+            high_conf_opts = high_conf_options or {}
+            return self.segment_strict_ridge(
                 radius_thresh_px=radius_thresh_px,
                 dilate_extra_px=float(high_conf_opts.get("dilate_extra_px", 0.0)),
                 min_run_points=int(high_conf_opts.get("min_run_points", 1)),
             )
-            self._labels = labels
-            return labels
+        return self.segment_watershed(thr_u8=thr_u8)
 
+    def segment_watershed(self, thr_u8: int) -> np.ndarray:
+        """
+        Run watershed segmentation using cached DT and markers.
+        """
+        if self._dt_u8 is None:
+            raise ValueError("Distance transform not available. Call predict_dt first.")
         if self._markers is None or self._markers.max() == 0:
             self.compute_centerlines(self._last_max_angle, **self._centerline_kwargs)
 
-        logger.info("Default segmetnation with watershed")
+        logger.info("Running watershed segmentation")
         labels = self.labels_from_dt_and_markers(self._markers, thr_u8=thr_u8)
         self._labels = labels
         return labels
 
-    def segment_high_confidence(
+    def segment_strict_ridge(
         self,
         radius_thresh_px: float,
         dilate_extra_px: float = 0.0,
         min_run_points: int = 1,
     ) -> np.ndarray:
         """
-        Segment only high-confidence fibers by expanding qualified centerline points using DT radii.
+        Strict ridge segmentation: expand qualified centerline runs using DT radii.
         """
         if self._dt is None or self._dt_u8 is None:
             raise ValueError("Distance transform not available. Call predict_dt first.")
 
         if not self._constant_segments_info:
-            return np.zeros_like(self._dt_u8, dtype=np.uint16)
+            labels = np.zeros_like(self._dt_u8, dtype=np.uint16)
+            self._labels = labels
+            return labels
 
         mask = np.zeros(self._dt_u8.shape, dtype=np.int32)
         radius_thresh_px = float(radius_thresh_px)
@@ -516,9 +516,13 @@ class FiberAnalyzer:
                     )
 
         if not mask.any():
-            return np.zeros_like(self._dt_u8, dtype=np.uint32)
+            labels = np.zeros_like(self._dt_u8, dtype=np.uint16)
+            self._labels = labels
+            return labels
 
-        return mask.astype(np.uint32)
+        labels = mask.astype(np.uint16, copy=False)
+        self._labels = labels
+        return labels
 
     @staticmethod
     def _draw_centerline_run(
