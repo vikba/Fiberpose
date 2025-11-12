@@ -628,12 +628,12 @@
        </item>
        <item>
         <property name="text">
-         <string>Measurements</string>
+         <string>Sampling</string>
         </property>
        </item>
        <item>
         <property name="text">
-         <string>Good fibers</string>
+         <string>Measurements overlay</string>
         </property>
        </item>
       </widget>

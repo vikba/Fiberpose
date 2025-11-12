@@ -207,7 +207,8 @@ class MainWindow(QMainWindow):
 
         self.labels_img = None       # watershed labels (uint16)
         self.overlay_img = None
-        self.debug_overlay = None
+        self.sampling_overlay = None
+        self.measurements_overlay = None
 
         self.samples_table = None
         self.fiber_summary = None
@@ -666,8 +667,8 @@ class MainWindow(QMainWindow):
                 iio.imwrite(root + "_labels.png", labels_to_color(self.labels_img))
             if self.overlay_img is not None:
                 iio.imwrite(root + "_overlay.png", self.overlay_img.astype(np.uint8))
-            if self.debug_overlay is not None:
-                iio.imwrite(root + "_debug.png", self.debug_overlay.astype(np.uint8))
+            if self.measurements_overlay is not None:
+                iio.imwrite(root + "_debug.png", self.measurements_overlay.astype(np.uint8))
             self.working_dir = dest_dir
             self._show_info("Saved", f"Saved to:\n{dest_dir}")
         except Exception as e:
@@ -920,9 +921,9 @@ class MainWindow(QMainWindow):
         if wants("overlay") and self.overlay_img is not None:
             overlay_path = os.path.join(dest_dir, f"{base_name}_overlay.png")
             iio.imwrite(overlay_path, np.asarray(self.overlay_img, dtype=np.uint8))
-        if wants("debug") and self.debug_overlay is not None:
+        if wants("debug") and self.measurements_overlay is not None:
             debug_path = os.path.join(dest_dir, f"{base_name}_debug.png")
-            iio.imwrite(debug_path, np.asarray(self.debug_overlay, dtype=np.uint8))
+            iio.imwrite(debug_path, np.asarray(self.measurements_overlay, dtype=np.uint8))
 
         if wants("samples") and self.samples_table is not None and len(self.samples_table) > 0:
             samples_path = os.path.join(dest_dir, f"{base_name}_samples.csv")
@@ -1253,7 +1254,6 @@ class MainWindow(QMainWindow):
         self.gray_u8 = self.analyzer.get_dt_u8()
         self.gray_img = self.analyzer.get_dt_norm()
         self.lapl_img = self.analyzer.get_laplacian()
-        self._centerlines_dt = self.analyzer.get_centerlines_image()
 
         thr_u8 = int(watershed_cfg.get("threshold_u8", self._current_segmentation_threshold()))
         if self.high_conf_fib:
@@ -1286,8 +1286,9 @@ class MainWindow(QMainWindow):
             self._labels_rgb_cache = (None, None)
 
         self.overlay_img = self._create_overlay(self.orig_img, self.labels_img, alpha=0.5, labels_rgb=labels_rgb)
+        self._centerlines_dt = self.analyzer.get_centerlines_image()
 
-        if self.cb_view.currentText() not in ["Overlay", "Segmentation", "Measurements"]:
+        if self.cb_view.currentText() not in ["Overlay", "Segmentation", "Measurements overlay", "Sampling"]:
             self.cb_view.setCurrentText("Overlay")
 
         if hasattr(self, "action_save_masks_predictions"):
@@ -1440,10 +1441,6 @@ class MainWindow(QMainWindow):
     def _render_vector_overlay(self):
         if not getattr(self, "_viz_points", None):
             return
-        base = self.overlay_img.copy() if self.overlay_img is not None else ensure_rgb_u8(self.gray_u8)
-        dbg  = base.copy()
-        H, W = dbg.shape[:2]
-
         show_diam   = getattr(self, "rb_show_diam", None) and self.rb_show_diam.isChecked()
         show_direct = getattr(self, "rb_show_direct", None) and self.rb_show_direct.isChecked()
         show_pores  = getattr(self, "rb_show_pores", None) and self.rb_show_pores.isChecked()
@@ -1451,21 +1448,7 @@ class MainWindow(QMainWindow):
         if not show_diam and not show_direct and not show_pores:
             show_diam = True
 
-        MAX_SEGMENTS = 15000
-        pts = self._viz_points if len(self._viz_points) <= MAX_SEGMENTS else self._viz_points[::int(np.ceil(len(self._viz_points)/MAX_SEGMENTS))]
-
-        if not show_pores:
-            for (y, x, r, ny, nx, ty, tx) in pts:
-                if not (0 <= y < H and 0 <= x < W) or r <= 0:
-                    continue
-                if show_diam:
-                    p0 = (y - ny * r, x - nx * r)
-                    p1 = (y + ny * r, x + nx * r)
-                    self._draw_line(dbg, p0, p1, color=(255, 255, 0))
-                else:
-                    self._draw_arrow_centered(dbg, float(y), float(x), float(tx), float(ty), length_px=2.0 * r, color=(255, 255, 0))
-
-        else:
+        if show_pores:
             base = self._pore_dt_to_rgb(self._pore_dt, self._void_mask)
             if getattr(self, "_pores", None):
                 out = base.copy()
@@ -1480,13 +1463,65 @@ class MainWindow(QMainWindow):
                 self._set_pixmap_from_array(out)
                 return
 
-    
+        sampling_base = ensure_rgb_u8(self.gray_u8 if self.gray_u8 is not None else self.gray_img)
+        if sampling_base is None and self.overlay_img is not None:
+            sampling_base = ensure_rgb_u8(self.overlay_img)
+        if sampling_base is None:
+            return
 
+        measurement_base = self.overlay_img.copy() if self.overlay_img is not None else ensure_rgb_u8(self.orig_img)
+        sampling_canvas = sampling_base.copy()
+        measurement_canvas = measurement_base.copy() if measurement_base is not None else None
+        if measurement_canvas is None:
+            measurement_canvas = sampling_canvas.copy()
 
-        self.debug_overlay = dbg
-        # Set view to Measurements after rendering vector overlay
+        H, W = sampling_canvas.shape[:2]
+        MAX_SEGMENTS = 15000
+        pts = self._viz_points if len(self._viz_points) <= MAX_SEGMENTS else self._viz_points[::int(np.ceil(len(self._viz_points)/MAX_SEGMENTS))]
+
+        line_color = (255, 255, 0)
+        point_color = (255, 0, 0)
+        for (y, x, r, ny, nx, ty, tx) in pts:
+            if not (0 <= y < H and 0 <= x < W) or r <= 0:
+                continue
+            if show_diam:
+                p0 = (y - ny * r, x - nx * r)
+                p1 = (y + ny * r, x + nx * r)
+                self._draw_line(sampling_canvas, p0, p1, color=line_color)
+                self._draw_line(measurement_canvas, p0, p1, color=line_color)
+            else:
+                self._draw_arrow_centered(
+                    sampling_canvas,
+                    float(y),
+                    float(x),
+                    float(tx),
+                    float(ty),
+                    length_px=2.0 * r,
+                    color=line_color,
+                )
+                self._draw_arrow_centered(
+                    measurement_canvas,
+                    float(y),
+                    float(x),
+                    float(tx),
+                    float(ty),
+                    length_px=2.0 * r,
+                    color=line_color,
+                )
+            self._draw_circle(
+                sampling_canvas,
+                (int(round(x)), int(round(y))),
+                radius_px=1,
+                color=point_color,
+                thickness=-1,
+            )
+
+        self.sampling_overlay = sampling_canvas
+        self.measurements_overlay = measurement_canvas
+        # Default to the new overlay view if user is on an unrelated tab
         if hasattr(self, "cb_view"):
-            self.cb_view.setCurrentText("Measurements")
+            if self.cb_view.currentText() not in ("Measurements overlay", "Sampling"):
+                self.cb_view.setCurrentText("Measurements overlay")
         self.refresh_view()
 
     def _clip_point(self, y, x, H, W):
@@ -1640,9 +1675,11 @@ class MainWindow(QMainWindow):
             img = self._labels_rgb()
         elif view == "Overlay":
             img = self.overlay_img
-        elif view == "Measurements":
-            seg_rgb = self._labels_rgb()
-            img = self.debug_overlay if self.debug_overlay is not None else seg_rgb
+        elif view == "Sampling":
+            img = self.sampling_overlay if self.sampling_overlay is not None else ensure_rgb_u8(self.gray_u8)
+        elif view in ("Measurements overlay", "Measurements"):
+            fallback = self.overlay_img if self.overlay_img is not None else self._labels_rgb()
+            img = self.measurements_overlay if self.measurements_overlay is not None else fallback
         elif view == "gx": 
             img = to_uint8_for_view(self.gx) if hasattr(self, "gx") else None
         elif view == "gy":
@@ -1674,12 +1711,13 @@ class MainWindow(QMainWindow):
         # ---- segmentation outputs ----
         self.labels_img = None
         self.overlay_img = None
+        self.sampling_overlay = None
         self._centerlines_dt = None
 
         # ---- analysis / debug ----
         self.samples_table = None
         self.fiber_summary = None
-        self.debug_overlay = None
+        self.measurements_overlay = None
         self._viz_points = None
         self._angles_deg = None
         self._thickness_units = None

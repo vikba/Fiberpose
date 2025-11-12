@@ -125,3 +125,6 @@ class FiberposeModel:
         else:
             arr = np.zeros_like(arr, dtype=np.float32)
         return arr.astype(np.float32)
+    
+    def train(self):
+        pass

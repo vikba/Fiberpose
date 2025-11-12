@@ -7,7 +7,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import cv2
 import numpy as np
 from scipy.ndimage import gaussian_filter, laplace
-from skimage.segmentation import watershed
+from skimage.segmentation import watershed, find_boundaries
 
 from .clustering import stitch_and_cluster
 from .fiber_graph import FiberFragment
@@ -661,13 +661,43 @@ class FiberAnalyzer:
             return np.zeros_like(self._dt_u8, dtype=np.uint16)
         t = float(thr_u8) / 255.0
         dt_norm = self._dt_u8.astype(np.float32) / 255.0
-        mask2 = dt_norm >= t
+        fiber_region_mask = dt_norm >= t
         elev = 1.0 - dt_norm
-        if not mask2.any():
+        if not fiber_region_mask.any():
             return np.zeros_like(self._dt_u8, dtype=np.uint16)
         conn8 = np.ones((3, 3), dtype=bool)
-        labels = watershed(elev, markers=markers, mask=mask2, connectivity=conn8).astype(np.uint16)
+        labels = watershed(
+            elev,
+            markers=markers,
+            mask=fiber_region_mask,
+            connectivity=conn8,
+        ).astype(np.uint16)
+        self._update_centerline_overlay_with_watershed(markers, labels)
         return labels
+
+    def _update_centerline_overlay_with_watershed(self, markers: np.ndarray | None, labels: np.ndarray | None) -> None:
+        """
+        Render DT background with marker pixels (red) and watershed boundaries (blue) for visualization.
+        """
+        if self._dt_u8 is None and self._dt_norm is None:
+            return
+        if self._dt_norm is not None:
+            base_gray = to_uint8_for_view(self._dt_norm)
+        else:
+            base_gray = np.asarray(self._dt_u8, dtype=np.uint8)
+        base = cv2.cvtColor(base_gray, cv2.COLOR_GRAY2BGR)
+        if labels is not None:
+            try:
+                boundaries = find_boundaries(labels, mode="outer")
+            except Exception:
+                boundaries = None
+            if boundaries is not None and boundaries.any():
+                base[boundaries] = (0, 0, 255)  # blue in BGR
+        if markers is not None:
+            marker_mask = markers.astype(np.int32) > 0
+            if marker_mask.any():
+                base[marker_mask] = (255, 0, 0)  # red in BGR
+        self._centerlines_rgb = base
 
     # --- Pore sampling via DT local maxima -----------------------------------
 
