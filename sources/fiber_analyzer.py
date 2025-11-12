@@ -43,7 +43,8 @@ class FiberAnalyzer:
         ckpt_path: str,
         device: Any,
         model_kwargs: Optional[Dict[str, Any]] = None,
-        high_conf_fib: bool = False,
+        strict: bool | None = None,
+        high_conf_fib: bool | None = None,
     ):
         self._rd = RidgeDetector()
         self.ckpt_path = ckpt_path
@@ -72,7 +73,8 @@ class FiberAnalyzer:
         self._model_kwargs = defaults
 
         self._predictor: Optional[FiberposeModel] = None
-        self._high_conf_fib = bool(high_conf_fib)
+        strict_flag = high_conf_fib if strict is None else strict
+        self._strict_centerlines = bool(strict_flag) if strict_flag is not None else False
 
         self._centerline_kwargs: Dict[str, Any] = self._default_centerline_kwargs()
         self._last_max_angle: float = 0.0
@@ -133,9 +135,15 @@ class FiberAnalyzer:
             "std_thresh": 0.8,
         }
 
-    def set_high_conf_filter(self, high_conf_fib: bool):
-        self._high_conf_fib = bool(high_conf_fib)
+    def set_strict_centerline_filter(self, strict: bool):
+        self._strict_centerlines = bool(strict)
         # downstream calls recompute centerlines via predict_dt/compute_centerlines
+
+    def set_high_conf_filter(self, high_conf_fib: bool):
+        """
+        Backwards-compatible alias for set_strict_centerline_filter.
+        """
+        self.set_strict_centerline_filter(high_conf_fib)
 
     def enable_fiber_clustering(self, enabled: bool, **cluster_kwargs: Any) -> None:
         """Toggle clustering of centerline fragments before segmentation."""
@@ -326,7 +334,7 @@ class FiberAnalyzer:
                 win_len=win_len,
                 std_thresh=std_thresh,
                 max_angle=max_angle_deg,
-                enforce_high_conf=self._high_conf_fib,
+                strict=self._strict_centerlines,
             )
             for window_xy in filtered_windows:
                 pts_xy = window_xy.reshape(-1, 2).astype(np.float32)
@@ -433,7 +441,7 @@ class FiberAnalyzer:
         """
         Backward-compatible dispatcher that calls either watershed or high-confidence segmentation.
         """
-        if self._high_conf_fib and radius_thresh_px is not None:
+        if radius_thresh_px is not None:
             high_conf_opts = high_conf_options or {}
             return self.segment_strict_ridge(
                 radius_thresh_px=radius_thresh_px,
@@ -914,13 +922,13 @@ class FiberAnalyzer:
         win_len: float = 15.0,
         std_thresh: float = 0.6,
         max_angle: float = 20.0,
-        enforce_high_conf: bool = False,
+        strict: bool = False,
         grad_alignment_cos: float = 0.95,
         radius_rel_tol: float = 0.25,
         min_valid_fraction: float = 0.7,
     ) -> List[np.ndarray]:
-        if enforce_high_conf and (dt is None or grad_x is None or grad_y is None):
-            raise ValueError("High confidence filtering requires dt, grad_x, and grad_y.")
+        if strict and (dt is None or grad_x is None or grad_y is None):
+            raise ValueError("Strict centerline filtering requires dt, grad_x, and grad_y.")
 
         pts_xy = seg_xy.reshape(-1, 2).astype(np.float32)
         if pts_xy.shape[0] < 2:
@@ -971,7 +979,7 @@ class FiberAnalyzer:
                         dI = abs(float(intensities[-1]) - float(intensities[0]))
                         angle_deg = np.degrees(np.arctan(dI / ds))
                         if angle_deg < max_angle:
-                            if enforce_high_conf:
+                            if strict:
                                 if FiberAnalyzer._window_high_confidence(
                                     window_pts_xy,
                                     dt=dt,

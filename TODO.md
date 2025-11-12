@@ -31,7 +31,7 @@
 - [x] Add plotprofile
 - [ ] Add CLI support
 - [x] Dynamically add checkpoints from checkpoints folder
-- [ ] Add possibility to measure witout segmentation
+- [ ] Add simple centerline (ridge) segmentation
 
 ## 🐞 Bugs
 - [x] Fix x,y order for arrow drawing

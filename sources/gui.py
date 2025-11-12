@@ -264,10 +264,11 @@ class MainWindow(QMainWindow):
             self.rb_ridge.blockSignals(True)
             self.rb_ridge.setChecked(False)
             self.rb_ridge.blockSignals(False)
-        if hasattr(self, "rb_strict_ridge"):
-            self.rb_strict_ridge.blockSignals(True)
-            self.rb_strict_ridge.setChecked(False)
-            self.rb_strict_ridge.blockSignals(False)
+        if hasattr(self, "chb_strict"):
+            self.chb_strict.blockSignals(True)
+            self.chb_strict.setChecked(False)
+            self.chb_strict.setEnabled(False)
+            self.chb_strict.blockSignals(False)
         self.cluster_enabled = False
         if hasattr(self, "chb_cluster"):
             self.chb_cluster.setChecked(False)
@@ -322,9 +323,9 @@ class MainWindow(QMainWindow):
         self.analyzer = FiberAnalyzer(
             ckpt_path=self.ckpt_path,
             device=self.device,
-            strict=self._is_strict_segmentation(),
+            strict=self._strict_centerline_enabled(),
         )
-        self.analyzer.set_strict_centerline_filter(self._is_strict_segmentation())
+        self.analyzer.set_strict_centerline_filter(self._strict_centerline_enabled())
 
         self.pipeline_config: Dict[str, Dict[str, Any]] = {}
         self._init_pipeline_config()
@@ -338,8 +339,9 @@ class MainWindow(QMainWindow):
             self.rb_watershed.toggled.connect(self._on_segmentation_mode_changed)
         if hasattr(self, "rb_ridge"):
             self.rb_ridge.toggled.connect(self._on_segmentation_mode_changed)
-        if hasattr(self, "rb_strict_ridge"):
-            self.rb_strict_ridge.toggled.connect(self._on_segmentation_mode_changed)
+        if hasattr(self, "chb_strict"):
+            self.chb_strict.toggled.connect(self._on_strict_checkbox_toggled)
+        self._update_strict_checkbox_state()
 
         # Connect toggled signals of rb_show_diam and rb_show_direct to update overlay
         self.rb_show_diam.toggled.connect(self._render_vector_overlay)
@@ -1274,7 +1276,7 @@ class MainWindow(QMainWindow):
 
         thr_u8 = int(watershed_cfg.get("threshold_u8", self._current_segmentation_threshold()))
         mode = self._current_segmentation_mode()
-        ridge_mode = mode in ("ridge", "strict_ridge")
+        ridge_mode = mode == "ridge"
         radius_thresh_px = None
         ridge_options = None
         if ridge_mode:
@@ -1824,9 +1826,7 @@ class MainWindow(QMainWindow):
 
     def _on_segmentation_mode_changed(self, checked: bool | None = None):
         new_mode = "watershed"
-        if hasattr(self, "rb_strict_ridge") and self.rb_strict_ridge.isChecked():
-            new_mode = "strict_ridge"
-        elif hasattr(self, "rb_ridge") and self.rb_ridge.isChecked():
+        if hasattr(self, "rb_ridge") and self.rb_ridge.isChecked():
             new_mode = "ridge"
         elif hasattr(self, "rb_watershed") and self.rb_watershed.isChecked():
             new_mode = "watershed"
@@ -1836,9 +1836,15 @@ class MainWindow(QMainWindow):
             return
 
         self.segmentation_mode = new_mode
-        self._sync_pipeline_config_from_ui()
+        self._update_strict_checkbox_state()
         if self.analyzer is not None:
-            self.analyzer.set_strict_centerline_filter(self._is_strict_segmentation())
+            self.analyzer.set_strict_centerline_filter(self._strict_centerline_enabled())
+        self._sync_pipeline_config_from_ui()
+
+    def _on_strict_checkbox_toggled(self, checked: bool):
+        if self.analyzer is not None:
+            self.analyzer.set_strict_centerline_filter(self._strict_centerline_enabled())
+        self._sync_pipeline_config_from_ui()
 
     def _on_cluster_toggled(self, checked: bool):
         self.cluster_enabled = bool(checked)
@@ -1871,6 +1877,7 @@ class MainWindow(QMainWindow):
             "ridge_detection": {
                 "max_angle_deg": self._current_max_angle(),
                 "centerline_kwargs": dict(ridge_defaults),
+                "strict_centerlines": self._strict_centerline_enabled(),
             },
             "segmentation": {
                 "mode": self._current_segmentation_mode(),
@@ -1898,6 +1905,7 @@ class MainWindow(QMainWindow):
         ridge_cfg = self.pipeline_config.setdefault("ridge_detection", {})
         ridge_cfg["max_angle_deg"] = self._current_max_angle()
         ridge_cfg.setdefault("centerline_kwargs", dict(FiberAnalyzer._default_centerline_kwargs()))
+        ridge_cfg["strict_centerlines"] = self._strict_centerline_enabled()
 
         seg_cfg = self.pipeline_config.setdefault("segmentation", {})
         seg_cfg["mode"] = self._current_segmentation_mode()
@@ -1924,15 +1932,33 @@ class MainWindow(QMainWindow):
     def _current_max_angle(self) -> float:
         return float(self.sp_max_cent_angle.value()) if hasattr(self, "sp_max_cent_angle") else 45.0
 
+    def _strict_centerline_enabled(self) -> bool:
+        return bool(getattr(self, "chb_strict", None) and self.chb_strict.isChecked())
+
+    def _update_strict_checkbox_state(self) -> None:
+        if not hasattr(self, "chb_strict"):
+            return
+        enable = self._uses_ridge_segmentation()
+        if enable:
+            if not self.chb_strict.isEnabled():
+                self.chb_strict.setEnabled(True)
+        else:
+            if self.chb_strict.isChecked():
+                self.chb_strict.blockSignals(True)
+                self.chb_strict.setChecked(False)
+                self.chb_strict.blockSignals(False)
+            if self.chb_strict.isEnabled():
+                self.chb_strict.setEnabled(False)
+
     def _is_strict_segmentation(self) -> bool:
-        return self._current_segmentation_mode() == "strict_ridge"
+        return self._current_segmentation_mode() == "ridge"
 
     def _uses_ridge_segmentation(self) -> bool:
-        return self._current_segmentation_mode() in ("ridge", "strict_ridge")
+        return self._current_segmentation_mode() == "ridge"
 
     def _current_segmentation_mode(self) -> str:
         mode = getattr(self, "segmentation_mode", "watershed")
-        if mode not in ("watershed", "ridge", "strict_ridge"):
+        if mode not in ("watershed", "ridge"):
             mode = "watershed"
         return mode
 

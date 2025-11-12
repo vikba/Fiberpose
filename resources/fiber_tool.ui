@@ -410,7 +410,7 @@
         <property name="geometry">
          <rect>
           <x>20</x>
-          <y>100</y>
+          <y>70</y>
           <width>121</width>
           <height>16</height>
          </rect>
@@ -428,7 +428,7 @@
         <property name="geometry">
          <rect>
           <x>20</x>
-          <y>130</y>
+          <y>100</y>
           <width>131</width>
           <height>16</height>
          </rect>
@@ -446,7 +446,7 @@
         <property name="geometry">
          <rect>
           <x>171</x>
-          <y>100</y>
+          <y>70</y>
           <width>51</width>
           <height>22</height>
          </rect>
@@ -467,7 +467,7 @@
         <property name="geometry">
          <rect>
           <x>171</x>
-          <y>130</y>
+          <y>100</y>
           <width>51</width>
           <height>22</height>
          </rect>
@@ -488,7 +488,7 @@
         <property name="geometry">
          <rect>
           <x>70</x>
-          <y>160</y>
+          <y>130</y>
           <width>151</width>
           <height>22</height>
          </rect>
@@ -503,7 +503,7 @@
         <property name="geometry">
          <rect>
           <x>20</x>
-          <y>160</y>
+          <y>130</y>
           <width>47</width>
           <height>13</height>
          </rect>
@@ -521,8 +521,8 @@
         <property name="geometry">
          <rect>
           <x>20</x>
-          <y>70</y>
-          <width>111</width>
+          <y>190</y>
+          <width>91</width>
           <height>17</height>
          </rect>
         </property>
@@ -536,10 +536,13 @@
         </property>
        </widget>
        <widget class="QRadioButton" name="rb_watershed">
+        <property name="enabled">
+         <bool>true</bool>
+        </property>
         <property name="geometry">
          <rect>
-          <x>0</x>
-          <y>190</y>
+          <x>20</x>
+          <y>160</y>
           <width>81</width>
           <height>25</height>
          </rect>
@@ -552,12 +555,15 @@
         <property name="text">
          <string>Watershed</string>
         </property>
+        <property name="checked">
+         <bool>true</bool>
+        </property>
        </widget>
        <widget class="QRadioButton" name="rb_ridge">
         <property name="geometry">
          <rect>
-          <x>80</x>
-          <y>190</y>
+          <x>130</x>
+          <y>160</y>
           <width>81</width>
           <height>25</height>
          </rect>
@@ -571,13 +577,13 @@
          <string>Ridge</string>
         </property>
        </widget>
-       <widget class="QRadioButton" name="rb_strict_ridge">
+       <widget class="QCheckBox" name="chb_strict">
         <property name="geometry">
          <rect>
-          <x>140</x>
+          <x>130</x>
           <y>190</y>
-          <width>81</width>
-          <height>25</height>
+          <width>51</width>
+          <height>17</height>
          </rect>
         </property>
         <property name="font">
@@ -586,7 +592,7 @@
          </font>
         </property>
         <property name="text">
-         <string>Strict Ridge</string>
+         <string>Strict</string>
         </property>
        </widget>
       </widget>
