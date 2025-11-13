@@ -32,7 +32,7 @@
       <widget class="QPushButton" name="btn_segment">
        <property name="geometry">
         <rect>
-         <x>20</x>
+         <x>10</x>
          <y>340</y>
          <width>81</width>
          <height>31</height>
@@ -578,6 +578,9 @@
         </property>
        </widget>
        <widget class="QCheckBox" name="chb_strict">
+        <property name="enabled">
+         <bool>false</bool>
+        </property>
         <property name="geometry">
          <rect>
           <x>130</x>
@@ -733,6 +736,39 @@
         <string>Set scalebar</string>
        </property>
       </widget>
+      <widget class="QComboBox" name="cb_scale">
+       <property name="geometry">
+        <rect>
+         <x>180</x>
+         <y>350</y>
+         <width>51</width>
+         <height>21</height>
+        </rect>
+       </property>
+       <property name="font">
+        <font>
+         <pointsize>8</pointsize>
+        </font>
+       </property>
+       <item>
+        <property name="text">
+         <string>1x</string>
+        </property>
+       </item>
+      </widget>
+      <widget class="QLabel" name="label_2">
+       <property name="geometry">
+        <rect>
+         <x>100</x>
+         <y>349</y>
+         <width>81</width>
+         <height>21</height>
+        </rect>
+       </property>
+       <property name="text">
+        <string>Resolution</string>
+       </property>
+      </widget>
       <zorder>groupBox_segmentation</zorder>
       <zorder>btn_segment</zorder>
       <zorder>btn_analyze_fibers</zorder>
@@ -744,6 +780,8 @@
       <zorder>label</zorder>
       <zorder>btn_plot_profile</zorder>
       <zorder>btn_set_scalebar</zorder>
+      <zorder>cb_scale</zorder>
+      <zorder>label_2</zorder>
      </widget>
     </item>
     <item>

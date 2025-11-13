@@ -19,7 +19,6 @@
 - [x] Batch processing
 - [ ] !Improve dataset and finetune NN
 - [ ] Train NN on pores dataset
-- [ ] Tiling for predictions
 - [x] !Add porosity measurement 
 - [x] Add zoom
 - [x] Add scalebar tool (or automatic scalebar detection)
@@ -31,7 +30,9 @@
 - [x] Add plotprofile
 - [ ] Add CLI support
 - [x] Dynamically add checkpoints from checkpoints folder
-- [ ] Add simple centerline (ridge) segmentation
+- [x] Add simple centerline (ridge) segmentation
+- [ ] Implement possibility of pyramid analysis for thin fibers 
+- [ ] Tiling for predictions
 
 ## 🐞 Bugs
 - [x] Fix x,y order for arrow drawing

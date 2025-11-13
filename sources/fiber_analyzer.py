@@ -90,6 +90,7 @@ class FiberAnalyzer:
             "radius_weight": 0.0,
         }
 
+        self.scale_factor: float = 1.0
         self.reset_prediction_state()
 
     # ------------------------------------------------------------------ #
@@ -765,6 +766,9 @@ class FiberAnalyzer:
         if pore_dt is None or void_mask is None:
             return []
 
+        scale = self.scale_factor if getattr(self, "scale_factor", None) else 1.0
+        if not np.isfinite(scale) or scale <= 0:
+            scale = 1.0
         H, W = pore_dt.shape[:2]
         current_void = (void_mask.astype(np.uint8) > 0).astype(np.uint8)
 
@@ -795,7 +799,8 @@ class FiberAnalyzer:
             cmask = np.zeros_like(current_void, dtype=np.uint8)
             cv2.circle(cmask, (int(x), int(y)), r_int, 1, thickness=-1)
             if np.all(cmask <= current_void):
-                circles.append({'x': int(x), 'y': int(y), 'r_px': float(r)})
+                true_radius = float(r) / scale
+                circles.append({'x': int(x), 'y': int(y), 'r_px': float(r), 'r_px_orig': true_radius})
                 current_void[cmask == 1] = 0
                 if (max_pores is not None) and (len(circles) >= max_pores):
                     break
@@ -830,6 +835,9 @@ class FiberAnalyzer:
         hist_centers = []
         angles_deg = []
         viz_points = []
+        scale = self.scale_factor if getattr(self, "scale_factor", None) else 1.0
+        if not np.isfinite(scale) or scale <= 0:
+            scale = 1.0
 
         def _canon_angle(ty: float, tx: float):
             n = float(np.hypot(ty, tx))
@@ -876,7 +884,13 @@ class FiberAnalyzer:
                     angles_deg.append(ang)
                     if (i % 10) == 0:
                         viz_points.append((int(round(y)), int(round(x)), r, ny, nx, ty_c, tx_c))
-                hist_centers.append((int(round(y)), int(round(x)), r))
+                hist_centers.append(
+                    (
+                        int(round(y / scale)),
+                        int(round(x / scale)),
+                        r / scale,
+                    )
+                )
 
         return hist_centers, viz_points, angles_deg
 

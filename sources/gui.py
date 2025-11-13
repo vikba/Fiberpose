@@ -197,6 +197,7 @@ class MainWindow(QMainWindow):
         # Working dir & state setup (unchanged)...
         self.working_dir = os.path.dirname(ui_path)
         self.orig_img = None
+        self.orig_img_scaled = None
         self.dt = None
         self.gray_u8 = None          # CPNet DT (0..255)
         self.gray_img = None         # normalized float [0..1]
@@ -204,6 +205,7 @@ class MainWindow(QMainWindow):
         self.gx = None
         self.gy = None
         self.analyzer: FiberAnalyzer | None = None
+        self.scale_factor: float = 1.0
 
         self.labels_img = None       # watershed labels (uint16)
         self.overlay_img = None
@@ -273,6 +275,16 @@ class MainWindow(QMainWindow):
         if hasattr(self, "chb_cluster"):
             self.chb_cluster.setChecked(False)
 
+
+        if hasattr(self, "cb_scale"):
+            self.cb_scale.blockSignals(True)
+            self.cb_scale.clear()
+            for value in ("0.5x", "1x", "2x", "4x"):
+                self.cb_scale.addItem(value)
+            idx = self.cb_scale.findText("1x")
+            if idx >= 0:
+                self.cb_scale.setCurrentIndex(idx)
+            self.cb_scale.blockSignals(False)
 
         # Menu & actions: updated UI element names (rb_mask1_cent -> rb_centerlines; rb_mask2_segm -> rb_segmentation;
         # sp_threshold1 -> sp_max_cent_angle; sp_threshold2 -> sp_segm_threshold)
@@ -658,6 +670,8 @@ class MainWindow(QMainWindow):
             self._show_warning("Unsupported", "Original must be 2D or 3D (H×W×C).")
             return
         self.orig_img = img
+        self.orig_img_scaled = None
+        self.scale_factor = 1.0
         self.current_image_name = os.path.splitext(os.path.basename(path))[0]
         self.refresh_view()
 
@@ -1192,10 +1206,14 @@ class MainWindow(QMainWindow):
             return
 
         profile_vals = np.asarray(profile_vals, dtype=np.float32, copy=False)
-        distances = np.linspace(0.0, length_px, profile_vals.size, dtype=np.float32)
+        scale = getattr(self, "scale_factor", 1.0)
+        if scale is None or not np.isfinite(scale) or scale <= 0:
+            scale = 1.0
+        true_length_px = length_px / scale
+        distances = np.linspace(0.0, true_length_px, profile_vals.size, dtype=np.float32)
         delta = float(profile_vals[-1] - profile_vals[0])
         summary = (
-            f"Length: {length_px:.2f} px · ΔDT: {delta:+.2f} · "
+            f"Length: {true_length_px:.2f} px · ΔDT: {delta:+.2f} · "
             f"Min/Max: {float(profile_vals.min()):.2f} / {float(profile_vals.max()):.2f}"
         )
         dialog = self._ensure_profile_dialog()
@@ -1212,6 +1230,46 @@ class MainWindow(QMainWindow):
             self._show_error("Analyzer unavailable", "Fiber analyzer has not been initialized.")
             logger.error("Segmentation failed: analyzer not initialized.")
             return
+
+        previous_scale = getattr(self, "scale_factor", 1.0)
+        target_scale = 1.0
+        if hasattr(self, "cb_scale"):
+            scale_text = self.cb_scale.currentText().strip().lower()
+            scale_text = scale_text.replace("×", "x")
+            if scale_text.endswith("x"):
+                scale_text = scale_text[:-1]
+            try:
+                target_scale = float(scale_text)
+            except ValueError:
+                target_scale = 1.0
+        if not np.isfinite(target_scale) or target_scale <= 0:
+            target_scale = 1.0
+        scale_changed = not math.isclose(previous_scale, target_scale, rel_tol=1e-6, abs_tol=1e-6)
+        processing_img = self.orig_img
+        if math.isclose(target_scale, 1.0, rel_tol=1e-6, abs_tol=1e-6):
+            self.scale_factor = 1.0
+            self.orig_img_scaled = None
+        else:
+            if self.orig_img_scaled is None or scale_changed:
+                interp = cv2.INTER_AREA if target_scale < 1.0 else cv2.INTER_CUBIC
+                try:
+                    self.orig_img_scaled = cv2.resize(
+                        self.orig_img,
+                        None,
+                        fx=target_scale,
+                        fy=target_scale,
+                        interpolation=interp,
+                    )
+                except Exception as e:
+                    self._show_error("Scaling failed", f"Unable to scale image:\n{e}")
+                    logger.error("Scaling failed: %s", e)
+                    return
+            processing_img = self.orig_img_scaled
+            self.scale_factor = float(target_scale)
+        if hasattr(self.analyzer, "scale_factor"):
+            self.analyzer.scale_factor = self.scale_factor
+        if scale_changed:
+            self.analyzer.reset_prediction_state()
 
         self._sync_pipeline_config_from_ui()
         config = self.pipeline_config if hasattr(self, "pipeline_config") else {}
@@ -1237,7 +1295,7 @@ class MainWindow(QMainWindow):
             logger.info("Starting Distance transform prediction.")
             try:
                 self.analyzer.predict_dt(
-                    image=self.orig_img,
+                    image=processing_img,
                     max_angle_deg=max_angle,
                     centerline_kwargs=centerline_params,
                 )
@@ -1280,12 +1338,15 @@ class MainWindow(QMainWindow):
         radius_thresh_px = None
         ridge_options = None
         if ridge_mode:
+            current_scale = self.scale_factor if self.scale_factor and np.isfinite(self.scale_factor) else 1.0
             radius_thresh_px_val = high_conf_cfg.get("radius_thresh_px")
             if radius_thresh_px_val is None:
                 radius_thresh_px_val = self._current_radius_threshold()
             radius_thresh_px = float(radius_thresh_px_val) if radius_thresh_px_val is not None else None
+            if radius_thresh_px is not None:
+                radius_thresh_px *= current_scale
             ridge_options = {
-                "dilate_extra_px": float(high_conf_cfg.get("dilate_extra_px", 0.0)),
+                "dilate_extra_px": float(high_conf_cfg.get("dilate_extra_px", 0.0)) * current_scale,
                 "min_run_points": int(high_conf_cfg.get("min_run_points", 1)),
             }
         try:
@@ -1311,7 +1372,8 @@ class MainWindow(QMainWindow):
             labels_rgb = None
             self._labels_rgb_cache = (None, None)
 
-        self.overlay_img = self._create_overlay(self.orig_img, self.labels_img, alpha=0.5, labels_rgb=labels_rgb)
+        base_img = self.orig_img if self.scale_factor == 1.0 or self.orig_img_scaled is None else self.orig_img_scaled
+        self.overlay_img = self._create_overlay(base_img, self.labels_img, alpha=0.5, labels_rgb=labels_rgb)
         self._centerlines_dt = self.analyzer.get_centerlines_image()
 
         if self.cb_view.currentText() not in ["Overlay", "Segmentation", "Measurements overlay", "Sampling"]:
@@ -1347,7 +1409,9 @@ class MainWindow(QMainWindow):
                 return float(txt) if txt else default
             except Exception:
                 return default
-        spacing_px = max(1.0, float(_getf(self.le_samspacing, 5)))
+        spacing_px_input = max(1.0, float(_getf(self.le_samspacing, 5)))
+        current_scale = self.scale_factor if self.scale_factor and np.isfinite(self.scale_factor) else 1.0
+        spacing_px_scaled = max(1.0, spacing_px_input * current_scale)
         pixel_size  = float(_getf(self.le_pixelsize, 1.0))
         if hasattr(self, "cb_units") and self.cb_units.currentText().strip() and self.le_pixelsize.text().strip():
             units_label = self.cb_units.currentText()
@@ -1363,8 +1427,11 @@ class MainWindow(QMainWindow):
             self._show_info("No centerlines", "No centerlines available. Run segmentation first.")
             return
 
+        if hasattr(self.analyzer, "scale_factor"):
+            self.analyzer.scale_factor = self.scale_factor
+
         hist_centers, viz_points, angles_deg = self.analyzer.analyze(
-            spacing_px=spacing_px
+            spacing_px=spacing_px_scaled
         )
         self._viz_points = viz_points
 
@@ -1401,10 +1468,10 @@ class MainWindow(QMainWindow):
         self._porosity = float(self._void_mask.mean())
 
         # --- NEW: sample pores as inscribed circles from DT peaks ---------------------
-        min_radius_px = 1.5   # tweakable; ignores tiny specks
+        min_radius_px = 1.5 * current_scale   # tweakable; ignores tiny specks
         peak_footprint     = 5     # local-max window; 3..7 works; larger -> fewer peaks
         max_pores     = None  # or set an upper cap for speed/UI clarity
-        min_peak_px = 3.0
+        min_peak_px = 3.0 * current_scale
 
         self._pores = self.analyzer.sample_inscribed_circles(
             pore_dt=self._pore_dt,
@@ -1417,7 +1484,13 @@ class MainWindow(QMainWindow):
 
         # convenience arrays for hist/units
         pixel_size  = float(_getf(self.le_pixelsize, 1.0))
-        self._pore_diams_units = np.array([2.0 * p['r_px'] * pixel_size for p in self._pores], dtype=np.float32)
+        pore_scale = self.scale_factor if self.scale_factor and np.isfinite(self.scale_factor) else 1.0
+        if pore_scale == 0:
+            pore_scale = 1.0
+        self._pore_diams_units = np.array(
+            [2.0 * p.get('r_px_orig', p['r_px'] / pore_scale) * pixel_size for p in self._pores],
+            dtype=np.float32,
+        )
 
 
 
@@ -1453,7 +1526,7 @@ class MainWindow(QMainWindow):
 
         self._show_info(
             "Analysis complete",
-            f"Histogram samples: {len(hist_centers)} (spacing={int(spacing_px)} px)\n"
+            f"Histogram samples: {len(hist_centers)} (spacing={int(spacing_px_input)} px)\n"
             f"Stored viz points: {len(self._viz_points)}\n"
             f"Mean diameter: {mean_thickness:.2f} {units_label}\n"
             f"Std diameter: {std_thickness:.2f} {units_label}\n"
@@ -1495,7 +1568,8 @@ class MainWindow(QMainWindow):
         if sampling_base is None:
             return
 
-        measurement_base = self.overlay_img.copy() if self.overlay_img is not None else ensure_rgb_u8(self.orig_img)
+        base_img = self.orig_img if self.scale_factor == 1.0 or self.orig_img_scaled is None else self.orig_img_scaled
+        measurement_base = self.overlay_img.copy() if self.overlay_img is not None else ensure_rgb_u8(base_img)
         sampling_canvas = sampling_base.copy()
         measurement_canvas = measurement_base.copy() if measurement_base is not None else None
         if measurement_canvas is None:
@@ -1723,6 +1797,8 @@ class MainWindow(QMainWindow):
         if not preserve_original:
             self.orig_img = None
             self.current_image_name = None
+        self.orig_img_scaled = None
+        self.scale_factor = 1.0
         self._scalebar_pending = False
         self._scalebar_points = []
         if hasattr(self, "graphicsView"):
