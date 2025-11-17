@@ -258,33 +258,28 @@ class MainWindow(QMainWindow):
         self._profile_dialog: ProfilePlotDialog | None = None
 
         self.segmentation_mode = "watershed"
-        if hasattr(self, "rb_watershed"):
-            self.rb_watershed.blockSignals(True)
-            self.rb_watershed.setChecked(True)
-            self.rb_watershed.blockSignals(False)
-        if hasattr(self, "rb_ridge"):
-            self.rb_ridge.blockSignals(True)
-            self.rb_ridge.setChecked(False)
-            self.rb_ridge.blockSignals(False)
-        if hasattr(self, "chb_strict"):
-            self.chb_strict.blockSignals(True)
-            self.chb_strict.setChecked(False)
-            self.chb_strict.setEnabled(False)
-            self.chb_strict.blockSignals(False)
+        self.rb_watershed.blockSignals(True)
+        self.rb_watershed.setChecked(True)
+        self.rb_watershed.blockSignals(False)
+        self.rb_ridge.blockSignals(True)
+        self.rb_ridge.setChecked(False)
+        self.rb_ridge.blockSignals(False)
+        self.chb_strict.blockSignals(True)
+        self.chb_strict.setChecked(False)
+        self.chb_strict.setEnabled(False)
+        self.chb_strict.blockSignals(False)
         self.cluster_enabled = False
-        if hasattr(self, "chb_cluster"):
-            self.chb_cluster.setChecked(False)
+        self.chb_cluster.setChecked(False)
 
 
-        if hasattr(self, "cb_scale"):
-            self.cb_scale.blockSignals(True)
-            self.cb_scale.clear()
-            for value in ("0.5x", "1x", "2x", "4x"):
-                self.cb_scale.addItem(value)
-            idx = self.cb_scale.findText("1x")
-            if idx >= 0:
-                self.cb_scale.setCurrentIndex(idx)
-            self.cb_scale.blockSignals(False)
+        self.cb_scale.blockSignals(True)
+        self.cb_scale.clear()
+        for value in ("0.5x", "1x", "2x", "4x"):
+            self.cb_scale.addItem(value)
+        idx = self.cb_scale.findText("1x")
+        if idx >= 0:
+            self.cb_scale.setCurrentIndex(idx)
+        self.cb_scale.blockSignals(False)
 
         # Menu & actions: updated UI element names (rb_mask1_cent -> rb_centerlines; rb_mask2_segm -> rb_segmentation;
         # sp_threshold1 -> sp_max_cent_angle; sp_threshold2 -> sp_segm_threshold)
@@ -295,16 +290,12 @@ class MainWindow(QMainWindow):
         self.btn_segment.clicked.connect(self.segment)
         self.btn_analyze_fibers.clicked.connect(self.analyze_fibers)
         self.btn_save_csv.clicked.connect(self.save_measurements)
-        if hasattr(self, "btn_set_scalebar"):
-            self.btn_set_scalebar.clicked.connect(self._on_set_scalebar_clicked)
-        if hasattr(self, "btn_plot_profile"):
-            self.btn_plot_profile.clicked.connect(self._on_plot_profile_clicked)
-        if hasattr(self, "action_batch_processing"):
-            self.action_batch_processing.triggered.connect(self._on_batch_processing)
+        self.btn_set_scalebar.clicked.connect(self._on_set_scalebar_clicked)
+        self.btn_plot_profile.clicked.connect(self._on_plot_profile_clicked)
+        self.action_batch_processing.triggered.connect(self._on_batch_processing)
 
         # Remove connection of radiobutton signals and instead hook up the combobox change
-        if hasattr(self, "cb_view"):
-            self.cb_view.currentIndexChanged.connect(self.refresh_view)
+        self.cb_view.currentIndexChanged.connect(self.refresh_view)
 
         # GUI defaults
         self.le_minarea.setText("50")
@@ -344,15 +335,11 @@ class MainWindow(QMainWindow):
 
         # react to checkbox changes at runtime
         self.chb_usegpu.toggled.connect(self._on_usegpu_toggled)
-        if hasattr(self, "chb_cluster"):
-            self.chb_cluster.toggled.connect(self._on_cluster_toggled)
-            self._on_cluster_toggled(self.chb_cluster.isChecked())
-        if hasattr(self, "rb_watershed"):
-            self.rb_watershed.toggled.connect(self._on_segmentation_mode_changed)
-        if hasattr(self, "rb_ridge"):
-            self.rb_ridge.toggled.connect(self._on_segmentation_mode_changed)
-        if hasattr(self, "chb_strict"):
-            self.chb_strict.toggled.connect(self._on_strict_checkbox_toggled)
+        self.chb_cluster.toggled.connect(self._on_cluster_toggled)
+        self._on_cluster_toggled(self.chb_cluster.isChecked())
+        self.rb_watershed.toggled.connect(self._on_segmentation_mode_changed)
+        self.rb_ridge.toggled.connect(self._on_segmentation_mode_changed)
+        self.chb_strict.toggled.connect(self._on_strict_checkbox_toggled)
         self._update_strict_checkbox_state()
 
         # Connect toggled signals of rb_show_diam and rb_show_direct to update overlay
@@ -361,8 +348,6 @@ class MainWindow(QMainWindow):
         self.rb_show_pores.toggled.connect(self._render_vector_overlay)
 
     def _init_checkpoint_selector(self) -> None:
-        if not hasattr(self, "cb_model"):
-            return
         checkpoints = self._discover_checkpoint_files()
         rel_default = os.path.relpath(DEFAULT_CKPT_PATH, PROJECT_ROOT)
         self.cb_model.blockSignals(True)
@@ -415,8 +400,6 @@ class MainWindow(QMainWindow):
         return candidates
 
     def _current_checkpoint_path(self) -> str | None:
-        if not hasattr(self, "cb_model"):
-            return None
         entry = self.cb_model.currentText().strip()
         if not entry:
             return None
@@ -531,7 +514,7 @@ class MainWindow(QMainWindow):
             return False
 
         self._sync_pipeline_config_from_ui()
-        ridge_cfg = self.pipeline_config.get("ridge_detection", {}) if hasattr(self, "pipeline_config") else {}
+        ridge_cfg = self.pipeline_config.get("ridge_detection", {})
         max_angle = float(ridge_cfg.get("max_angle_deg", self._current_max_angle()))
         centerline_kwargs = dict(ridge_cfg.get("centerline_kwargs", {}))
 
@@ -839,18 +822,11 @@ class MainWindow(QMainWindow):
 
         pixel_size = self._scalebar_length_value / pixel_length
         self.le_pixelsize.setText(f"{pixel_size:.6g}")
-        if hasattr(self, "cb_units"):
-            try:
-                index = self.cb_units.findText(self._scalebar_unit)
-            except AttributeError:
-                index = -1
-            if index is not None and index >= 0:
-                self.cb_units.setCurrentIndex(index)
-            else:
-                try:
-                    self.cb_units.setCurrentText(self._scalebar_unit)
-                except AttributeError:
-                    pass
+        index = self.cb_units.findText(self._scalebar_unit)
+        if index is not None and index >= 0:
+            self.cb_units.setCurrentIndex(index)
+        else:
+            self.cb_units.setCurrentText(self._scalebar_unit)
 
         self._show_info(
             "Scalebar Set",
@@ -862,7 +838,7 @@ class MainWindow(QMainWindow):
         self._scalebar_pending = False
         if clear_points:
             self._scalebar_points = []
-        if reset_cursor and hasattr(self, "graphicsView"):
+        if reset_cursor:
             self.graphicsView.viewport().unsetCursor()
 
     # ------------------- Zoom helpers -------------------
@@ -871,8 +847,6 @@ class MainWindow(QMainWindow):
         self._fit_view_to_pixmap(force=True)
 
     def _update_reset_button_position(self):
-        if not hasattr(self, "btn_reset_view") or self.btn_reset_view is None:
-            return
         viewport = self.graphicsView.viewport()
         if viewport is None:
             return
@@ -883,8 +857,6 @@ class MainWindow(QMainWindow):
         self.btn_reset_view.move(max(margin, x), y)
 
     def _update_reset_button_visibility(self):
-        if not hasattr(self, "btn_reset_view") or self.btn_reset_view is None:
-            return
         self.btn_reset_view.setVisible(self._zoom_mode_active)
 
     def _handle_wheel_zoom(self, event: QtGui.QWheelEvent) -> bool:
@@ -1009,8 +981,7 @@ class MainWindow(QMainWindow):
         try:
             for idx, path in enumerate(image_paths, start=1):
                 base_name = os.path.splitext(os.path.basename(path))[0]
-                if hasattr(self, "statusbar") and self.statusbar is not None:
-                    self.statusbar.showMessage(f"Processing {idx}/{len(image_paths)}: {os.path.basename(path)}")
+                self.statusbar.showMessage(f"Processing {idx}/{len(image_paths)}: {os.path.basename(path)}")
                 try:
                     self.load_original_from_path(path)
                     QtWidgets.QApplication.processEvents()
@@ -1032,8 +1003,7 @@ class MainWindow(QMainWindow):
         finally:
             QtWidgets.QApplication.restoreOverrideCursor()
             self._batch_mode_active = previous_batch_state
-            if hasattr(self, "statusbar") and self.statusbar is not None:
-                self.statusbar.clearMessage()
+            self.statusbar.clearMessage()
 
         summary_lines = [
             f"Processed {processed} of {len(image_paths)} images.",
@@ -1088,11 +1058,10 @@ class MainWindow(QMainWindow):
         dialog = self._profile_dialog
         if dialog is not None and (keep_dialog or self._profile_mode_active):
             dialog.reset_plot()
-        if hasattr(self, "graphicsView"):
-            if self._profile_mode_active:
-                self.graphicsView.viewport().setCursor(Qt.CursorShape.CrossCursor)
-            else:
-                self.graphicsView.viewport().unsetCursor()
+        if self._profile_mode_active:
+            self.graphicsView.viewport().setCursor(Qt.CursorShape.CrossCursor)
+        else:
+            self.graphicsView.viewport().unsetCursor()
 
     def _remove_profile_line(self):
         if self._profile_line_item is not None and self._profile_line_item.scene() is not None:
@@ -1233,15 +1202,14 @@ class MainWindow(QMainWindow):
 
         previous_scale = getattr(self, "scale_factor", 1.0)
         target_scale = 1.0
-        if hasattr(self, "cb_scale"):
-            scale_text = self.cb_scale.currentText().strip().lower()
-            scale_text = scale_text.replace("×", "x")
-            if scale_text.endswith("x"):
-                scale_text = scale_text[:-1]
-            try:
-                target_scale = float(scale_text)
-            except ValueError:
-                target_scale = 1.0
+        scale_text = self.cb_scale.currentText().strip().lower()
+        scale_text = scale_text.replace("×", "x")
+        if scale_text.endswith("x"):
+            scale_text = scale_text[:-1]
+        try:
+            target_scale = float(scale_text)
+        except ValueError:
+            target_scale = 1.0
         if not np.isfinite(target_scale) or target_scale <= 0:
             target_scale = 1.0
         scale_changed = not math.isclose(previous_scale, target_scale, rel_tol=1e-6, abs_tol=1e-6)
@@ -1266,13 +1234,12 @@ class MainWindow(QMainWindow):
                     return
             processing_img = self.orig_img_scaled
             self.scale_factor = float(target_scale)
-        if hasattr(self.analyzer, "scale_factor"):
-            self.analyzer.scale_factor = self.scale_factor
+        self.analyzer.scale_factor = self.scale_factor
         if scale_changed:
             self.analyzer.reset_prediction_state()
 
         self._sync_pipeline_config_from_ui()
-        config = self.pipeline_config if hasattr(self, "pipeline_config") else {}
+        config = self.pipeline_config
         ridge_cfg = config.get("ridge_detection", {})
         seg_cfg = config.get("segmentation", {})
         watershed_cfg = seg_cfg.get("watershed", {}) if isinstance(seg_cfg, dict) else {}
@@ -1379,8 +1346,7 @@ class MainWindow(QMainWindow):
         if self.cb_view.currentText() not in ["Overlay", "Segmentation", "Measurements overlay", "Sampling"]:
             self.cb_view.setCurrentText("Overlay")
 
-        if hasattr(self, "action_save_masks_predictions"):
-            self.action_save_masks_predictions.setEnabled(True)
+        self.action_save_masks_predictions.setEnabled(True)
 
         self.refresh_view()
         self.progress_bar.setValue(70)
@@ -1391,9 +1357,7 @@ class MainWindow(QMainWindow):
         Computes thickness samples via analyzer and renders overlays/plots.
         """
         self._sync_pipeline_config_from_ui()
-        seg_cfg = {}
-        if hasattr(self, "pipeline_config"):
-            seg_cfg = self.pipeline_config.get("segmentation", {})
+        seg_cfg = self.pipeline_config.get("segmentation", {})
         if self.gray_u8 is None or self.labels_img is None:
             self.segment()
             if self.gray_u8 is None or self.labels_img is None:
@@ -1413,10 +1377,7 @@ class MainWindow(QMainWindow):
         current_scale = self.scale_factor if self.scale_factor and np.isfinite(self.scale_factor) else 1.0
         spacing_px_scaled = max(1.0, spacing_px_input * current_scale)
         pixel_size  = float(_getf(self.le_pixelsize, 1.0))
-        if hasattr(self, "cb_units") and self.cb_units.currentText().strip() and self.le_pixelsize.text().strip():
-            units_label = self.cb_units.currentText()
-        else:
-            units_label = "px"
+        units_label = self.cb_units.currentText() if self.cb_units.currentText().strip() and self.le_pixelsize.text().strip() else "px"
 
         # compute via analyzer
         if self.analyzer is None:
@@ -1427,8 +1388,7 @@ class MainWindow(QMainWindow):
             self._show_info("No centerlines", "No centerlines available. Run segmentation first.")
             return
 
-        if hasattr(self.analyzer, "scale_factor"):
-            self.analyzer.scale_factor = self.scale_factor
+        self.analyzer.scale_factor = self.scale_factor
 
         hist_centers, viz_points, angles_deg = self.analyzer.analyze(
             spacing_px=spacing_px_scaled
@@ -1516,8 +1476,7 @@ class MainWindow(QMainWindow):
             f"Orientation index: {orientation_index:.2f}\n"
             f"Porosity (area fraction): {self._porosity*100:.1f} %"
         )
-        if hasattr(self, "text_edit2"):
-            self.text_edit2.setPlainText(info_text)
+        self.text_edit2.setPlainText(info_text)
 
         # Overlay + plots
         self._render_vector_overlay()
@@ -1619,9 +1578,8 @@ class MainWindow(QMainWindow):
         self.sampling_overlay = sampling_canvas
         self.measurements_overlay = measurement_canvas
         # Default to the new overlay view if user is on an unrelated tab
-        if hasattr(self, "cb_view"):
-            if self.cb_view.currentText() not in ("Measurements overlay", "Sampling"):
-                self.cb_view.setCurrentText("Measurements overlay")
+        if self.cb_view.currentText() not in ("Measurements overlay", "Sampling"):
+            self.cb_view.setCurrentText("Measurements overlay")
         self.refresh_view()
 
     def _clip_point(self, y, x, H, W):
@@ -1707,9 +1665,6 @@ class MainWindow(QMainWindow):
         pw.setAntialiasing(True)
 
     def _update_distributions_pyqtgraph(self, units_label: str):
-        if not hasattr(self, "graph_diameters") or not hasattr(self, "graph_angles"):
-            return
-
         # Thickness
         self._style_plotwidget(self.graph_diameters, "Fiber thickness", "", f"Thickness ({units_label})")
         tu = getattr(self, "_thickness_units", np.array([], dtype=np.float32))
@@ -1759,10 +1714,7 @@ class MainWindow(QMainWindow):
     def refresh_view(self):
         img = None
         # Use the combo box text to select appropriate view.
-        if hasattr(self, "cb_view"):
-            view = self.cb_view.currentText()
-        else:
-            view = "Original"
+        view = self.cb_view.currentText()
         if view == "Original":
             img = ensure_rgb_u8(self.orig_img)
         elif view == "DT":
@@ -1781,9 +1733,9 @@ class MainWindow(QMainWindow):
             fallback = self.overlay_img if self.overlay_img is not None else self._labels_rgb()
             img = self.measurements_overlay if self.measurements_overlay is not None else fallback
         elif view == "gx": 
-            img = to_uint8_for_view(self.gx) if hasattr(self, "gx") else None
+            img = to_uint8_for_view(self.gx)
         elif view == "gy":
-            img = to_uint8_for_view(self.gy) if hasattr(self, "gy") else None
+            img = to_uint8_for_view(self.gy)
 
         self._set_pixmap_from_array(img)
 
@@ -1801,8 +1753,7 @@ class MainWindow(QMainWindow):
         self.scale_factor = 1.0
         self._scalebar_pending = False
         self._scalebar_points = []
-        if hasattr(self, "graphicsView"):
-            self.graphicsView.viewport().unsetCursor()
+        self.graphicsView.viewport().unsetCursor()
         self.dt = None
         self.gray_img = None
         self.gray_u8 = None
@@ -1833,30 +1784,23 @@ class MainWindow(QMainWindow):
         self._profile_points_scene = []
         self._profile_points_img = []
         self._remove_profile_items()
-        if hasattr(self, "btn_reset_view") and self.btn_reset_view is not None:
-            self.btn_reset_view.hide()
+        self.btn_reset_view.hide()
 
         # ---- charts (pyqtgraph) ----
-        if hasattr(self, "graph_diameters") and isinstance(self.graph_diameters, pg.PlotWidget):
-            self.graph_diameters.clear()
-            self.graph_diameters.setTitle("")
-            self.graph_diameters.showGrid(x=False, y=False)
-        if hasattr(self, "graph_angles") and isinstance(self.graph_angles, pg.PlotWidget):
-            self.graph_angles.clear()
-            self.graph_angles.setTitle("")
-            self.graph_angles.showGrid(x=False, y=False)
+        self.graph_diameters.clear()
+        self.graph_diameters.setTitle("")
+        self.graph_diameters.showGrid(x=False, y=False)
+        self.graph_angles.clear()
+        self.graph_angles.setTitle("")
+        self.graph_angles.showGrid(x=False, y=False)
 
         # ---- UI actions / state ----
-        if hasattr(self, "_pixitem"):
-            self._pixitem.setPixmap(QtGui.QPixmap())
+        self._pixitem.setPixmap(QtGui.QPixmap())
 
-        if hasattr(self, "action_save_masks_predictions"):
-            self.action_save_masks_predictions.setEnabled(False)
-        if hasattr(self, "action_save_measurements"):
-            self.action_save_measurements.setEnabled(False)
+        self.action_save_masks_predictions.setEnabled(False)
+        self.action_save_measurements.setEnabled(False)
 
-        if hasattr(self, "cb_view"):
-            self.cb_view.setCurrentText("Original")
+        self.cb_view.setCurrentText("Original")
 
     def _init_device_from_checkbox(self):
         """On startup: if CUDA is available, check the box and use cuda; else uncheck and use cpu."""
@@ -1866,22 +1810,19 @@ class MainWindow(QMainWindow):
         except Exception:
             cuda_ok = False
 
-        if hasattr(self, "chb_usegpu"):
-            if cuda_ok:
-                # user prefers GPU by default when available
-                self.chb_usegpu.setChecked(True)
-                self.device = torch.device('cuda')
-            else:
-                self.chb_usegpu.setChecked(False)
-                self.device = torch.device('cpu')
-                # notify once at init if the UI is asking for GPU (edge case: pre-checked in .ui)
-                if getattr(self.chb_usegpu, "isChecked", lambda: False)():
-                    self._show_info(
-                        "CUDA not available",
-                        "No CUDA-capable GPU detected. Falling back to CPU."
-                    )
+        if cuda_ok:
+            # user prefers GPU by default when available
+            self.chb_usegpu.setChecked(True)
+            self.device = torch.device('cuda')
         else:
-            self.device = torch.device('cuda' if cuda_ok else 'cpu')
+            self.chb_usegpu.setChecked(False)
+            self.device = torch.device('cpu')
+            # notify once at init if the UI is asking for GPU (edge case: pre-checked in .ui)
+            if getattr(self.chb_usegpu, "isChecked", lambda: False)():
+                self._show_info(
+                    "CUDA not available",
+                    "No CUDA-capable GPU detected. Falling back to CPU."
+                )
 
     def _on_usegpu_toggled(self, checked: bool):
         """When user toggles the GPU checkbox, validate and set device; notify if not available."""
@@ -1902,9 +1843,9 @@ class MainWindow(QMainWindow):
 
     def _on_segmentation_mode_changed(self, checked: bool | None = None):
         new_mode = "watershed"
-        if hasattr(self, "rb_ridge") and self.rb_ridge.isChecked():
+        if self.rb_ridge.isChecked():
             new_mode = "ridge"
-        elif hasattr(self, "rb_watershed") and self.rb_watershed.isChecked():
+        elif self.rb_watershed.isChecked():
             new_mode = "watershed"
 
         prev_mode = getattr(self, "segmentation_mode", "watershed")
@@ -1925,7 +1866,7 @@ class MainWindow(QMainWindow):
     def _on_cluster_toggled(self, checked: bool):
         self.cluster_enabled = bool(checked)
         self._sync_pipeline_config_from_ui()
-        cluster_cfg = self.pipeline_config.get("clustering", {}) if hasattr(self, "pipeline_config") else {}
+        cluster_cfg = self.pipeline_config.get("clustering", {})
         cluster_params = dict(cluster_cfg.get("params", {}))
         if self.analyzer is not None:
             self.analyzer.enable_fiber_clustering(self.cluster_enabled, **cluster_params)
@@ -1944,7 +1885,7 @@ class MainWindow(QMainWindow):
     def _init_pipeline_config(self):
         ridge_defaults = FiberAnalyzer._default_centerline_kwargs()
         cluster_defaults: Dict[str, Any] = {}
-        if self.analyzer is not None and hasattr(self.analyzer, "get_cluster_config"):
+        if self.analyzer is not None:
             try:
                 cluster_defaults = self.analyzer.get_cluster_config()
             except Exception:
@@ -1997,7 +1938,7 @@ class MainWindow(QMainWindow):
         cluster_cfg = self.pipeline_config.setdefault("clustering", {})
         cluster_cfg["enabled"] = bool(self.cluster_enabled)
         if "params" not in cluster_cfg or not cluster_cfg["params"]:
-            if self.analyzer is not None and hasattr(self.analyzer, "get_cluster_config"):
+            if self.analyzer is not None:
                 try:
                     cluster_cfg["params"] = self.analyzer.get_cluster_config()
                 except Exception:
@@ -2006,14 +1947,12 @@ class MainWindow(QMainWindow):
                 cluster_cfg["params"] = {}
 
     def _current_max_angle(self) -> float:
-        return float(self.sp_max_cent_angle.value()) if hasattr(self, "sp_max_cent_angle") else 45.0
+        return float(self.sp_max_cent_angle.value())
 
     def _strict_centerline_enabled(self) -> bool:
         return bool(getattr(self, "chb_strict", None) and self.chb_strict.isChecked())
 
     def _update_strict_checkbox_state(self) -> None:
-        if not hasattr(self, "chb_strict"):
-            return
         enable = self._uses_ridge_segmentation()
         if enable:
             if not self.chb_strict.isEnabled():
@@ -2039,7 +1978,7 @@ class MainWindow(QMainWindow):
         return mode
 
     def _current_segmentation_threshold(self) -> int:
-        return int(self.sp_segm_threshold.value()) if hasattr(self, "sp_segm_threshold") else 128
+        return int(self.sp_segm_threshold.value())
 
     def _current_radius_threshold(self) -> float | None:
         if not self._uses_ridge_segmentation():

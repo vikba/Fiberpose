@@ -34,6 +34,7 @@
 - [ ] Implement possibility of pyramid analysis for thin fibers 
 - [ ] Tiling for predictions
 
+
 ## 🐞 Bugs
 - [x] Fix x,y order for arrow drawing
 - [ ] Harmonize everything to x,y order or add _xy postfix
@@ -45,6 +46,9 @@
 
 ## 🧹 Refactoring / Cleanup
 - [x] Improve architecture so each class owns only specialized functions (eg FiberAnalyzer own all image processing)
+- [x] Remove excessive hasattr guards
+- [ ] Re-write compute heavy tasks in numba
+
 
 ## 📝 Documentation
 - [ ] Write minimal documentation
