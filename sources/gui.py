@@ -1201,17 +1201,7 @@ class MainWindow(QMainWindow):
             return
 
         previous_scale = getattr(self, "scale_factor", 1.0)
-        target_scale = 1.0
-        scale_text = self.cb_scale.currentText().strip().lower()
-        scale_text = scale_text.replace("×", "x")
-        if scale_text.endswith("x"):
-            scale_text = scale_text[:-1]
-        try:
-            target_scale = float(scale_text)
-        except ValueError:
-            target_scale = 1.0
-        if not np.isfinite(target_scale) or target_scale <= 0:
-            target_scale = 1.0
+        target_scale = self._current_scale_factor()
         scale_changed = not math.isclose(previous_scale, target_scale, rel_tol=1e-6, abs_tol=1e-6)
         processing_img = self.orig_img
         if math.isclose(target_scale, 1.0, rel_tol=1e-6, abs_tol=1e-6):
@@ -1358,7 +1348,21 @@ class MainWindow(QMainWindow):
         """
         self._sync_pipeline_config_from_ui()
         seg_cfg = self.pipeline_config.get("segmentation", {})
-        if self.gray_u8 is None or self.labels_img is None:
+        target_scale = self._current_scale_factor()
+        current_scale = getattr(self, "scale_factor", 1.0)
+        scale_mismatch = (
+            self.analyzer is not None
+            and self.labels_img is not None
+            and self.analyzer.dt_predicted()
+            and not math.isclose(current_scale, target_scale, rel_tol=1e-6, abs_tol=1e-6)
+        )
+        if scale_mismatch or self.gray_u8 is None or self.labels_img is None:
+            if scale_mismatch:
+                logger.info(
+                    "Scale factor changed from %.3f to %.3f; rerunning segmentation for analysis.",
+                    current_scale,
+                    target_scale,
+                )
             self.segment()
             if self.gray_u8 is None or self.labels_img is None:
                 self._show_info("No segmentation", "Segmentation could not be performed.")
@@ -1945,6 +1949,19 @@ class MainWindow(QMainWindow):
                     cluster_cfg["params"] = {}
             else:
                 cluster_cfg["params"] = {}
+
+    def _current_scale_factor(self) -> float:
+        scale_text = self.cb_scale.currentText().strip().lower()
+        scale_text = scale_text.replace("×", "x")
+        if scale_text.endswith("x"):
+            scale_text = scale_text[:-1]
+        try:
+            target_scale = float(scale_text)
+        except ValueError:
+            target_scale = 1.0
+        if not np.isfinite(target_scale) or target_scale <= 0:
+            target_scale = 1.0
+        return float(target_scale)
 
     def _current_max_angle(self) -> float:
         return float(self.sp_max_cent_angle.value())
