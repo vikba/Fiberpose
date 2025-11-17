@@ -412,27 +412,6 @@ class FiberAnalyzer:
         logger.info("Detected constant segments: %d", len(constant_segments_xy))
         return constant_segments_xy, normals_xy, centerlines_rgb, markers
 
-    def _build_segment_info(self, segments_xy: List[np.ndarray]) -> List[Dict[str, np.ndarray]]:
-        info: List[Dict[str, np.ndarray]] = []
-        if self._dt is None:
-            return info
-
-        for seg_xy in segments_xy:
-            pts_xy = seg_xy.reshape(-1, 2).astype(np.float32)
-            if pts_xy.size == 0:
-                continue
-            radii = np.array(
-                [_bilinear(self._dt, float(p_xy[1]), float(p_xy[0])) for p_xy in pts_xy],
-                dtype=np.float32,
-            )
-            info.append(
-                {
-                    "points_xy": pts_xy,
-                    "radii": radii,
-                }
-            )
-        return info
-
     def segment(
         self,
         thr_u8: int,
