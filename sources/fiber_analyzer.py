@@ -727,10 +727,21 @@ class FiberAnalyzer:
         fiber_mask = (dt01 >= t)
         void_mask = (~fiber_mask).astype(np.uint8)
         if void_mask.any():
+            void_mask = self._clean_void_mask(void_mask, radius_px=2)
+        if void_mask.any():
             pore_dt = cv2.distanceTransform(void_mask, distanceType=cv2.DIST_L2, maskSize=5).astype(np.float32)
         else:
             pore_dt = np.zeros_like(dt01, dtype=np.float32)
         return void_mask, pore_dt
+
+    def _clean_void_mask(self, void_mask: np.ndarray, radius_px: int = 2) -> np.ndarray:
+        """Morphologically open void mask to drop thin artifacts before DT."""
+        r = max(0, int(radius_px))
+        if r == 0:
+            return void_mask
+        k = 2 * r + 1
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k))
+        return cv2.morphologyEx(void_mask, cv2.MORPH_OPEN, kernel)
 
     def _local_maxima(self, arr: np.ndarray, footprint: int = 3, mask: np.ndarray | None = None) -> np.ndarray:
         """
