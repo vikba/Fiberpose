@@ -140,12 +140,6 @@ class FiberAnalyzer:
         self._strict_centerlines = bool(strict)
         # downstream calls recompute centerlines via predict_dt/compute_centerlines
 
-    def set_high_conf_filter(self, high_conf_fib: bool):
-        """
-        Backwards-compatible alias for set_strict_centerline_filter.
-        """
-        self.set_strict_centerline_filter(high_conf_fib)
-
     def enable_fiber_clustering(self, enabled: bool, **cluster_kwargs: Any) -> None:
         """Toggle clustering of centerline fragments before segmentation."""
         self._cluster_fibers = bool(enabled)
