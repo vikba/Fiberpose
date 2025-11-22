@@ -625,6 +625,35 @@ class MainWindow(QMainWindow):
     def _urls_are_images(self, urls) -> bool:
         return any(u.isLocalFile() and self._is_image_path(u.toLocalFile()) for u in urls)
 
+    def _measurement_export_summary(self) -> tuple[float, float, float, float, int]:
+        """
+        Return mean diameter, std, orientation index, porosity, and sample count for CSV export.
+        Falls back to recomputing from cached arrays if the summary is missing.
+        """
+        if self.fiber_summary:
+            return (
+                float(self.fiber_summary.get("mean_diameter", float("nan"))),
+                float(self.fiber_summary.get("std_diameter", float("nan"))),
+                float(self.fiber_summary.get("orientation_index", float("nan"))),
+                float(self.fiber_summary.get("porosity", float("nan"))),
+                int(self.fiber_summary.get("sample_count", 0)),
+            )
+
+        diameters = self._thickness_units if self._thickness_units is not None else np.array([])
+        angles = self._angles_deg if self._angles_deg is not None else np.array([])
+        mean_val = float(np.mean(diameters)) if diameters.size else float("nan")
+        std_val = float(np.std(diameters)) if diameters.size else float("nan")
+        sample_count = int(self.samples_table.shape[0]) if self.samples_table is not None else int(diameters.size)
+        if angles.size:
+            radians = np.deg2rad(angles)
+            orientation_index = float(
+                np.hypot(np.mean(np.cos(radians)), np.mean(np.sin(radians)))
+            )
+        else:
+            orientation_index = float("nan")
+        porosity = float(self._porosity) if self._porosity is not None else float("nan")
+        return mean_val, std_val, orientation_index, porosity, sample_count
+
     # ------------------- I/O -------------------
 
     def load_original(self):
@@ -710,21 +739,26 @@ class MainWindow(QMainWindow):
 
         try:
             with open(root + "_samples.csv", "w", newline="") as f:
-                # Write header with both thickness in pixels and in units.
-                f.write("image_name,x,y,thickness_px,thickness_units,fiber_id\n")
-                # Check if a pixel size was provided (if not, leave thickness_units blank).
-                units_set = bool(self.le_pixelsize.text().strip())
-                image_name = self.current_image_name or ""
-                for i, row in enumerate(self.samples_table):
-                    x, y, t = row[:3]
-                    if units_set and self._thickness_units is not None and len(self._thickness_units) > i:
-                        units_value = f"{self._thickness_units[i]:.6f}"
+                mean_val, std_val, orientation_index, porosity, sample_count = self._measurement_export_summary()
+                f.write("metric,value\n")
+                f.write(f"mean,{mean_val:.6f}\n")
+                f.write(f"std,{std_val:.6f}\n")
+                f.write(f"orientation_index,{orientation_index:.6f}\n")
+                f.write(f"porosity,{porosity:.6f}\n")
+                f.write(f"sample_number,{sample_count}\n")
+                f.write("\n\n")
+                f.write("x,y,diameter,fiber_id\n")
+
+                for idx, row in enumerate(self.samples_table, start=1):
+                    x, y, t_px = row[:3]
+                    if self._thickness_units is not None and len(self._thickness_units) >= idx:
+                        diameter_val = float(self._thickness_units[idx - 1])
                     else:
-                        units_value = ""
-                    f.write(f"{image_name},{int(x)},{int(y)},{float(t):.6f},{units_value},0\n")
+                        diameter_val = float(t_px)
+                    f.write(f"{int(x)},{int(y)},{diameter_val:.6f},0\n")
         except Exception as e:
-             self._show_error("Error", f"Failed to save CSVs:\n{e}")
-             return
+            self._show_error("Error", f"Failed to save CSVs:\n{e}")
+            return
         self.working_dir = dest_dir
         self._show_info("Saved", f"Saved CSV(s) to:\n{dest_dir}")
 
@@ -932,17 +966,24 @@ class MainWindow(QMainWindow):
 
         if wants("samples") and self.samples_table is not None and len(self.samples_table) > 0:
             samples_path = os.path.join(dest_dir, f"{base_name}_samples.csv")
-            units_set = bool(self.le_pixelsize.text().strip())
-            image_name = base_name
             with open(samples_path, "w", newline="") as f:
-                f.write("image_name,x,y,thickness_px,thickness_units,fiber_id\n")
-                for i, row in enumerate(self.samples_table):
-                    x, y, t = row[:3]
-                    if units_set and self._thickness_units is not None and len(self._thickness_units) > i:
-                        units_value = f"{self._thickness_units[i]:.6f}"
+                mean_val, std_val, orientation_index, porosity, sample_count = self._measurement_export_summary()
+                f.write("metric,value\n")
+                f.write(f"mean,{mean_val:.6f}\n")
+                f.write(f"std,{std_val:.6f}\n")
+                f.write(f"orientation_index,{orientation_index:.6f}\n")
+                f.write(f"porosity,{porosity:.6f}\n")
+                f.write(f"sample_number,{sample_count}\n")
+                f.write("\n\n")
+                f.write("x,y,diameter,fiber_id\n")
+
+                for idx, row in enumerate(self.samples_table, start=1):
+                    x, y, t_px = row[:3]
+                    if self._thickness_units is not None and len(self._thickness_units) >= idx:
+                        diameter_val = float(self._thickness_units[idx - 1])
                     else:
-                        units_value = ""
-                    f.write(f"{image_name},{int(x)},{int(y)},{float(t):.6f},{units_value},0\n")
+                        diameter_val = float(t_px)
+                    f.write(f"{int(x)},{int(y)},{diameter_val:.6f},0\n")
 
     def _prompt_batch_save_options(self) -> Dict[str, bool] | None:
         dialog = BatchSaveOptionsDialog(self, self._batch_save_options)
@@ -1480,6 +1521,14 @@ class MainWindow(QMainWindow):
             f"Orientation index: {orientation_index:.2f}\n"
             f"Porosity (area fraction): {self._porosity*100:.1f} %"
         )
+        self.fiber_summary = {
+            "mean_diameter": float(mean_thickness),
+            "std_diameter": float(std_thickness),
+            "orientation_index": float(orientation_index),
+            "porosity": float(self._porosity),
+            "sample_count": len(hist_centers) if hist_centers else 0,
+            "units": units_label,
+        }
         self.text_edit2.setPlainText(info_text)
 
         # Overlay + plots
