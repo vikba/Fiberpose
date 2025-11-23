@@ -625,9 +625,40 @@ class MainWindow(QMainWindow):
     def _urls_are_images(self, urls) -> bool:
         return any(u.isLocalFile() and self._is_image_path(u.toLocalFile()) for u in urls)
 
-    def _measurement_export_summary(self) -> tuple[float, float, float, float, int]:
+    def _compute_orientation_stats(
+        self, angles_deg: np.ndarray
+    ) -> tuple[float, float, float]:
         """
-        Return mean diameter, std, orientation index, porosity, and sample count for CSV export.
+        Return orientation index, circular mean angle (deg), and circular std (deg)
+        for canonical angles in degrees.
+        """
+        if angles_deg is None or getattr(angles_deg, "size", 0) == 0:
+            return float("nan"), float("nan"), float("nan")
+
+        angles_rad = np.deg2rad(angles_deg)
+        mean_cos = float(np.mean(np.cos(angles_rad)))
+        mean_sin = float(np.mean(np.sin(angles_rad)))
+
+        orientation_index = float(np.clip(np.hypot(mean_cos, mean_sin), 0.0, 1.0))
+        mean_angle_rad = float(np.arctan2(mean_sin, mean_cos))
+        mean_angle_deg = float(np.rad2deg(mean_angle_rad))
+        if mean_angle_deg > 90.0:
+            mean_angle_deg -= 180.0
+        elif mean_angle_deg <= -90.0:
+            mean_angle_deg += 180.0
+
+        if orientation_index > 0 and np.isfinite(orientation_index):
+            r = float(np.clip(orientation_index, 1e-8, 1.0))
+            std_angle_rad = float(np.sqrt(max(0.0, -2.0 * np.log(r))))
+            std_angle_deg = float(np.rad2deg(std_angle_rad))
+        else:
+            std_angle_deg = float("nan")
+
+        return orientation_index, mean_angle_deg, std_angle_deg
+
+    def _measurement_export_summary(self) -> tuple[float, float, float, float, float, float, int]:
+        """
+        Return mean diameter, std, orientation index, mean angle, std angle, porosity, and sample count for CSV export.
         Falls back to recomputing from cached arrays if the summary is missing.
         """
         if self.fiber_summary:
@@ -635,6 +666,8 @@ class MainWindow(QMainWindow):
                 float(self.fiber_summary.get("mean_diameter", float("nan"))),
                 float(self.fiber_summary.get("std_diameter", float("nan"))),
                 float(self.fiber_summary.get("orientation_index", float("nan"))),
+                float(self.fiber_summary.get("mean_angle_deg", float("nan"))),
+                float(self.fiber_summary.get("std_angle_deg", float("nan"))),
                 float(self.fiber_summary.get("porosity", float("nan"))),
                 int(self.fiber_summary.get("sample_count", 0)),
             )
@@ -644,15 +677,9 @@ class MainWindow(QMainWindow):
         mean_val = float(np.mean(diameters)) if diameters.size else float("nan")
         std_val = float(np.std(diameters)) if diameters.size else float("nan")
         sample_count = int(self.samples_table.shape[0]) if self.samples_table is not None else int(diameters.size)
-        if angles.size:
-            radians = np.deg2rad(angles)
-            orientation_index = float(
-                np.hypot(np.mean(np.cos(radians)), np.mean(np.sin(radians)))
-            )
-        else:
-            orientation_index = float("nan")
+        orientation_index, mean_angle_deg, std_angle_deg = self._compute_orientation_stats(angles)
         porosity = float(self._porosity) if self._porosity is not None else float("nan")
-        return mean_val, std_val, orientation_index, porosity, sample_count
+        return mean_val, std_val, orientation_index, mean_angle_deg, std_angle_deg, porosity, sample_count
 
     # ------------------- I/O -------------------
 
@@ -739,23 +766,26 @@ class MainWindow(QMainWindow):
 
         try:
             with open(root + "_samples.csv", "w", newline="") as f:
-                mean_val, std_val, orientation_index, porosity, sample_count = self._measurement_export_summary()
+                mean_val, std_val, orientation_index, mean_angle_deg, std_angle_deg, porosity, sample_count = self._measurement_export_summary()
                 f.write("metric,value\n")
                 f.write(f"mean,{mean_val:.6f}\n")
                 f.write(f"std,{std_val:.6f}\n")
                 f.write(f"orientation_index,{orientation_index:.6f}\n")
+                f.write(f"mean_angle_deg,{mean_angle_deg:.6f}\n")
+                f.write(f"std_angle_deg,{std_angle_deg:.6f}\n")
                 f.write(f"porosity,{porosity:.6f}\n")
                 f.write(f"sample_number,{sample_count}\n")
                 f.write("\n\n")
-                f.write("x,y,diameter,fiber_id\n")
+                f.write("x,y,diameter,angle_deg,fiber_id\n")
 
                 for idx, row in enumerate(self.samples_table, start=1):
                     x, y, t_px = row[:3]
+                    angle_val = float(row[3]) if len(row) > 3 else float("nan")
                     if self._thickness_units is not None and len(self._thickness_units) >= idx:
                         diameter_val = float(self._thickness_units[idx - 1])
                     else:
                         diameter_val = float(t_px)
-                    f.write(f"{int(x)},{int(y)},{diameter_val:.6f},0\n")
+                    f.write(f"{int(x)},{int(y)},{diameter_val:.6f},{angle_val:.6f},0\n")
         except Exception as e:
             self._show_error("Error", f"Failed to save CSVs:\n{e}")
             return
@@ -967,23 +997,26 @@ class MainWindow(QMainWindow):
         if wants("samples") and self.samples_table is not None and len(self.samples_table) > 0:
             samples_path = os.path.join(dest_dir, f"{base_name}_samples.csv")
             with open(samples_path, "w", newline="") as f:
-                mean_val, std_val, orientation_index, porosity, sample_count = self._measurement_export_summary()
+                mean_val, std_val, orientation_index, mean_angle_deg, std_angle_deg, porosity, sample_count = self._measurement_export_summary()
                 f.write("metric,value\n")
                 f.write(f"mean,{mean_val:.6f}\n")
                 f.write(f"std,{std_val:.6f}\n")
                 f.write(f"orientation_index,{orientation_index:.6f}\n")
+                f.write(f"mean_angle_deg,{mean_angle_deg:.6f}\n")
+                f.write(f"std_angle_deg,{std_angle_deg:.6f}\n")
                 f.write(f"porosity,{porosity:.6f}\n")
                 f.write(f"sample_number,{sample_count}\n")
                 f.write("\n\n")
-                f.write("x,y,diameter,fiber_id\n")
+                f.write("x,y,diameter,angle_deg,fiber_id\n")
 
                 for idx, row in enumerate(self.samples_table, start=1):
                     x, y, t_px = row[:3]
+                    angle_val = float(row[3]) if len(row) > 3 else float("nan")
                     if self._thickness_units is not None and len(self._thickness_units) >= idx:
                         diameter_val = float(self._thickness_units[idx - 1])
                     else:
                         diameter_val = float(t_px)
-                    f.write(f"{int(x)},{int(y)},{diameter_val:.6f},0\n")
+                    f.write(f"{int(x)},{int(y)},{diameter_val:.6f},{angle_val:.6f},0\n")
 
     def _prompt_batch_save_options(self) -> Dict[str, bool] | None:
         dialog = BatchSaveOptionsDialog(self, self._batch_save_options)
@@ -1007,6 +1040,17 @@ class MainWindow(QMainWindow):
         save_options = self._prompt_batch_save_options()
         if not save_options:
             return
+
+        prev_strict_mode = self._strict_centerline_enabled()
+        prev_seg_mode = self._current_segmentation_mode()
+        batch_strict_mode = bool(save_options.get("strict", prev_strict_mode))
+        self._set_strict_mode(batch_strict_mode)
+        if batch_strict_mode and prev_seg_mode != "ridge":
+            if getattr(self, "rb_ridge", None):
+                self.rb_ridge.setChecked(True)
+            else:
+                self.segmentation_mode = "ridge"
+                self._sync_pipeline_config_from_ui()
 
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         output_root = os.path.join(directory, f"fiberpose_batch_{timestamp}")
@@ -1042,6 +1086,15 @@ class MainWindow(QMainWindow):
                     logger.exception("Batch processing failed for %s", path)
                     failures.append((path, str(exc)))
         finally:
+            self._set_strict_mode(prev_strict_mode)
+            if prev_seg_mode != self._current_segmentation_mode():
+                if prev_seg_mode == "ridge" and getattr(self, "rb_ridge", None):
+                    self.rb_ridge.setChecked(True)
+                elif prev_seg_mode == "watershed" and getattr(self, "rb_watershed", None):
+                    self.rb_watershed.setChecked(True)
+                else:
+                    self.segmentation_mode = prev_seg_mode
+                    self._sync_pipeline_config_from_ui()
             QtWidgets.QApplication.restoreOverrideCursor()
             self._batch_mode_active = previous_batch_state
             self.statusbar.clearMessage()
@@ -1507,24 +1560,22 @@ class MainWindow(QMainWindow):
         else:
             mean_thickness = float('nan')
             std_thickness  = float('nan')
-        if self._angles_deg.size:
-            angles_rad = np.deg2rad(self._angles_deg)
-            mean_cos = np.mean(np.cos(angles_rad))
-            mean_sin = np.mean(np.sin(angles_rad))
-            orientation_index = np.hypot(mean_cos, mean_sin)
-        else:
-            orientation_index = float('nan')
+        orientation_index, mean_angle_deg, std_angle_deg = self._compute_orientation_stats(self._angles_deg)
 
         info_text = (
             f"Mean diameter: {mean_thickness:.2f} {units_label}\n"
             f"Std diameter: {std_thickness:.2f} {units_label}\n"
             f"Orientation index: {orientation_index:.2f}\n"
+            f"Mean angle: {mean_angle_deg:.2f} deg\n"
+            f"Std angle: {std_angle_deg:.2f} deg\n"
             f"Porosity (area fraction): {self._porosity*100:.1f} %"
         )
         self.fiber_summary = {
             "mean_diameter": float(mean_thickness),
             "std_diameter": float(std_thickness),
             "orientation_index": float(orientation_index),
+            "mean_angle_deg": float(mean_angle_deg),
+            "std_angle_deg": float(std_angle_deg),
             "porosity": float(self._porosity),
             "sample_count": len(hist_centers) if hist_centers else 0,
             "units": units_label,
@@ -1542,7 +1593,9 @@ class MainWindow(QMainWindow):
             f"Stored viz points: {len(self._viz_points)}\n"
             f"Mean diameter: {mean_thickness:.2f} {units_label}\n"
             f"Std diameter: {std_thickness:.2f} {units_label}\n"
-            f"Orientation index: {orientation_index:.2f}"
+            f"Orientation index: {orientation_index:.2f}\n"
+            f"Mean angle: {mean_angle_deg:.2f} deg\n"
+            f"Std angle: {std_angle_deg:.2f} deg"
         )
 
         self.action_save_measurements.setEnabled(True)
@@ -1912,8 +1965,7 @@ class MainWindow(QMainWindow):
         self._sync_pipeline_config_from_ui()
 
     def _on_strict_checkbox_toggled(self, checked: bool):
-        if self.analyzer is not None:
-            self.analyzer.set_strict_centerline_filter(self._strict_centerline_enabled())
+        self._set_strict_mode(bool(checked))
         self._sync_pipeline_config_from_ui()
 
     def _on_cluster_toggled(self, checked: bool):
@@ -2017,6 +2069,18 @@ class MainWindow(QMainWindow):
 
     def _strict_centerline_enabled(self) -> bool:
         return bool(getattr(self, "chb_strict", None) and self.chb_strict.isChecked())
+
+    def _set_strict_mode(self, enabled: bool) -> None:
+        """Set strict centerline mode across UI, analyzer, and config."""
+        if getattr(self, "chb_strict", None):
+            self.chb_strict.blockSignals(True)
+            self.chb_strict.setChecked(bool(enabled))
+            self.chb_strict.blockSignals(False)
+        if self.analyzer is not None:
+            self.analyzer.set_strict_centerline_filter(bool(enabled))
+        if getattr(self, "pipeline_config", None) is not None:
+            ridge_cfg = self.pipeline_config.setdefault("ridge_detection", {})
+            ridge_cfg["strict_centerlines"] = bool(enabled)
 
     def _update_strict_checkbox_state(self) -> None:
         enable = self._uses_ridge_segmentation()
