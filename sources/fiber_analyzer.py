@@ -828,7 +828,7 @@ class FiberAnalyzer:
             if n == 0.0 or not np.isfinite(n):
                 return None
             ty, tx = ty / n, tx / n
-            ang = np.degrees(np.arctan2(ty, tx))
+            ang = -np.degrees(np.arctan2(ty, tx))
             if ang > 90.0:
                 ang -= 180.0; ty, tx = -ty, -tx
             elif ang <= -90.0:

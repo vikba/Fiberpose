@@ -43,6 +43,7 @@
 - [ ] Check algorithm of fiber porosity
 - [x] Dt pore image is not updated
 - [x] Don't predict dt, if it was already predicted for that image during change of segmetnation method
+- [x] Angle distribution is reversed in comparison with Directionality and OrientationJ
 
 ## 🧹 Refactoring / Cleanup
 - [x] Improve architecture so each class owns only specialized functions (eg FiberAnalyzer own all image processing)
