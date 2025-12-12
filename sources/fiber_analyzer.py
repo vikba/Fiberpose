@@ -88,6 +88,7 @@ class FiberAnalyzer:
             "max_neighbors": None,
             "length_weight": 0.1,
             "radius_weight": 0.0,
+            "skip_endpoint_px": 5.0,
         }
 
         self.scale_factor: float = 1.0
@@ -377,7 +378,7 @@ class FiberAnalyzer:
                     lineType=cv2.LINE_AA,
                 )
 
-        connection_color = (0, 0, 255)  # blue in BGR
+        connection_color = (0, 255, 0)  # green in BGR to highlight clustered links
         for p_xy, q_xy in cluster_connections:
             px = int(round(float(p_xy[0])))
             py = int(round(float(p_xy[1])))
@@ -548,6 +549,7 @@ class FiberAnalyzer:
 
         connections: List[Tuple[np.ndarray, np.ndarray]] = []
         seen_pairs: set[tuple[int, int]] = set()
+        skip_px = float(self._cluster_config.get("skip_endpoint_px", 0.0))
         for frag in segments:
             for ep in frag.endpoints():
                 other = ep.connected_to
@@ -559,7 +561,7 @@ class FiberAnalyzer:
                 if key in seen_pairs:
                     continue
                 seen_pairs.add(key)
-                connections.append((ep.pos().copy(), other.pos().copy()))
+                connections.append((ep.shifted_pos(skip_px).copy(), other.shifted_pos(skip_px).copy()))
         return connections
 
     def _normalize_parent_ids(self, segments: List[FiberFragment]) -> Dict[int, int]:
@@ -618,6 +620,12 @@ class FiberAnalyzer:
 
     def get_centerlines_image(self) -> Optional[np.ndarray]:
         return self._centerlines_rgb
+
+    def get_cluster_connections(self) -> List[Tuple[np.ndarray, np.ndarray]]:
+        """Return copies of clustered connection endpoints (x,y) pairs, if any."""
+        if not self._cluster_connection_pairs:
+            return []
+        return [(p.copy(), q.copy()) for p, q in self._cluster_connection_pairs]
 
     def get_centerline_segments(self) -> List[np.ndarray]:
         if not self._constant_segments:

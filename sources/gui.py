@@ -495,6 +495,32 @@ class MainWindow(QMainWindow):
             out[mask] = out[mask] * (1.0 - alpha) + over[mask] * alpha
         return out.clip(0, 255).astype(np.uint8)
 
+    def _centerlines_with_connections(self) -> np.ndarray | None:
+        """
+        Return the cached centerline view with clustering links overlaid for visibility.
+        """
+        img = getattr(self, "_centerlines_dt", None)
+        base = ensure_rgb_u8(img)
+        if base is None:
+            return None
+        if not self.cluster_enabled or self.analyzer is None:
+            return base
+        try:
+            connections = self.analyzer.get_cluster_connections()
+        except Exception:
+            connections = []
+        if not connections:
+            return base
+        out = base.copy()
+        color = (0, 255, 0)
+        for p_xy, q_xy in connections:
+            px = int(round(float(p_xy[0])))
+            py = int(round(float(p_xy[1])))
+            qx = int(round(float(q_xy[0])))
+            qy = int(round(float(q_xy[1])))
+            cv2.line(out, (px, py), (qx, qy), color, 1, cv2.LINE_AA)
+        return out
+
     def _labels_rgb(self) -> np.ndarray | None:
         if self.labels_img is None:
             return None
@@ -1828,7 +1854,7 @@ class MainWindow(QMainWindow):
         elif view == "Laplacian":
             img = to_uint8_for_view(self.lapl_img)
         elif view == "Centerlines":
-            img = getattr(self, "_centerlines_dt", None)
+            img = self._centerlines_with_connections()
         elif view == "Segmentation":
             img = self._labels_rgb()
         elif view == "Overlay":

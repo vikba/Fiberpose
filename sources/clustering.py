@@ -15,9 +15,9 @@ from .fiber_graph import FiberFragment, FragmentEndpoint, INF
 
 
 class EndpointIndex:
-    def __init__(self, endpoints: Iterable[FragmentEndpoint]):
+    def __init__(self, endpoints: Iterable[FragmentEndpoint], skip_endpoint_px: float = 0.0):
         self.eps = list(endpoints)
-        self.pos = np.vstack([e.pos() for e in self.eps]).astype(np.float32)
+        self.pos = np.vstack([e.shifted_pos(skip_endpoint_px) for e in self.eps]).astype(np.float32)
         self.fid = np.array([e.fragment.fragment_id for e in self.eps], np.int32)
         self.idx_of = {ep: i for i, ep in enumerate(self.eps)}
 
@@ -83,12 +83,13 @@ def line_to_line_rms_cost(
     cos_min: float = 0.95,
     length_weight: float = 0.0,
     radius_weight: float = 0.0,
+    skip_endpoint_px: float = 0.0,
 ) -> float:
     if hasattr(ep1, "same_fragment") and ep1.same_fragment(ep2):
         return INF
 
-    p1 = ep1.pos().astype(np.float32)
-    p2 = ep2.pos().astype(np.float32)
+    p1 = ep1.shifted_pos(skip_endpoint_px).astype(np.float32)
+    p2 = ep2.shifted_pos(skip_endpoint_px).astype(np.float32)
     v = p2 - p1
     L = float(np.linalg.norm(v))
     if L < 1e-9:
@@ -132,9 +133,10 @@ def stitch_and_cluster(
     max_neighbors: int | None = None,
     length_weight: float = 0.0,
     radius_weight: float = 0.0,
+    skip_endpoint_px: float = 0.0,
 ) -> None:
     endpoints = [ep for f in fragments for ep in f.endpoints()]
-    index = EndpointIndex(endpoints)
+    index = EndpointIndex(endpoints, skip_endpoint_px=skip_endpoint_px)
 
     proposals = {}
     for ep in endpoints:
@@ -152,6 +154,7 @@ def stitch_and_cluster(
                 cos_min=0.95,
                 length_weight=length_weight,
                 radius_weight=radius_weight,
+                skip_endpoint_px=skip_endpoint_px,
             )
             if cost < best_cost:
                 best_cost = cost

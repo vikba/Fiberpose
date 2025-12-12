@@ -96,6 +96,38 @@ class FragmentEndpoint:
     def pos(self) -> np.ndarray:
         return self.fragment.centerline_xy[self.index()]
 
+    def shifted_pos(self, offset_px: float = 0.0) -> np.ndarray:
+        """
+        Return a point offset from the endpoint along the fragment by offset_px.
+        Falls back to the true endpoint if the fragment is too short.
+        """
+        offset_px = float(max(0.0, offset_px))
+        if offset_px <= 0.0:
+            return self.pos()
+
+        pts = self.fragment.centerline_xy
+        # travel inward from this endpoint
+        if self.end == "a":
+            walk_pts = pts
+        else:
+            walk_pts = pts[::-1]
+
+        if len(walk_pts) < 2:
+            return self.pos()
+
+        seg_vecs = np.diff(walk_pts, axis=0)
+        seg_lens = np.linalg.norm(seg_vecs, axis=1)
+        accum = 0.0
+        for i, seg_len in enumerate(seg_lens):
+            next_accum = accum + float(seg_len)
+            if offset_px <= next_accum and seg_len > 0:
+                t = (offset_px - accum) / seg_len
+                return (1.0 - t) * walk_pts[i] + t * walk_pts[i + 1]
+            accum = next_accum
+
+        # ran out of length; return the far end in walked order (which is the same coordinate space)
+        return walk_pts[-1]
+
     def radius(self) -> float:
         return float(self.fragment.radii[self.index()])
 

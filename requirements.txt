@@ -7,5 +7,5 @@ scikit-image
 imageio
 matplotlib
 Pillow
-opencv-python
 pyqtgraph
+opencv-python

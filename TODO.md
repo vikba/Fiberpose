@@ -6,7 +6,7 @@
 - [x] !Develop criteria for high quality fibers
 - [x] !Implement detection and segmentation of high confidence fiber fragmetns
 - [ ] Use python instead of Java for ridge detection
-- [ ] Add training support
+- [ ] Add training support in CLI
 - [x] Save svs in pixels and units
 - [x] Add calculation of Mean and OI
 - [x] Diameter shold be calculated based on original not rounded distance transform
@@ -33,6 +33,7 @@
 - [x] Add simple centerline (ridge) segmentation
 - [ ] Implement possibility of pyramid analysis for thin fibers 
 - [ ] Tiling for predictions
+- [ ] Add lightweight ONNX inference runtime
 
 
 ## 🐞 Bugs
