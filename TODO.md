@@ -34,6 +34,7 @@
 - [ ] Implement possibility of pyramid analysis for thin fibers 
 - [ ] Tiling for predictions
 - [ ] Add lightweight ONNX inference runtime
+- [ ] Allow saving style vector
 
 
 ## 🐞 Bugs

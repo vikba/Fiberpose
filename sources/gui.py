@@ -148,11 +148,20 @@ class BatchSaveOptionsDialog(QtWidgets.QDialog):
             "overlay": QtWidgets.QCheckBox("Overlay visualization"),
             "debug": QtWidgets.QCheckBox("Debug visualization"),
             "samples": QtWidgets.QCheckBox("Samples table (CSV)"),
+            "style_vector": QtWidgets.QCheckBox("Style vector (.npy)"),
         }
 
         defaults = initial_options or {}
+        default_states = {
+            "dt": True,
+            "labels": True,
+            "overlay": True,
+            "debug": True,
+            "samples": True,
+            "style_vector": False,
+        }
         for key, checkbox in self._checkboxes.items():
-            checkbox.setChecked(defaults.get(key, True))
+            checkbox.setChecked(defaults.get(key, default_states.get(key, True)))
             layout.addWidget(checkbox)
 
         button_box = QDialogButtonBox(
@@ -204,6 +213,7 @@ class MainWindow(QMainWindow):
         self.lapl_img = None
         self.gx = None
         self.gy = None
+        self.style_vec = None
         self.analyzer: FiberAnalyzer | None = None
         self.scale_factor: float = 1.0
 
@@ -574,6 +584,10 @@ class MainWindow(QMainWindow):
         lap = self.analyzer.get_laplacian()
         if lap is not None:
             self.lapl_img = np.asarray(lap, dtype=np.float32, copy=False)
+
+        style_vec = self.analyzer.get_style_vector()
+        if style_vec is not None:
+            self.style_vec = np.asarray(style_vec, dtype=np.float32, copy=False)
 
         gx, gy = self.analyzer.get_gradients()
         if gx is not None:
@@ -1004,8 +1018,17 @@ class MainWindow(QMainWindow):
         """Persist batch artifacts according to the save options selected by the user."""
         options = save_options or {}
 
+        default_flags = {
+            "dt": True,
+            "labels": True,
+            "overlay": True,
+            "debug": True,
+            "samples": True,
+            "style_vector": False,
+        }
+
         def wants(key: str) -> bool:
-            return bool(options.get(key, True))
+            return bool(options.get(key, default_flags.get(key, True)))
 
         if wants("dt") and self.gray_u8 is not None:
             dt_path = os.path.join(dest_dir, f"{base_name}_dt.png")
@@ -1019,6 +1042,9 @@ class MainWindow(QMainWindow):
         if wants("debug") and self.measurements_overlay is not None:
             debug_path = os.path.join(dest_dir, f"{base_name}_debug.png")
             iio.imwrite(debug_path, np.asarray(self.measurements_overlay, dtype=np.uint8))
+        if wants("style_vector") and self.style_vec is not None:
+            style_path = os.path.join(dest_dir, f"{base_name}_style.npy")
+            np.save(style_path, np.asarray(self.style_vec, dtype=np.float32))
 
         if wants("samples") and self.samples_table is not None and len(self.samples_table) > 0:
             samples_path = os.path.join(dest_dir, f"{base_name}_samples.csv")
@@ -1408,6 +1434,7 @@ class MainWindow(QMainWindow):
         self.gray_u8 = self.analyzer.get_dt_u8()
         self.gray_img = self.analyzer.get_dt_norm()
         self.lapl_img = self.analyzer.get_laplacian()
+        self.style_vec = self.analyzer.get_style_vector()
 
         thr_u8 = int(watershed_cfg.get("threshold_u8", self._current_segmentation_threshold()))
         mode = self._current_segmentation_mode()
@@ -1892,6 +1919,7 @@ class MainWindow(QMainWindow):
         self.lapl_img = None
         self.gx = None
         self.gy = None
+        self.style_vec = None
 
         # ---- segmentation outputs ----
         self.labels_img = None

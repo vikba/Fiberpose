@@ -28,7 +28,6 @@ class FiberposeModel:
         cpu: bool = False,            # kept for back-compat; ignored if `device` given
         amp: bool = True,
         fp16: bool = False,
-        dt_channel: int = 0,
         device: Optional[torch.device | str] = None,  # NEW: 'cuda', 'cuda:1', 'cpu', etc.
     ):
         if not os.path.isfile(ckpt_path):
@@ -61,7 +60,6 @@ class FiberposeModel:
         self.nbase_str = nbase
         self.nbase = parse_nbase(nbase)
         self.nout = int(nout)
-        self.dt_channel = int(dt_channel)
 
         self.model = ResUnet(
             nbase=self.nbase, nout=self.nout, sz=sz,
@@ -79,20 +77,27 @@ class FiberposeModel:
         self.model.eval()
 
     @torch.no_grad()
-    def predict(self, img: np.ndarray) -> np.ndarray:
+    def predict(self, img: np.ndarray, return_style: bool = False):
         in_ch = self.nbase[0]
         arr = self._prep_input(img, in_ch)
         x = torch.from_numpy(arr[None, ...]).to(self.device)
 
         if self.use_amp:
             with autocast(device_type="cuda", dtype=self.amp_dtype):
-                y, _ = self.model(x)
+                y, style = self.model(x)
         else:
-            y, _ = self.model(x)
+            y, style = self.model(x)
 
         y = y.detach().cpu().numpy()
         dt = y[0, 2, ...].astype(np.float32)
-        return dt
+        if not return_style:
+            return dt
+
+        style_vec = style.detach().cpu().numpy()
+        if style_vec.ndim > 1:
+            style_vec = style_vec[0]
+        style_vec = np.asarray(style_vec, dtype=np.float32, copy=False)
+        return dt, style_vec
 
 
     @staticmethod

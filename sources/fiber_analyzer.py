@@ -65,7 +65,6 @@ class FiberAnalyzer:
             "cpu": False,
             "amp": True,
             "fp16": True,
-            "dt_channel": 0,
         }
         if model_kwargs:
             defaults.update(model_kwargs)
@@ -117,6 +116,7 @@ class FiberAnalyzer:
         self._constant_segments_info = None
         self._segment_counter = 0
         self._cluster_connection_pairs = []
+        self._style_vec: Optional[np.ndarray] = None
 
     @staticmethod
     def _default_centerline_kwargs() -> Dict[str, Any]:
@@ -197,7 +197,7 @@ class FiberAnalyzer:
             pass
         return stride
 
-    def _run_model(self, image: np.ndarray) -> np.ndarray:
+    def _run_model(self, image: np.ndarray) -> Tuple[np.ndarray, Optional[np.ndarray]]:
 
         predictor = self._ensure_predictor()
         stride = self._infer_model_stride()
@@ -212,9 +212,9 @@ class FiberAnalyzer:
             image_pad = np.pad(image, pad_width, mode="reflect")
         else:
             image_pad = image
-        dt_pad = predictor.predict(image_pad)
+        dt_pad, style_vec = predictor.predict(image_pad, return_style=True)
         dt = dt_pad[:H, :W] if dt_pad.ndim == 2 else dt_pad[:H, :W, 0]
-        return np.asarray(dt, dtype=np.float32)
+        return np.asarray(dt, dtype=np.float32), style_vec
 
     def _set_dt_and_gradients(self, dt: np.ndarray, gx: np.ndarray, gy: np.ndarray):
         self._dt = np.asarray(dt, dtype=np.float32)
@@ -247,7 +247,7 @@ class FiberAnalyzer:
 
         self.reset_prediction_state()
 
-        dt = self._run_model(image)
+        dt, style_vec = self._run_model(image)
         dt_smooth = gaussian_filter(dt, sigma=float(smooth_sigma))
         gy, gx = np.gradient(dt_smooth)
         gy = gaussian_filter(gy, sigma=float(grad_sigma))
@@ -256,6 +256,7 @@ class FiberAnalyzer:
 
         self._set_dt_and_gradients(dt, gx, gy)
         self._laplacian = lapl_img
+        self._style_vec = style_vec
 
         params = self._default_centerline_kwargs()
         if centerline_kwargs:
@@ -611,6 +612,9 @@ class FiberAnalyzer:
 
     def get_dt_norm(self) -> Optional[np.ndarray]:
         return self._dt_norm
+
+    def get_style_vector(self) -> Optional[np.ndarray]:
+        return self._style_vec
 
     def get_gradients(self) -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]:
         return self._gx, self._gy
