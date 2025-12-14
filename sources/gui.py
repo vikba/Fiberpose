@@ -24,6 +24,7 @@ from PyQt6.uic import loadUi
 import imageio.v3 as iio
 import pyqtgraph as pg
 import torch
+from scipy.spatial import cKDTree
 from skimage.measure import profile_line
 
 import logging
@@ -1689,9 +1690,12 @@ class MainWindow(QMainWindow):
         base_img = self.orig_img if self.scale_factor == 1.0 or self.orig_img_scaled is None else self.orig_img_scaled
         measurement_base = self.overlay_img.copy() if self.overlay_img is not None else ensure_rgb_u8(base_img)
         sampling_canvas = sampling_base.copy()
-        measurement_canvas = measurement_base.copy() if measurement_base is not None else None
-        if measurement_canvas is None:
-            measurement_canvas = sampling_canvas.copy()
+        # For angle coloring paint directly over the original image
+        measurement_canvas = (
+            ensure_rgb_u8(base_img).copy()
+            if show_direct
+            else (measurement_base.copy() if measurement_base is not None else sampling_canvas.copy())
+        )
 
         H, W = sampling_canvas.shape[:2]
         MAX_SEGMENTS = 15000
@@ -1699,40 +1703,58 @@ class MainWindow(QMainWindow):
 
         line_color = (255, 255, 0)
         point_color = (255, 0, 0)
-        for (y, x, r, ny, nx, ty, tx) in pts:
+        sample_coords: list[tuple[int, int]] = []
+        sample_colors: list[tuple[int, int, int]] = []
+
+        def _angle_to_bgr(angle_deg: float) -> tuple[int, int, int]:
+            if not np.isfinite(angle_deg):
+                return (200, 200, 200)
+            ang = float(np.clip(angle_deg, -90.0, 90.0))
+            hue = (ang + 90.0) / 180.0 * 179.0  # OpenCV HSV hue range is [0,179]
+            hsv = np.uint8([[[hue, 255, 255]]])
+            bgr = cv2.cvtColor(hsv, cv2.COLOR_HSV2BGR)[0, 0]
+            return int(bgr[0]), int(bgr[1]), int(bgr[2])
+
+        for idx, (y, x, r, ny, nx, ty, tx, ang_deg) in enumerate(pts):
             if not (0 <= y < H and 0 <= x < W) or r <= 0:
                 continue
-            if show_diam:
+            if show_direct:
+                color = _angle_to_bgr(float(ang_deg))
+                p0 = (y - ny * r, x - nx * r)
+                p1 = (y + ny * r, x + nx * r)
+                self._draw_line(sampling_canvas, p0, p1, color=color)
+                self._draw_line(measurement_canvas, p0, p1, color=color)
+                sample_coords.append((y, x))
+                sample_colors.append(color)
+                draw_point_color = color
+            elif show_diam:
                 p0 = (y - ny * r, x - nx * r)
                 p1 = (y + ny * r, x + nx * r)
                 self._draw_line(sampling_canvas, p0, p1, color=line_color)
-                self._draw_line(measurement_canvas, p0, p1, color=line_color)
+                if (idx % 10) == 0:
+                    self._draw_line(measurement_canvas, p0, p1, color=line_color)
+                draw_point_color = point_color
             else:
-                self._draw_arrow_centered(
-                    sampling_canvas,
-                    float(y),
-                    float(x),
-                    float(tx),
-                    float(ty),
-                    length_px=2.0 * r,
-                    color=line_color,
-                )
-                self._draw_arrow_centered(
-                    measurement_canvas,
-                    float(y),
-                    float(x),
-                    float(tx),
-                    float(ty),
-                    length_px=2.0 * r,
-                    color=line_color,
-                )
+                draw_point_color = point_color
             self._draw_circle(
                 sampling_canvas,
                 (int(round(x)), int(round(y))),
                 radius_px=1,
-                color=point_color,
+                color=draw_point_color,
                 thickness=-1,
             )
+
+        # Fill watershed regions by nearest angle sample
+        if show_direct and getattr(self, "labels_img", None) is not None and sample_coords:
+            mask = (self.labels_img.astype(np.int32) > 0)
+            if mask.any():
+                ys, xs = np.nonzero(mask)
+                coords = np.stack([ys, xs], axis=1)
+                tree = cKDTree(np.asarray(sample_coords, dtype=np.float32))
+                _, nn_idx = tree.query(coords, k=1)
+                colors_arr = np.asarray(sample_colors, dtype=np.uint8)
+                fill_vals = colors_arr[nn_idx]
+                measurement_canvas[ys, xs] = fill_vals
 
         self.sampling_overlay = sampling_canvas
         self.measurements_overlay = measurement_canvas
