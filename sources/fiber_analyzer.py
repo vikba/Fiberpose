@@ -12,7 +12,7 @@ from skimage.segmentation import watershed, find_boundaries
 from .clustering import stitch_and_cluster
 from .fiber_graph import FiberFragment
 from .models import FiberposeModel
-from .ridgedetector import RidgeDetector
+from .ridge_detector import RidgeDetector
 from .utils import (
     _bilinear,
     _sample_vec2,
@@ -121,16 +121,10 @@ class FiberAnalyzer:
     @staticmethod
     def _default_centerline_kwargs() -> Dict[str, Any]:
         return {
-            "sigma": 2.23,
-            "upperThresh": 0.17,
-            "lowerThresh": 0.0,
-            "minLength": 10.0,
-            "maxLength": 0.0,
-            "isDarkLine": False,
-            "doCorrectPosition": False,
-            "doEstimateWidth": False,
-            "doExtendLine": True,
-            "overlapOption": "NONE",
+            "sigma": 1.0,
+            "low": 0.01,
+            "high": 0.4,
+            "polarity": "light",
             "trim": 3,
             "tol": 3.0,
             "win_len": 25.0,
@@ -258,13 +252,14 @@ class FiberAnalyzer:
         self._laplacian = lapl_img
         self._style_vec = style_vec
 
-        params = self._default_centerline_kwargs()
         if centerline_kwargs:
-            params.update(centerline_kwargs)
-        self._centerline_kwargs = params
+            self._centerline_kwargs = centerline_kwargs
+        else:
+            self._centerline_kwargs = self._default_centerline_kwargs()
+
         self._last_max_angle = float(max_angle_deg)
 
-        self.compute_centerlines(max_angle_deg=max_angle_deg, **params)
+        self.compute_centerlines(max_angle_deg=max_angle_deg, **self._centerline_kwargs)
         self._labels = None  # invalidate previous segmentation
 
         return self._dt, self._gx, self._gy
@@ -272,16 +267,10 @@ class FiberAnalyzer:
     def compute_centerlines(
         self,
         max_angle_deg: float,
-        sigma: float = 2.23,
-        upperThresh: float = 0.17,
-        lowerThresh: float = 0.0,
-        minLength: float = 10.0,
-        maxLength: float = 0.0,
-        isDarkLine: bool = False,
-        doCorrectPosition: bool = False,
-        doEstimateWidth: bool = False,
-        doExtendLine: bool = True,
-        overlapOption: str = "NONE",
+        sigma: float = 1.0,
+        low: float = 0.1,
+        high: float = 0.4,
+        polarity: str = "light",
         trim: int = 3,
         tol: float = 3.0,
         win_len: float = 25.0,
@@ -294,19 +283,21 @@ class FiberAnalyzer:
         if self._dt_u8 is None:
             raise ValueError("Distance transform not available. Call predict_dt first.")
 
-        contours, junction_points, _ = self._rd.detect_lines_contours(
-            image=self._dt_u8,
+        lines, junctions = self._rd.detect_ridges(
+            image2d=self._dt_u8,
             sigma=sigma,
-            upper_thresh=upperThresh,
-            lower_thresh=lowerThresh,
-            min_length=minLength,
-            max_length=maxLength,
-            is_dark_line=isDarkLine,
-            do_correct_position=doCorrectPosition,
-            do_estimate_width=doEstimateWidth,
-            do_extend_line=doExtendLine,
-            overlap_option=overlapOption,
+            low=low,
+            high=high,
+            polarity=polarity,
         )
+
+        contours = [
+            np.stack((line.pts[:, 1], line.pts[:, 0]), axis=1).reshape(-1, 1, 2)
+            for line in lines
+        ]
+        junction_points = [
+            (int(round(float(j.pt[1]))), int(round(float(j.pt[0])))) for j in junctions
+        ]
 
         processed_segments: List[Tuple[np.ndarray, int]] = []
         for source_idx, contour in enumerate(contours):
@@ -809,7 +800,7 @@ class FiberAnalyzer:
         """
         Returns:
           - hist_centers: list of (y, x, r)
-          - viz_points: list of (y, x, r, ny, nx, ty, tx)
+          - viz_points: list of (y, x, r, ny, nx, ty, tx, angle_deg)
           - angles_deg: list[float]
 
         Note:
@@ -874,12 +865,11 @@ class FiberAnalyzer:
                 ty, tx = nx, -ny
                 canon = _canon_angle(ty, tx)
                 if canon is None:
-                    angles_deg.append(np.nan)
+                    ty_c, tx_c, ang = float("nan"), float("nan"), float("nan")
                 else:
                     ty_c, tx_c, ang = canon
-                    angles_deg.append(ang)
-                    if (i % 10) == 0:
-                        viz_points.append((int(round(y)), int(round(x)), r, ny, nx, ty_c, tx_c))
+                angles_deg.append(ang)
+                viz_points.append((int(round(y)), int(round(x)), r, ny, nx, ty_c, tx_c, float(ang)))
                 hist_centers.append(
                     (
                         int(round(y / scale)),

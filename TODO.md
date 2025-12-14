@@ -5,7 +5,7 @@
 - [x] Train Neural Network to detect fibers
 - [x] !Develop criteria for high quality fibers
 - [x] !Implement detection and segmentation of high confidence fiber fragmetns
-- [ ] Use python instead of Java for ridge detection
+- [x] Use python instead of Java for ridge detection
 - [ ] Add training support in CLI
 - [x] Save svs in pixels and units
 - [x] Add calculation of Mean and OI
@@ -34,7 +34,9 @@
 - [ ] Implement possibility of pyramid analysis for thin fibers 
 - [ ] Tiling for predictions
 - [ ] Add lightweight ONNX inference runtime
-- [ ] Allow saving style vector
+- [x] Allow saving style vector
+- [x] Use color coding for angle visialization 
+- [ ] Fix quantization effects for angle measurement
 
 
 ## 🐞 Bugs
