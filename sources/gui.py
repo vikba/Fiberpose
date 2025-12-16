@@ -1440,26 +1440,26 @@ class MainWindow(QMainWindow):
         thr_u8 = int(watershed_cfg.get("threshold_u8", self._current_segmentation_threshold()))
         mode = self._current_segmentation_mode()
         ridge_mode = mode == "ridge"
-        radius_thresh_px = None
+        strict_radius_px = None
         ridge_options = None
         if ridge_mode:
             current_scale = self.scale_factor if self.scale_factor and np.isfinite(self.scale_factor) else 1.0
             radius_thresh_px_val = high_conf_cfg.get("radius_thresh_px")
             if radius_thresh_px_val is None:
                 radius_thresh_px_val = self._current_radius_threshold()
-            radius_thresh_px = float(radius_thresh_px_val) if radius_thresh_px_val is not None else None
-            if radius_thresh_px is not None:
-                radius_thresh_px *= current_scale
+            strict_radius_px = float(radius_thresh_px_val) if radius_thresh_px_val is not None else None
+            if strict_radius_px is not None:
+                strict_radius_px *= current_scale
             ridge_options = {
                 "dilate_extra_px": float(high_conf_cfg.get("dilate_extra_px", 0.0)) * current_scale,
                 "min_run_points": int(high_conf_cfg.get("min_run_points", 1)),
             }
         try:
             if ridge_mode:
-                if radius_thresh_px is None:
+                if strict_radius_px is None:
                     raise ValueError("Ridge segmentation requires a radius threshold.")
                 self.labels_img = self.analyzer.segment_strict_ridge(
-                    radius_thresh_px=radius_thresh_px,
+                    radius_thresh_px=strict_radius_px,
                     dilate_extra_px=float(ridge_options.get("dilate_extra_px", 0.0)) if ridge_options else 0.0,
                     min_run_points=int(ridge_options.get("min_run_points", 1)) if ridge_options else 1,
                 )

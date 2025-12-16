@@ -286,8 +286,9 @@ class RidgeDetector:
     # Public API
     # -------------------------
 
+    @classmethod
     def detect_ridges(
-        self,
+        cls,
         image2d: np.ndarray,
         *,
         sigma: float = 1.5,
@@ -300,12 +301,12 @@ class RidgeDetector:
             raise ValueError("image must be 2D grayscale")
 
         h, w = img.shape
-        mode = self.MODE_DARK if polarity.lower() == "dark" else self.MODE_LIGHT
+        mode = cls.MODE_DARK if polarity.lower() == "dark" else cls.MODE_LIGHT
 
-        dr, dc, drr, drc, dcc = self._gauss_derivatives(img, sigma)
-        ismax, ev, nx, ny, px, py = self._ridge_candidates(dr, dc, drr, drc, dcc, w, h, low, high, mode)
+        dr, dc, drr, drc, dcc = cls._gauss_derivatives(img, sigma)
+        ismax, ev, nx, ny, px, py = cls._ridge_candidates(dr, dc, drr, drc, dcc, w, h, low, high, mode)
 
-        return self._link_contours(ismax, ev, nx, ny, px, py, w, h)
+        return cls._link_contours(ismax, ev, nx, ny, px, py, w, h)
 
     # -------------------------
     # Helpers
