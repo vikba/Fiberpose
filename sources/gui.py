@@ -1411,7 +1411,7 @@ class MainWindow(QMainWindow):
         self.progress_bar.setValue(40)
 
         try:
-            self.analyzer.compute_centerlines(
+            self.analyzer.process_centerlines(
                 max_angle_deg=max_angle,
                 **centerline_params,
             )

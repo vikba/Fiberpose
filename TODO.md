@@ -53,6 +53,8 @@
 - [x] Improve architecture so each class owns only specialized functions (eg FiberAnalyzer own all image processing)
 - [x] Remove excessive hasattr guards
 - [ ] Re-write compute heavy tasks in numba
+- [ ] Refactor process_centerlines
+- [x] Refactor compute_centerlines
 
 
 ## 📝 Documentation
