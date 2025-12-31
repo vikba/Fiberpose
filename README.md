@@ -22,6 +22,7 @@ Ensure you have [Conda](https://docs.conda.io/en/latest/miniconda.html) installe
 ```bash
 git clone [https://github.com/vikba/Fiberpose.git](https://github.com/vikba/Fiberpose.git)
 cd Fiberpose
+```
 
 ### 2. Setup environment
 ```bash
@@ -34,3 +35,6 @@ conda activate fiberpose
 
 # Install dependencies
 pip install -r requirements.txt
+
+```
+
