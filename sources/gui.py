@@ -32,6 +32,7 @@ logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
 
 from .fiber_analyzer import FiberAnalyzer
+from .batch_processing import BatchAnalyzer, BatchResult, FrameResult, ImageBatch
 from .utils import ensure_rgb_u8, label_to_rgb, to_uint8_for_view
 
 # ------------------- Paths -------------------
@@ -259,6 +260,16 @@ class MainWindow(QMainWindow):
         # Batch mode state
         self._batch_mode_active: bool = False
         self._batch_save_options: Dict[str, bool] | None = None
+        self._batch_processing_active: bool = False
+        self._image_batch: ImageBatch | None = None
+        self._batch_result: BatchResult | None = None
+        self._batch_has_measurements: bool = False
+        self._current_z_index: int = 0
+        self._slice_label = QtWidgets.QLabel("")
+        self.statusbar.addPermanentWidget(self._slice_label)
+        self.z_scroll.setEnabled(False)
+        self.z_scroll.valueChanged.connect(self._on_z_scroll_changed)
+        self._update_slice_label()
 
         # Profile plotting tool state
         self._profile_mode_active: bool = False
@@ -724,6 +735,14 @@ class MainWindow(QMainWindow):
 
     # ------------------- I/O -------------------
 
+    def _set_image_batch(self, image_batch: ImageBatch):
+        self._image_batch = image_batch
+        self._batch_result = None
+        self._batch_has_measurements = False
+        self._current_z_index = 0
+        self._configure_z_scroll(len(image_batch))
+        self._set_current_slice(0, update_view=True)
+
     def load_original(self):
         path, _ = QtWidgets.QFileDialog.getOpenFileName(
             self, "Select Original Image",
@@ -737,7 +756,7 @@ class MainWindow(QMainWindow):
     def load_original_from_path(self, path: str):
         self._reset_internal_state()
         try:
-            img = iio.imread(path)
+            image_batch = ImageBatch.from_path(path)
             self.working_dir = os.path.dirname(path)
         except Exception as e:
             self._show_error("Error", f"Failed to read image:\n{e}")
@@ -745,15 +764,10 @@ class MainWindow(QMainWindow):
             return
         
         logger.info(f"Image loaded successfully: {path}")
-
-        if img.ndim not in (2, 3):
-            self._show_warning("Unsupported", "Original must be 2D or 3D (H×W×C).")
+        if len(image_batch) == 0:
+            self._show_warning("Unsupported", "No readable frames were found in the image.")
             return
-        self.orig_img = img
-        self.orig_img_scaled = None
-        self.scale_factor = 1.0
-        self.current_image_name = os.path.splitext(os.path.basename(path))[0]
-        self.refresh_view()
+        self._set_image_batch(image_batch)
 
     def save_predictions(self):
         if self.gray_u8 is None and self.labels_img is None and self.overlay_img is None:
@@ -1010,6 +1024,82 @@ class MainWindow(QMainWindow):
                 files.append(path)
         return files
 
+    def _capture_frame_result(
+        self, z_index: int, frame_id: str, include_measurements: bool
+    ) -> FrameResult:
+        measurements = None
+        if include_measurements:
+            measurements = {
+                "samples_table": self.samples_table,
+                "fiber_summary": self.fiber_summary,
+                "viz_points": self._viz_points,
+                "angles_deg": self._angles_deg,
+                "thickness_units": self._thickness_units,
+                "porosity": self._porosity,
+                "pore_diams_units": self._pore_diams_units,
+                "void_mask": self._void_mask,
+                "pore_dt": self._pore_dt,
+                "pores": self._pores,
+            }
+        extras = {
+            "dt": self.dt,
+            "gray_u8": self.gray_u8,
+            "gray_img": self.gray_img,
+            "lapl_img": self.lapl_img,
+            "gx": self.gx,
+            "gy": self.gy,
+            "style_vec": self.style_vec,
+            "overlay": self.overlay_img,
+            "sampling_overlay": self.sampling_overlay,
+            "measurements_overlay": self.measurements_overlay,
+            "scale_factor": self.scale_factor,
+        }
+        return FrameResult(
+            labels_2d=self.labels_img,
+            centerlines=getattr(self, "_centerlines_dt", None),
+            measurements=measurements,
+            z_index=int(z_index),
+            frame_id=str(frame_id),
+            extras=extras,
+        )
+
+    def _run_batch_analysis(
+        self,
+        image_batch: ImageBatch,
+        compute_measurements: bool,
+        save_outputs: bool = False,
+        output_root: str | None = None,
+        save_options: Dict[str, bool] | None = None,
+    ) -> BatchResult:
+        if self.analyzer is None:
+            raise RuntimeError("Fiber analyzer has not been initialized.")
+
+        batch_analyzer = BatchAnalyzer(self.analyzer)
+        previous_batch_state = self._batch_mode_active
+        previous_processing_state = self._batch_processing_active
+        self._batch_processing_active = True
+        if len(image_batch) > 1:
+            self._batch_mode_active = True
+
+        def _process_frame(frame: np.ndarray, frame_id: str, z_index: int) -> FrameResult:
+            self.orig_img = frame
+            self._reset_internal_state(preserve_original=True)
+            self.current_image_name = self._frame_base_name(frame_id, z_index)
+            if compute_measurements:
+                self.analyze_fibers()
+            else:
+                self.segment()
+            result = self._capture_frame_result(z_index, frame_id, compute_measurements)
+            if save_outputs and output_root:
+                self._save_batch_outputs(output_root, self.current_image_name, save_options)
+            return result
+
+        try:
+            return batch_analyzer.analyze(image_batch, _process_frame)
+        finally:
+            self._batch_mode_active = previous_batch_state
+            self._batch_processing_active = previous_processing_state
+
     def _save_batch_outputs(
         self,
         dest_dir: str,
@@ -1085,14 +1175,19 @@ class MainWindow(QMainWindow):
         if not directory:
             return
 
-        image_paths = self._collect_images_in_directory(directory)
-        if not image_paths:
+        image_batch = ImageBatch.from_folder(
+            directory,
+            extensions=self._supported_image_extensions(),
+        )
+        if len(image_batch) == 0:
             self._show_info("Batch processing", "No supported images were found in the selected folder.")
             return
 
         save_options = self._prompt_batch_save_options()
         if not save_options:
             return
+
+        self._set_image_batch(image_batch)
 
         prev_strict_mode = self._strict_centerline_enabled()
         prev_seg_mode = self._current_segmentation_mode()
@@ -1109,35 +1204,21 @@ class MainWindow(QMainWindow):
         output_root = os.path.join(directory, f"fiberpose_batch_{timestamp}")
         os.makedirs(output_root, exist_ok=True)
 
-        previous_batch_state = self._batch_mode_active
-        self._batch_mode_active = True
         QtWidgets.QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
 
-        failures: list[tuple[str, str]] = []
-        processed = 0
-
+        batch_result: BatchResult | None = None
         try:
-            for idx, path in enumerate(image_paths, start=1):
-                base_name = os.path.splitext(os.path.basename(path))[0]
-                self.statusbar.showMessage(f"Processing {idx}/{len(image_paths)}: {os.path.basename(path)}")
-                try:
-                    self.load_original_from_path(path)
-                    QtWidgets.QApplication.processEvents()
-
-                    self.segment()
-                    QtWidgets.QApplication.processEvents()
-                    if self.gray_u8 is None or self.labels_img is None:
-                        failures.append((path, "Segmentation did not produce results"))
-                        continue
-
-                    self.analyze_fibers()
-                    QtWidgets.QApplication.processEvents()
-
-                    self._save_batch_outputs(output_root, base_name, save_options)
-                    processed += 1
-                except Exception as exc:
-                    logger.exception("Batch processing failed for %s", path)
-                    failures.append((path, str(exc)))
+            self.statusbar.showMessage(f"Processing {len(image_batch)} frames")
+            batch_result = self._run_batch_analysis(
+                image_batch,
+                compute_measurements=True,
+                save_outputs=True,
+                output_root=output_root,
+                save_options=save_options,
+            )
+        except Exception as exc:
+            logger.exception("Batch processing failed")
+            self._show_error("Batch processing failed", str(exc))
         finally:
             self._set_strict_mode(prev_strict_mode)
             if prev_seg_mode != self._current_segmentation_mode():
@@ -1149,17 +1230,29 @@ class MainWindow(QMainWindow):
                     self.segmentation_mode = prev_seg_mode
                     self._sync_pipeline_config_from_ui()
             QtWidgets.QApplication.restoreOverrideCursor()
-            self._batch_mode_active = previous_batch_state
             self.statusbar.clearMessage()
 
+        if batch_result is None:
+            return
+        self._batch_result = batch_result
+        self._batch_has_measurements = True
+        self._set_current_slice(self._current_z_index, update_view=True)
+        failures: list[tuple[str, str]] = []
+        processed = 0
+        for result in batch_result.frame_results:
+            if result.labels_2d is None:
+                failures.append((result.frame_id, "Segmentation did not produce results"))
+            else:
+                processed += 1
+
         summary_lines = [
-            f"Processed {processed} of {len(image_paths)} images.",
+            f"Processed {processed} of {len(image_batch)} frames.",
             f"Results saved in: {output_root}",
         ]
         if failures:
             summary_lines.append("Failures:")
             for path, reason in failures[:10]:
-                summary_lines.append(f"  - {os.path.basename(path)}: {reason}")
+                summary_lines.append(f"  - {os.path.basename(str(path))}: {reason}")
             if len(failures) > 10:
                 summary_lines.append(f"  ... ({len(failures) - 10} more)")
 
@@ -1338,6 +1431,27 @@ class MainWindow(QMainWindow):
     # ------------------- Segmentation -------------------
 
     def segment(self):
+        if (
+            self._image_batch is not None
+            and len(self._image_batch) > 1
+            and not self._batch_processing_active
+        ):
+            try:
+                batch_result = self._run_batch_analysis(
+                    self._image_batch,
+                    compute_measurements=False,
+                )
+            except Exception as exc:
+                self._show_error("Batch segmentation failed", str(exc))
+                logger.error("Batch segmentation failed: %s", exc)
+                return
+            self._batch_result = batch_result
+            self._batch_has_measurements = False
+            self._set_current_slice(self._current_z_index, update_view=True)
+            self.action_save_masks_predictions.setEnabled(True)
+            self.progress_bar.setValue(70)
+            logger.info("Batch segmentation completed successfully.")
+            return
         if self.orig_img is None:
             self._show_info("Load original", "Please load an original image first.")
             logger.info("Segment: No original image loaded.")
@@ -1494,6 +1608,30 @@ class MainWindow(QMainWindow):
         """
         Computes thickness samples via analyzer and renders overlays/plots.
         """
+        if (
+            self._image_batch is not None
+            and len(self._image_batch) > 1
+            and not self._batch_processing_active
+        ):
+            if self._batch_result is not None and self._batch_has_measurements:
+                self._set_current_slice(self._current_z_index, update_view=True)
+                return
+            try:
+                batch_result = self._run_batch_analysis(
+                    self._image_batch,
+                    compute_measurements=True,
+                )
+            except Exception as exc:
+                self._show_error("Batch analysis failed", str(exc))
+                logger.error("Batch analysis failed: %s", exc)
+                return
+            self._batch_result = batch_result
+            self._batch_has_measurements = True
+            self._set_current_slice(self._current_z_index, update_view=True)
+            self.action_save_masks_predictions.setEnabled(True)
+            self.action_save_measurements.setEnabled(True)
+            logger.info("Batch analysis completed successfully.")
+            return
         self._sync_pipeline_config_from_ui()
         seg_cfg = self.pipeline_config.get("segmentation", {})
         target_scale = self._current_scale_factor()
@@ -1919,6 +2057,142 @@ class MainWindow(QMainWindow):
             img = to_uint8_for_view(self.gy)
 
         self._set_pixmap_from_array(img)
+
+    def _configure_z_scroll(self, frame_count: int):
+        total = max(1, int(frame_count))
+        self.z_scroll.blockSignals(True)
+        self.z_scroll.setMinimum(0)
+        self.z_scroll.setMaximum(total - 1)
+        self.z_scroll.setSingleStep(1)
+        self.z_scroll.setPageStep(1)
+        self.z_scroll.setValue(0)
+        self.z_scroll.blockSignals(False)
+        self.z_scroll.setEnabled(total > 1)
+        self._update_slice_label()
+
+    def _update_slice_label(self):
+        total = len(self._image_batch) if self._image_batch is not None else 1
+        current = self._current_z_index + 1 if total > 0 else 0
+        self._slice_label.setText(f"Slice {current} / {total}")
+
+    def _frame_base_name(self, frame_id: str, z_index: int) -> str:
+        base = os.path.splitext(str(frame_id))[0]
+        if self._image_batch is None:
+            return base
+        source_type = self._image_batch.metadata.get("source_type")
+        if source_type == "stack" and len(self._image_batch) > 1:
+            return f"{base}_z{z_index:03d}"
+        return base
+
+    def _apply_frame_result(self, frame_result: FrameResult | None):
+        if frame_result is None:
+            self.labels_img = None
+            self.overlay_img = None
+            self.sampling_overlay = None
+            self.measurements_overlay = None
+            self.samples_table = None
+            self.fiber_summary = None
+            self._viz_points = None
+            self._angles_deg = None
+            self._thickness_units = None
+            self._porosity = None
+            self._pore_diams_units = None
+            self._void_mask = None
+            self._pore_dt = None
+            self._pores = None
+            self.dt = None
+            self.gray_u8 = None
+            self.gray_img = None
+            self.lapl_img = None
+            self.gx = None
+            self.gy = None
+            self.style_vec = None
+            self._centerlines_dt = None
+            self._labels_rgb_cache = (None, None)
+            self.text_edit2.clear()
+            return
+
+        self.labels_img = frame_result.labels_2d
+        self._centerlines_dt = frame_result.centerlines
+        self.dt = frame_result.extras.get("dt")
+        self.gray_u8 = frame_result.extras.get("gray_u8")
+        self.gray_img = frame_result.extras.get("gray_img")
+        self.lapl_img = frame_result.extras.get("lapl_img")
+        self.gx = frame_result.extras.get("gx")
+        self.gy = frame_result.extras.get("gy")
+        self.style_vec = frame_result.extras.get("style_vec")
+        self.overlay_img = frame_result.extras.get("overlay")
+        self.sampling_overlay = frame_result.extras.get("sampling_overlay")
+        self.measurements_overlay = frame_result.extras.get("measurements_overlay")
+        self.scale_factor = float(frame_result.extras.get("scale_factor", 1.0))
+
+        measurements = frame_result.measurements or {}
+        self.samples_table = measurements.get("samples_table")
+        self.fiber_summary = measurements.get("fiber_summary")
+        self._viz_points = measurements.get("viz_points")
+        self._angles_deg = measurements.get("angles_deg")
+        self._thickness_units = measurements.get("thickness_units")
+        self._porosity = measurements.get("porosity")
+        self._pore_diams_units = measurements.get("pore_diams_units")
+        self._void_mask = measurements.get("void_mask")
+        self._pore_dt = measurements.get("pore_dt")
+        self._pores = measurements.get("pores")
+
+        if self.fiber_summary:
+            units_label = self.fiber_summary.get("units", "px")
+            info_text = (
+                f"Mean diameter: {self.fiber_summary.get('mean_diameter', float('nan')):.2f} {units_label}\n"
+                f"Std diameter: {self.fiber_summary.get('std_diameter', float('nan')):.2f} {units_label}\n"
+                f"Orientation index: {self.fiber_summary.get('orientation_index', float('nan')):.2f}\n"
+                f"Mean angle: {self.fiber_summary.get('mean_angle_deg', float('nan')):.2f} deg\n"
+                f"Std angle: {self.fiber_summary.get('std_angle_deg', float('nan')):.2f} deg\n"
+                f"Porosity (area fraction): {self.fiber_summary.get('porosity', float('nan'))*100:.1f} %"
+            )
+            self.text_edit2.setPlainText(info_text)
+            self._update_distributions_pyqtgraph(units_label)
+        else:
+            self.text_edit2.clear()
+            self.graph_diameters.clear()
+            self.graph_angles.clear()
+
+        if self.labels_img is not None:
+            labels_rgb = labels_to_color(self.labels_img)
+            self._labels_rgb_cache = (id(self.labels_img), labels_rgb)
+        else:
+            self._labels_rgb_cache = (None, None)
+
+    def _set_current_slice(self, index: int, update_view: bool = True):
+        if self._image_batch is None:
+            return
+        frame_count = len(self._image_batch)
+        if frame_count == 0:
+            return
+        index = max(0, min(int(index), frame_count - 1))
+        self._current_z_index = index
+        if self.z_scroll.value() != index:
+            self.z_scroll.blockSignals(True)
+            self.z_scroll.setValue(index)
+            self.z_scroll.blockSignals(False)
+        frame = self._image_batch.frames[index]
+        frame_id = (
+            self._image_batch.metadata.get("filenames", [str(index)])[index]
+            if self._image_batch.metadata.get("filenames")
+            else str(index)
+        )
+        self.orig_img = frame
+        self.orig_img_scaled = None
+        self.current_image_name = self._frame_base_name(str(frame_id), index)
+        self._apply_frame_result(
+            self._batch_result.frame_at(index) if self._batch_result is not None else None
+        )
+        self._update_slice_label()
+        if update_view:
+            self.refresh_view()
+
+    def _on_z_scroll_changed(self, value: int):
+        if self._image_batch is None:
+            return
+        self._set_current_slice(int(value), update_view=True)
 
     def _reset_internal_state(self, preserve_original: bool = False):
         """Clear all derived data, images, analysis artifacts, and charts."""

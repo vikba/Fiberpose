@@ -352,13 +352,16 @@ class FiberAnalyzer:
         std_thresh: float = 0.8,
         strict: bool = False,
         segment_id_start: int = 0,
+        markers_from_raw_ridges: bool = False,
     ) -> Tuple[List[FiberFragment], np.ndarray]:
         """
         Stateless centerline extraction core.
 
         Returns:
             fragments: list[FiberFragment] (filtered windows)
-            markers: int32 marker image for watershed seeding
+            markers: int32 marker image for watershed seeding.
+                     If `markers_from_raw_ridges` is True, markers come directly from ridge
+                     detector polylines; otherwise, they use the filtered fragments (default).
         """
         if dt_u8 is None or dt is None:
             raise ValueError("dt_u8 and dt are required.")
@@ -416,7 +419,11 @@ class FiberAnalyzer:
                     )
                 )
 
-        markers = cls._render_markers(dt_u8.shape, fragments) if fragments else np.zeros(dt_u8.shape, dtype=np.int32)
+        markers = (
+            cls._render_markers_from_ridge_lines(dt_u8.shape, lines)
+            if markers_from_raw_ridges
+            else (cls._render_markers(dt_u8.shape, fragments) if fragments else np.zeros(dt_u8.shape, dtype=np.int32))
+        )
         return fragments, markers
 
     @staticmethod
@@ -685,6 +692,32 @@ class FiberAnalyzer:
                 [pts_int],
                 isClosed=False,
                 color=int(seg.parent_fiber_id),
+                thickness=1,
+                lineType=cv2.LINE_8,
+            )
+        return markers
+
+    @staticmethod
+    def _render_markers_from_ridge_lines(shape: Tuple[int, int], lines: List[Any]) -> np.ndarray:
+        """
+        Render markers directly from RidgeDetector polylines (y,x ordering).
+        """
+        markers = np.zeros(shape, dtype=np.int32)
+        for idx, line in enumerate(lines, start=1):
+            pts = np.asarray(line.pts, dtype=np.float32)
+            if pts.size == 0:
+                continue
+            pts_xy = pts[:, [1, 0]]
+            pts_int = np.round(pts_xy).astype(np.int32).reshape(-1, 1, 2)
+            if len(pts_int) < 2:
+                cx, cy = pts_int[0, 0]
+                cv2.circle(markers, (cx, cy), 1, idx, thickness=-1)
+                continue
+            cv2.polylines(
+                markers,
+                [pts_int],
+                isClosed=False,
+                color=idx,
                 thickness=1,
                 lineType=cv2.LINE_8,
             )
@@ -1222,4 +1255,3 @@ class FiberAnalyzer:
         if side == "right":
             normals = -normals
         return normals.astype(np.float32)
-
