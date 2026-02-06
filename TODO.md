@@ -37,6 +37,9 @@
 - [x] Allow saving style vector
 - [x] Use color coding for angle visialization 
 - [ ] Fix quantization effects for angle measurement
+- [x] Add 3D view
+- [ ] Algorithms for 3D analysis
+- [ ] Add checkbox to turn on/off auto brightness/darkness
 
 
 ## 🐞 Bugs
@@ -48,6 +51,7 @@
 - [x] Dt pore image is not updated
 - [x] Don't predict dt, if it was already predicted for that image during change of segmetnation method
 - [x] Angle distribution is reversed in comparison with Directionality and OrientationJ
+- [ ] Plot profile wrong when image is scaled
 
 ## 🧹 Refactoring / Cleanup
 - [x] Improve architecture so each class owns only specialized functions (eg FiberAnalyzer own all image processing)

@@ -177,6 +177,193 @@ class BatchSaveOptionsDialog(QtWidgets.QDialog):
         return {key: checkbox.isChecked() for key, checkbox in self._checkboxes.items()}
 
 
+class Stack3DWindow(QtWidgets.QDialog):
+    def __init__(self, batch_result: BatchResult, parent: QtWidgets.QWidget | None = None):
+        super().__init__(parent)
+        self.setWindowTitle("3D Stack Viewer")
+        self.resize(900, 700)
+
+        self._batch_result: BatchResult | None = None
+        self._gl = None
+        self._gl_error: str | None = None
+        try:
+            import pyqtgraph.opengl as gl
+            self._gl = gl
+        except Exception as exc:
+            self._gl_error = str(exc)
+            self._gl = None
+
+        self._volume_item = None
+        self._scatter_item = None
+
+        self._imaging_options = ["Original", "Labels", "Centerlines", "DT"]
+        self._projection_options = ["Max", "Mean", "Sum"]
+
+        self._build_ui()
+        self.update_batch_result(batch_result)
+
+    def _build_ui(self):
+        layout = QtWidgets.QVBoxLayout(self)
+
+        controls = QtWidgets.QHBoxLayout()
+        controls.addWidget(QtWidgets.QLabel("Imaging:"))
+        self.cb_imaging = QtWidgets.QComboBox()
+        self.cb_imaging.addItems(self._imaging_options)
+        controls.addWidget(self.cb_imaging)
+
+        controls.addWidget(QtWidgets.QLabel("Projection:"))
+        self.cb_projection = QtWidgets.QComboBox()
+        self.cb_projection.addItems(self._projection_options)
+        controls.addWidget(self.cb_projection)
+        controls.addStretch(1)
+        layout.addLayout(controls)
+
+        content = QtWidgets.QHBoxLayout()
+
+        if self._gl is None:
+            label = QtWidgets.QLabel(
+                "3D view unavailable. OpenGL backend could not be loaded."
+            )
+            label.setWordWrap(True)
+            content.addWidget(label, 2)
+        else:
+            self.gl_view = self._gl.GLViewWidget()
+            self.gl_view.setBackgroundColor("w")
+            grid = self._gl.GLGridItem()
+            grid.setSize(200, 200)
+            grid.setSpacing(10, 10)
+            self.gl_view.addItem(grid)
+            content.addWidget(self.gl_view, 2)
+
+        self.projection_plot = pg.PlotWidget()
+        self.projection_plot.setBackground("w")
+        self.projection_plot.getAxis("bottom").setPen("k")
+        self.projection_plot.getAxis("left").setPen("k")
+        self.projection_plot.invertY(True)
+        self.projection_img = pg.ImageItem()
+        self.projection_plot.addItem(self.projection_img)
+        content.addWidget(self.projection_plot, 1)
+
+        layout.addLayout(content)
+
+        self.cb_imaging.currentIndexChanged.connect(self._update_view)
+        self.cb_projection.currentIndexChanged.connect(self._update_view)
+
+    def update_batch_result(self, batch_result: BatchResult):
+        self._batch_result = batch_result
+        self._update_view()
+
+    def _collect_stack(self, selector) -> np.ndarray | None:
+        if self._batch_result is None:
+            return None
+        arrays = []
+        for frame in self._batch_result.frame_results:
+            arr = selector(frame)
+            if arr is None:
+                arrays.append(None)
+                continue
+            arr = np.asarray(arr)
+            if arr.ndim == 3:
+                arr = arr[..., 0]
+            arrays.append(arr)
+        available = [a for a in arrays if a is not None]
+        if not available:
+            return None
+        min_h = min(a.shape[0] for a in available)
+        min_w = min(a.shape[1] for a in available)
+        stack = []
+        for arr in arrays:
+            if arr is None:
+                stack.append(np.zeros((min_h, min_w), dtype=np.float32))
+            else:
+                stack.append(arr[:min_h, :min_w].astype(np.float32, copy=False))
+        return np.stack(stack, axis=0)
+
+    def _stack_for_method(self, method: str) -> np.ndarray | None:
+        if method == "Original":
+            stack = self._collect_stack(lambda fr: fr.extras.get("orig_img") if fr.extras else None)
+            if stack is None:
+                return None
+            return stack
+        if method == "Labels":
+            stack = self._collect_stack(lambda fr: fr.labels_2d)
+            if stack is None:
+                return None
+            return (stack > 0).astype(np.float32)
+        if method == "Centerlines":
+            stack = self._collect_stack(lambda fr: fr.centerlines)
+            if stack is None:
+                return None
+            return (stack > 0).astype(np.float32)
+        if method == "DT":
+            return self._collect_stack(lambda fr: fr.extras.get("dt") if fr.extras else None)
+        return None
+
+    def _update_view(self):
+        if self._batch_result is None:
+            return
+        method = self.cb_imaging.currentText()
+        stack = self._stack_for_method(method)
+        if stack is None:
+            return
+
+        projection = self.cb_projection.currentText()
+        if projection == "Mean":
+            proj = np.mean(stack, axis=0)
+        elif projection == "Sum":
+            proj = np.sum(stack, axis=0)
+        else:
+            proj = np.max(stack, axis=0)
+        if proj is not None:
+            self.projection_img.setImage(proj.T, autoLevels=True)
+
+        if self._gl is None:
+            return
+
+        if self._volume_item is not None:
+            self.gl_view.removeItem(self._volume_item)
+            self._volume_item = None
+        if self._scatter_item is not None:
+            self.gl_view.removeItem(self._scatter_item)
+            self._scatter_item = None
+
+        if method == "Centerlines":
+            points = np.column_stack(np.nonzero(stack > 0))
+            if points.size == 0:
+                return
+            max_points = 200000
+            if points.shape[0] > max_points:
+                idx = np.random.choice(points.shape[0], max_points, replace=False)
+                points = points[idx]
+            pos = np.column_stack([points[:, 2], points[:, 1], points[:, 0]]).astype(np.float32)
+            color = np.tile(np.array([[1.0, 0.0, 0.0, 0.8]], dtype=np.float32), (pos.shape[0], 1))
+            self._scatter_item = self._gl.GLScatterPlotItem(pos=pos, color=color, size=1.5)
+            self.gl_view.addItem(self._scatter_item)
+            center = np.mean(pos, axis=0)
+            max_dim = float(np.max(np.ptp(pos, axis=0))) if pos.shape[0] > 1 else 1.0
+            self.gl_view.opts["center"] = pg.Vector(center[0], center[1], center[2])
+            self.gl_view.setCameraPosition(distance=max_dim * 2.0)
+            return
+
+        vol = stack
+        vmax = float(np.max(vol)) if vol.size else 1.0
+        if vmax <= 0:
+            return
+        vol_u8 = (vol / vmax * 255.0).astype(np.ubyte)
+        vol_u8 = np.transpose(vol_u8, (2, 1, 0))
+        rgba = np.zeros(vol_u8.shape + (4,), dtype=np.ubyte)
+        rgba[..., 0] = vol_u8
+        rgba[..., 1] = vol_u8
+        rgba[..., 2] = vol_u8
+        rgba[..., 3] = vol_u8
+        self._volume_item = self._gl.GLVolumeItem(rgba)
+        self._volume_item.translate(-rgba.shape[0] / 2, -rgba.shape[1] / 2, -rgba.shape[2] / 2)
+        self.gl_view.addItem(self._volume_item)
+        max_dim = float(max(rgba.shape[:3])) if rgba.size else 1.0
+        self.gl_view.opts["center"] = pg.Vector(0.0, 0.0, 0.0)
+        self.gl_view.setCameraPosition(distance=max_dim * 2.0)
+
+
 class MainWindow(QMainWindow):
     """
     Single-file refactor notes:
@@ -265,6 +452,7 @@ class MainWindow(QMainWindow):
         self._batch_result: BatchResult | None = None
         self._batch_has_measurements: bool = False
         self._current_z_index: int = 0
+        self._stack3d_window: Stack3DWindow | None = None
         self._slice_label = QtWidgets.QLabel("")
         self.statusbar.addPermanentWidget(self._slice_label)
         self.z_scroll.setEnabled(False)
@@ -315,6 +503,8 @@ class MainWindow(QMainWindow):
         self.btn_set_scalebar.clicked.connect(self._on_set_scalebar_clicked)
         self.btn_plot_profile.clicked.connect(self._on_plot_profile_clicked)
         self.action_batch_processing.triggered.connect(self._on_batch_processing)
+        if getattr(self, "btn_open_3d", None):
+            self.btn_open_3d.clicked.connect(self._on_open_3d_view)
 
         # Remove connection of radiobutton signals and instead hook up the combobox change
         self.cb_view.currentIndexChanged.connect(self.refresh_view)
@@ -479,6 +669,8 @@ class MainWindow(QMainWindow):
         else:
             u8 = to_uint8_for_view(img)
             return MainWindow._numpy_to_qimage(u8)
+
+
         
     def _fit_view_to_pixmap(self, force: bool = False):
         pm = self._pixitem.pixmap()
@@ -1042,6 +1234,7 @@ class MainWindow(QMainWindow):
                 "pores": self._pores,
             }
         extras = {
+            "orig_img": self.orig_img,
             "dt": self.dt,
             "gray_u8": self.gray_u8,
             "gray_img": self.gray_img,
@@ -1261,6 +1454,21 @@ class MainWindow(QMainWindow):
             self._show_warning("Batch processing complete with issues", summary)
         else:
             self._show_info("Batch processing complete", summary)
+
+    def _on_open_3d_view(self):
+        if self._batch_result is None:
+            self._show_info("3D view", "Run segmentation or analysis on a stack first.")
+            return
+        if len(self._batch_result.frame_results) < 2:
+            self._show_info("3D view", "3D view requires more than one slice.")
+            return
+        if self._stack3d_window is None:
+            self._stack3d_window = Stack3DWindow(self._batch_result, parent=self)
+        else:
+            self._stack3d_window.update_batch_result(self._batch_result)
+        self._stack3d_window.show()
+        self._stack3d_window.raise_()
+        self._stack3d_window.activateWindow()
 
     # ------------------- Profile plot tool -------------------
 

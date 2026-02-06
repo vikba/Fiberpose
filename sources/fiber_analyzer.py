@@ -376,6 +376,9 @@ class FiberAnalyzer:
             polarity=polarity,
         )
 
+        # After ridge detection: convert ridge polylines to contours, split at junctions,
+        # trim noisy ends, then slide a window along each segment to filter by orientation
+        # consistency (and optionally gradient alignment). Accepted windows become fragments.
         contours = [np.stack((line.pts[:, 1], line.pts[:, 0]), axis=1).reshape(-1, 1, 2) for line in lines]
         junction_points = [(int(round(float(j.pt[1]))), int(round(float(j.pt[0])))) for j in junctions]
 

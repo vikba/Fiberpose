@@ -218,7 +218,8 @@ class ResUnet(nn.Module):
         self.style_on = style_on
         self.do_dropout = dropout
         if self.do_dropout:
-            self.dropout = nn.Dropout(0.1)
+            #self.dropout = nn.Dropout(0.1)
+            self.dropout = nn.Dropout2d(0.1)
     def forward(self, data):
         if self.mkldnn:
             data = data.to_mkldnn()

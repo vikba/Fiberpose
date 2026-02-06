@@ -7,7 +7,7 @@
     <x>0</x>
     <y>0</y>
     <width>879</width>
-    <height>848</height>
+    <height>878</height>
    </rect>
   </property>
   <property name="windowTitle">
@@ -63,6 +63,24 @@
        </property>
        <property name="text">
         <string>Analyze fibers</string>
+       </property>
+      </widget>
+      <widget class="QPushButton" name="btn_open_3d">
+       <property name="geometry">
+        <rect>
+         <x>70</x>
+         <y>660</y>
+         <width>111</width>
+         <height>31</height>
+        </rect>
+       </property>
+       <property name="font">
+        <font>
+         <pointsize>12</pointsize>
+        </font>
+       </property>
+       <property name="text">
+        <string>Open 3D view</string>
        </property>
       </widget>
       <widget class="QGroupBox" name="groupBox_measurement">
@@ -616,7 +634,7 @@
        <property name="geometry">
         <rect>
          <x>10</x>
-         <y>660</y>
+         <y>700</y>
          <width>221</width>
          <height>101</height>
         </rect>
@@ -772,6 +790,7 @@
       <zorder>groupBox_segmentation</zorder>
       <zorder>btn_segment</zorder>
       <zorder>btn_analyze_fibers</zorder>
+      <zorder>btn_open_3d</zorder>
       <zorder>groupBox_measurement</zorder>
       <zorder>btn_save_csv</zorder>
       <zorder>progress_bar</zorder>
