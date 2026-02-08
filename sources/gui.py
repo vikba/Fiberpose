@@ -847,7 +847,7 @@ class MainWindow(QMainWindow):
                     return True
             if et in (QEvent.Type.DragEnter, QEvent.Type.DragMove):
                 md = event.mimeData()
-                if md and md.hasUrls() and self._urls_are_images(md.urls()):
+                if md and md.hasUrls() and self._urls_are_loadable(md.urls()):
                     event.acceptProposedAction()
                     return True
             elif et == QEvent.Type.Drop:
@@ -856,18 +856,21 @@ class MainWindow(QMainWindow):
                     for u in md.urls():
                         if u.isLocalFile():
                             p = u.toLocalFile()
-                            if self._is_image_path(p):
-                                self.load_original_from_path(p)
+                            if self._is_loadable_path(p):
+                                self.open_source(path=p, source_kind="auto")
                                 event.acceptProposedAction()
                                 return True
         return super().eventFilter(obj, event)
 
     def _is_image_path(self, path: str) -> bool:
         ext = os.path.splitext(path)[1].lower()
-        return ext in {".tif", ".tiff", ".png", ".jpg", ".jpeg", ".bmp", ".webp"}
+        return ext in self._supported_image_extensions()
 
-    def _urls_are_images(self, urls) -> bool:
-        return any(u.isLocalFile() and self._is_image_path(u.toLocalFile()) for u in urls)
+    def _is_loadable_path(self, path: str) -> bool:
+        return os.path.isdir(path) or self._is_image_path(path)
+
+    def _urls_are_loadable(self, urls) -> bool:
+        return any(u.isLocalFile() and self._is_loadable_path(u.toLocalFile()) for u in urls)
 
     def _compute_orientation_stats(
         self, angles_deg: np.ndarray
@@ -935,31 +938,64 @@ class MainWindow(QMainWindow):
         self._configure_z_scroll(len(image_batch))
         self._set_current_slice(0, update_view=True)
 
+    def open_source(self, path: str | None = None, source_kind: str = "auto") -> ImageBatch | None:
+        selected_path = path
+
+        if selected_path is None:
+            if source_kind == "folder":
+                selected_path = QFileDialog.getExistingDirectory(
+                    self, "Select folder with images", self.working_dir
+                )
+            else:
+                selected_path, _ = QtWidgets.QFileDialog.getOpenFileName(
+                    self,
+                    "Select Original Image",
+                    self.working_dir,
+                    "Images (*.tif *.tiff *.png *.jpg *.jpeg *.bmp *.webp);;All Files (*)",
+                )
+        if not selected_path:
+            return None
+
+        if source_kind not in {"auto", "file", "folder"}:
+            self._show_error("Open source", f"Unsupported source kind: {source_kind}")
+            return None
+
+        try:
+            if source_kind == "folder":
+                image_batch = ImageBatch.from_folder(
+                    selected_path,
+                    extensions=self._supported_image_extensions(),
+                )
+            elif source_kind == "file":
+                image_batch = ImageBatch.from_path(selected_path)
+            else:
+                image_batch = ImageBatch.from_source(
+                    selected_path,
+                    extensions=self._supported_image_extensions(),
+                )
+        except Exception as e:
+            self._show_error("Error", f"Failed to read source:\n{e}")
+            logger.error("Failed to read source %s: %s", selected_path, e)
+            return None
+
+        if len(image_batch) == 0:
+            self._show_warning("Unsupported", "No readable frames were found in the selected source.")
+            return None
+
+        self._reset_internal_state()
+        if os.path.isdir(selected_path):
+            self.working_dir = selected_path
+        else:
+            self.working_dir = os.path.dirname(selected_path)
+        self._set_image_batch(image_batch)
+        logger.info("Loaded %d frame(s) from %s", len(image_batch), selected_path)
+        return image_batch
+
     def load_original(self):
-        path, _ = QtWidgets.QFileDialog.getOpenFileName(
-            self, "Select Original Image",
-            self.working_dir,
-            "Images (*.tif *.tiff *.png *.jpg *.jpeg *.bmp *.webp);;All Files (*)"
-        )
-        if not path:
-            return
-        self.load_original_from_path(path)
+        self.open_source(source_kind="file")
 
     def load_original_from_path(self, path: str):
-        self._reset_internal_state()
-        try:
-            image_batch = ImageBatch.from_path(path)
-            self.working_dir = os.path.dirname(path)
-        except Exception as e:
-            self._show_error("Error", f"Failed to read image:\n{e}")
-            logger.error(f"Failed to read image: {e}")
-            return
-        
-        logger.info(f"Image loaded successfully: {path}")
-        if len(image_batch) == 0:
-            self._show_warning("Unsupported", "No readable frames were found in the image.")
-            return
-        self._set_image_batch(image_batch)
+        self.open_source(path=path, source_kind="auto")
 
     def save_predictions(self):
         if self.gray_u8 is None and self.labels_img is None and self.overlay_img is None:
@@ -1200,22 +1236,6 @@ class MainWindow(QMainWindow):
     def _supported_image_extensions() -> set[str]:
         return {".tif", ".tiff", ".png", ".jpg", ".jpeg", ".bmp", ".webp"}
 
-    def _collect_images_in_directory(self, directory: str) -> list[str]:
-        files: list[str] = []
-        try:
-            entries = sorted(os.listdir(directory))
-        except Exception as exc:
-            logger.error("Failed to list directory %s: %s", directory, exc)
-            return files
-        exts = self._supported_image_extensions()
-        for name in entries:
-            path = os.path.join(directory, name)
-            if not os.path.isfile(path):
-                continue
-            if os.path.splitext(name)[1].lower() in exts:
-                files.append(path)
-        return files
-
     def _capture_frame_result(
         self, z_index: int, frame_id: str, include_measurements: bool
     ) -> FrameResult:
@@ -1258,40 +1278,78 @@ class MainWindow(QMainWindow):
 
     def _run_batch_analysis(
         self,
-        image_batch: ImageBatch,
         compute_measurements: bool,
+        image_batch: ImageBatch | None = None,
         save_outputs: bool = False,
         output_root: str | None = None,
         save_options: Dict[str, bool] | None = None,
-    ) -> BatchResult:
-        if self.analyzer is None:
-            raise RuntimeError("Fiber analyzer has not been initialized.")
+        error_title: str | None = None,
+    ) -> BatchResult | None:
+        # Resolve the active batch source. Most callers use the currently loaded batch.
+        active_batch = image_batch if image_batch is not None else self._image_batch
+        if active_batch is None or len(active_batch) == 0:
+            self._show_info("Load original", "Please load an image or folder first.")
+            return None
 
-        batch_analyzer = BatchAnalyzer(self.analyzer)
-        previous_batch_state = self._batch_mode_active
-        previous_processing_state = self._batch_processing_active
-        self._batch_processing_active = True
-        if len(image_batch) > 1:
-            self._batch_mode_active = True
+        # Build user-facing error text per processing mode unless explicitly provided.
+        title = error_title
+        if not title:
+            title = "Batch analysis failed" if compute_measurements else "Batch segmentation failed"
 
-        def _process_frame(frame: np.ndarray, frame_id: str, z_index: int) -> FrameResult:
-            self.orig_img = frame
-            self._reset_internal_state(preserve_original=True)
-            self.current_image_name = self._frame_base_name(frame_id, z_index)
-            if compute_measurements:
-                self.analyze_fibers()
-            else:
-                self.segment()
-            result = self._capture_frame_result(z_index, frame_id, compute_measurements)
-            if save_outputs and output_root:
-                self._save_batch_outputs(output_root, self.current_image_name, save_options)
-            return result
-
+        QtWidgets.QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
         try:
-            return batch_analyzer.analyze(image_batch, _process_frame)
+            self.statusbar.showMessage(f"Processing {len(active_batch)} frames")
+            if self.analyzer is None:
+                raise RuntimeError("Fiber analyzer has not been initialized.")
+
+            # Enter internal batch execution mode so frame callbacks can call segment/analyze safely.
+            batch_analyzer = BatchAnalyzer(self.analyzer)
+            previous_batch_state = self._batch_mode_active
+            previous_processing_state = self._batch_processing_active
+            self._batch_processing_active = True
+            if len(active_batch) > 1:
+                self._batch_mode_active = True
+
+            def _process_frame(frame: np.ndarray, frame_id: str, z_index: int) -> FrameResult:
+                # Per-frame routine: hydrate original image, run processing, capture outputs, optionally export.
+                self.orig_img = frame
+                self._reset_internal_state(preserve_original=True)
+                self.current_image_name = self._frame_base_name(frame_id, z_index)
+                if compute_measurements:
+                    self.analyze_fibers()
+                else:
+                    self.segment()
+                result = self._capture_frame_result(z_index, frame_id, compute_measurements)
+                if save_outputs and output_root:
+                    self._save_batch_outputs(output_root, self.current_image_name, save_options)
+                return result
+
+            try:
+                batch_result = batch_analyzer.analyze(active_batch, _process_frame)
+            finally:
+                self._batch_mode_active = previous_batch_state
+                self._batch_processing_active = previous_processing_state
+        except Exception as exc:
+            self._show_error(title, str(exc))
+            logger.error("%s: %s", title, exc)
+            return None
         finally:
-            self._batch_mode_active = previous_batch_state
-            self._batch_processing_active = previous_processing_state
+            QtWidgets.QApplication.restoreOverrideCursor()
+            self.statusbar.clearMessage()
+
+        # Publish batch outputs back into the GUI and refresh the active slice.
+        self._batch_result = batch_result
+        self._batch_has_measurements = bool(compute_measurements)
+        self._set_current_slice(self._current_z_index, update_view=True)
+        self.action_save_masks_predictions.setEnabled(True)
+        if compute_measurements:
+            self.action_save_measurements.setEnabled(True)
+        logger.info(
+            "Batch %s completed successfully for %d frame(s).",
+            "analysis" if compute_measurements else "segmentation",
+            len(active_batch),
+        )
+        return batch_result
 
     def _save_batch_outputs(
         self,
@@ -1364,23 +1422,13 @@ class MainWindow(QMainWindow):
         return None
 
     def _on_batch_processing(self):
-        directory = QFileDialog.getExistingDirectory(self, "Select folder with images", self.working_dir)
-        if not directory:
-            return
-
-        image_batch = ImageBatch.from_folder(
-            directory,
-            extensions=self._supported_image_extensions(),
-        )
-        if len(image_batch) == 0:
-            self._show_info("Batch processing", "No supported images were found in the selected folder.")
+        image_batch = self.open_source(source_kind="folder")
+        if image_batch is None:
             return
 
         save_options = self._prompt_batch_save_options()
         if not save_options:
             return
-
-        self._set_image_batch(image_batch)
 
         prev_strict_mode = self._strict_centerline_enabled()
         prev_seg_mode = self._current_segmentation_mode()
@@ -1394,24 +1442,20 @@ class MainWindow(QMainWindow):
                 self._sync_pipeline_config_from_ui()
 
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        directory = self.working_dir
         output_root = os.path.join(directory, f"fiberpose_batch_{timestamp}")
         os.makedirs(output_root, exist_ok=True)
 
-        QtWidgets.QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
-
         batch_result: BatchResult | None = None
         try:
-            self.statusbar.showMessage(f"Processing {len(image_batch)} frames")
             batch_result = self._run_batch_analysis(
-                image_batch,
                 compute_measurements=True,
+                image_batch=image_batch,
                 save_outputs=True,
                 output_root=output_root,
                 save_options=save_options,
+                error_title="Batch processing failed",
             )
-        except Exception as exc:
-            logger.exception("Batch processing failed")
-            self._show_error("Batch processing failed", str(exc))
         finally:
             self._set_strict_mode(prev_strict_mode)
             if prev_seg_mode != self._current_segmentation_mode():
@@ -1422,14 +1466,9 @@ class MainWindow(QMainWindow):
                 else:
                     self.segmentation_mode = prev_seg_mode
                     self._sync_pipeline_config_from_ui()
-            QtWidgets.QApplication.restoreOverrideCursor()
-            self.statusbar.clearMessage()
 
         if batch_result is None:
             return
-        self._batch_result = batch_result
-        self._batch_has_measurements = True
-        self._set_current_slice(self._current_z_index, update_view=True)
         failures: list[tuple[str, str]] = []
         processed = 0
         for result in batch_result.frame_results:
@@ -1639,26 +1678,10 @@ class MainWindow(QMainWindow):
     # ------------------- Segmentation -------------------
 
     def segment(self):
-        if (
-            self._image_batch is not None
-            and len(self._image_batch) > 1
-            and not self._batch_processing_active
-        ):
-            try:
-                batch_result = self._run_batch_analysis(
-                    self._image_batch,
-                    compute_measurements=False,
-                )
-            except Exception as exc:
-                self._show_error("Batch segmentation failed", str(exc))
-                logger.error("Batch segmentation failed: %s", exc)
-                return
-            self._batch_result = batch_result
-            self._batch_has_measurements = False
-            self._set_current_slice(self._current_z_index, update_view=True)
-            self.action_save_masks_predictions.setEnabled(True)
-            self.progress_bar.setValue(70)
-            logger.info("Batch segmentation completed successfully.")
+        if self._image_batch is not None and not self._batch_processing_active:
+            batch_result = self._run_batch_analysis(compute_measurements=False)
+            if batch_result is not None:
+                self.progress_bar.setValue(70)
             return
         if self.orig_img is None:
             self._show_info("Load original", "Please load an original image first.")
@@ -1816,29 +1839,11 @@ class MainWindow(QMainWindow):
         """
         Computes thickness samples via analyzer and renders overlays/plots.
         """
-        if (
-            self._image_batch is not None
-            and len(self._image_batch) > 1
-            and not self._batch_processing_active
-        ):
+        if self._image_batch is not None and not self._batch_processing_active:
             if self._batch_result is not None and self._batch_has_measurements:
                 self._set_current_slice(self._current_z_index, update_view=True)
                 return
-            try:
-                batch_result = self._run_batch_analysis(
-                    self._image_batch,
-                    compute_measurements=True,
-                )
-            except Exception as exc:
-                self._show_error("Batch analysis failed", str(exc))
-                logger.error("Batch analysis failed: %s", exc)
-                return
-            self._batch_result = batch_result
-            self._batch_has_measurements = True
-            self._set_current_slice(self._current_z_index, update_view=True)
-            self.action_save_masks_predictions.setEnabled(True)
-            self.action_save_measurements.setEnabled(True)
-            logger.info("Batch analysis completed successfully.")
+            self._run_batch_analysis(compute_measurements=True)
             return
         self._sync_pipeline_config_from_ui()
         seg_cfg = self.pipeline_config.get("segmentation", {})
@@ -2539,7 +2544,7 @@ class MainWindow(QMainWindow):
     def load_default_image(self):
         default_img_path = os.path.join(PROJECT_ROOT, "resources", "test.png")
         if os.path.exists(default_img_path):
-            self.load_original_from_path(default_img_path)
+            self.open_source(path=default_img_path, source_kind="file")
         else:
             logger.info("Default image not found: resources/test.png")
 

@@ -42,6 +42,7 @@ class ImageBatch:
         filenames = [os.path.basename(path)] * len(frames)
         metadata = {
             "source_type": source_type,
+            "source_path": path,
             "filenames": filenames,
             "z_indices": list(range(len(frames))),
         }
@@ -75,10 +76,21 @@ class ImageBatch:
                     filenames.append(f"{os.path.splitext(name)[0]}_z{idx:03d}")
         metadata = {
             "source_type": "folder",
+            "source_path": folder,
             "filenames": filenames,
             "z_indices": list(range(len(frames))),
         }
         return cls(frames=frames, metadata=metadata)
+
+    @classmethod
+    def from_source(
+        cls, path: str, extensions: Optional[Iterable[str]] = None
+    ) -> ImageBatch:
+        if os.path.isdir(path):
+            return cls.from_folder(path, extensions=extensions)
+        if os.path.isfile(path):
+            return cls.from_path(path)
+        raise FileNotFoundError(f"Source path does not exist: {path}")
 
 
 @dataclass
