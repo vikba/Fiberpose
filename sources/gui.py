@@ -32,7 +32,7 @@ logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
 
 from .fiber_analyzer import FiberAnalyzer
-from .batch_processing import BatchAnalyzer, BatchResult, FrameResult, ImageBatch
+from .batch_processing import BatchAnalyzer, BatchResult, Frame, ImageBatch
 from .utils import ensure_rgb_u8, label_to_rgb, to_uint8_for_view
 
 # ------------------- Paths -------------------
@@ -281,7 +281,7 @@ class Stack3DWindow(QtWidgets.QDialog):
 
     def _stack_for_method(self, method: str) -> np.ndarray | None:
         if method == "Original":
-            stack = self._collect_stack(lambda fr: fr.extras.get("orig_img") if fr.extras else None)
+            stack = self._collect_stack(lambda fr: fr.orig_img)
             if stack is None:
                 return None
             return stack
@@ -296,7 +296,7 @@ class Stack3DWindow(QtWidgets.QDialog):
                 return None
             return (stack > 0).astype(np.float32)
         if method == "DT":
-            return self._collect_stack(lambda fr: fr.extras.get("dt") if fr.extras else None)
+            return self._collect_stack(lambda fr: fr.dt)
         return None
 
     def _update_view(self):
@@ -392,33 +392,10 @@ class MainWindow(QMainWindow):
         self.graphicsView.setTransformationAnchor(QtWidgets.QGraphicsView.ViewportAnchor.AnchorViewCenter)
         self.graphicsView.setResizeAnchor(QtWidgets.QGraphicsView.ViewportAnchor.AnchorViewCenter)
 
-        # Working dir & state setup (unchanged)...
+        # Working dir & runtime state setup
         self.working_dir = os.path.dirname(ui_path)
-        self.orig_img = None
-        self.orig_img_scaled = None
-        self.dt = None
-        self.gray_u8 = None          # CPNet DT (0..255)
-        self.gray_img = None         # normalized float [0..1]
-        self.lapl_img = None
-        self.gx = None
-        self.gy = None
-        self.style_vec = None
+        self.current_frame: Frame = Frame.empty()
         self.analyzer: FiberAnalyzer | None = None
-        self.scale_factor: float = 1.0
-
-        self.labels_img = None       # watershed labels (uint16)
-        self.overlay_img = None
-        self.sampling_overlay = None
-        self.measurements_overlay = None
-
-        self.samples_table = None
-        self.fiber_summary = None
-        self._viz_points = None
-        self._angles_deg = None
-        self._thickness_units = None
-        self._porosity = None
-        self._pore_diams_units = None
-        self._labels_rgb_cache: tuple[int | None, np.ndarray | None] = (None, None)
         self.current_image_name: str | None = None
         self._scalebar_pending: bool = False
         self._scalebar_points: list[tuple[float, float]] = []
@@ -713,7 +690,7 @@ class MainWindow(QMainWindow):
         """
         Return the cached centerline view with clustering links overlaid for visibility.
         """
-        img = getattr(self, "_centerlines_dt", None)
+        img = self.current_frame.centerlines
         base = ensure_rgb_u8(img)
         if base is None:
             return None
@@ -736,17 +713,17 @@ class MainWindow(QMainWindow):
         return out
 
     def _labels_rgb(self) -> np.ndarray | None:
-        if self.labels_img is None:
+        if self.current_frame.labels_2d is None:
             return None
-        cache_id, cache_img = self._labels_rgb_cache
-        current_id = id(self.labels_img)
+        cache_id, cache_img = self.current_frame.labels_rgb_cache
+        current_id = id(self.current_frame.labels_2d)
         if cache_id != current_id:
-            cache_img = labels_to_color(self.labels_img)
-            self._labels_rgb_cache = (current_id, cache_img)
+            cache_img = labels_to_color(self.current_frame.labels_2d)
+            self.current_frame.labels_rgb_cache = (current_id, cache_img)
         return cache_img
 
     def _ensure_dt_ready(self) -> bool:
-        if self.orig_img is None:
+        if self.current_frame.orig_img is None:
             self._show_info("Load original", "Load an image before using the profile tool.")
             return False
         if self.analyzer is None:
@@ -761,44 +738,39 @@ class MainWindow(QMainWindow):
         if not self.analyzer.dt_predicted():
             try:
                 self.analyzer.predict_dt(
-                    image=self.orig_img,
+                    image=self.current_frame.orig_img,
                     max_angle_deg=max_angle,
                     centerline_kwargs=centerline_kwargs or None,
                 )
             except Exception as exc:
+                self.current_frame.fail(str(exc))
                 self._show_error("Prediction failed", str(exc))
                 logger.error("Profile DT ensure failed: %s", exc)
                 return False
 
         dt = self.analyzer.get_dt()
         if dt is None:
+            self.current_frame.fail("Distance transform could not be computed.")
             self._show_error("DT unavailable", "Distance transform could not be computed.")
             return False
 
-        self.dt = np.asarray(dt, dtype=np.float32, copy=False)
-
-        dt_u8 = self.analyzer.get_dt_u8()
-        if dt_u8 is not None:
-            self.gray_u8 = np.asarray(dt_u8, dtype=np.uint8, copy=False)
-
-        dt_norm = self.analyzer.get_dt_norm()
-        if dt_norm is not None:
-            self.gray_img = np.asarray(dt_norm, dtype=np.float32, copy=False)
-
-        lap = self.analyzer.get_laplacian()
-        if lap is not None:
-            self.lapl_img = np.asarray(lap, dtype=np.float32, copy=False)
-
-        style_vec = self.analyzer.get_style_vector()
-        if style_vec is not None:
-            self.style_vec = np.asarray(style_vec, dtype=np.float32, copy=False)
-
         gx, gy = self.analyzer.get_gradients()
-        if gx is not None:
-            self.gx = np.asarray(gx, dtype=np.float32, copy=False)
-        if gy is not None:
-            self.gy = np.asarray(gy, dtype=np.float32, copy=False)
-
+        dt_u8 = self.analyzer.get_dt_u8()
+        dt_norm = self.analyzer.get_dt_norm()
+        lapl = self.analyzer.get_laplacian()
+        style_vec = self.analyzer.get_style_vector()
+        self.current_frame.set_prediction_outputs(
+            dt=np.asarray(dt, dtype=np.float32, copy=False),
+            gx=np.asarray(gx, dtype=np.float32, copy=False) if gx is not None else None,
+            gy=np.asarray(gy, dtype=np.float32, copy=False) if gy is not None else None,
+            gray_u8=np.asarray(dt_u8, dtype=np.uint8, copy=False) if dt_u8 is not None else None,
+            gray_img=np.asarray(dt_norm, dtype=np.float32, copy=False) if dt_norm is not None else None,
+            lapl_img=np.asarray(lapl, dtype=np.float32, copy=False) if lapl is not None else None,
+            style_vec=np.asarray(style_vec, dtype=np.float32, copy=False) if style_vec is not None else None,
+            orig_img_scaled=self.current_frame.orig_img_scaled,
+            scale_factor=self.current_frame.scale_factor,
+            invalidate_downstream=False,
+        )
         return True
 
     def _show_info(self, title: str, message: str):
@@ -908,24 +880,24 @@ class MainWindow(QMainWindow):
         Return mean diameter, std, orientation index, mean angle, std angle, porosity, and sample count for CSV export.
         Falls back to recomputing from cached arrays if the summary is missing.
         """
-        if self.fiber_summary:
+        if self.current_frame.fiber_summary:
             return (
-                float(self.fiber_summary.get("mean_diameter", float("nan"))),
-                float(self.fiber_summary.get("std_diameter", float("nan"))),
-                float(self.fiber_summary.get("orientation_index", float("nan"))),
-                float(self.fiber_summary.get("mean_angle_deg", float("nan"))),
-                float(self.fiber_summary.get("std_angle_deg", float("nan"))),
-                float(self.fiber_summary.get("porosity", float("nan"))),
-                int(self.fiber_summary.get("sample_count", 0)),
+                float(self.current_frame.fiber_summary.get("mean_diameter", float("nan"))),
+                float(self.current_frame.fiber_summary.get("std_diameter", float("nan"))),
+                float(self.current_frame.fiber_summary.get("orientation_index", float("nan"))),
+                float(self.current_frame.fiber_summary.get("mean_angle_deg", float("nan"))),
+                float(self.current_frame.fiber_summary.get("std_angle_deg", float("nan"))),
+                float(self.current_frame.fiber_summary.get("porosity", float("nan"))),
+                int(self.current_frame.fiber_summary.get("sample_count", 0)),
             )
 
-        diameters = self._thickness_units if self._thickness_units is not None else np.array([])
-        angles = self._angles_deg if self._angles_deg is not None else np.array([])
+        diameters = self.current_frame.thickness_units if self.current_frame.thickness_units is not None else np.array([])
+        angles = self.current_frame.angles_deg if self.current_frame.angles_deg is not None else np.array([])
         mean_val = float(np.mean(diameters)) if diameters.size else float("nan")
         std_val = float(np.std(diameters)) if diameters.size else float("nan")
-        sample_count = int(self.samples_table.shape[0]) if self.samples_table is not None else int(diameters.size)
+        sample_count = int(self.current_frame.samples_table.shape[0]) if self.current_frame.samples_table is not None else int(diameters.size)
         orientation_index, mean_angle_deg, std_angle_deg = self._compute_orientation_stats(angles)
-        porosity = float(self._porosity) if self._porosity is not None else float("nan")
+        porosity = float(self.current_frame.porosity) if self.current_frame.porosity is not None else float("nan")
         return mean_val, std_val, orientation_index, mean_angle_deg, std_angle_deg, porosity, sample_count
 
     # ------------------- I/O -------------------
@@ -998,7 +970,7 @@ class MainWindow(QMainWindow):
         self.open_source(path=path, source_kind="auto")
 
     def save_predictions(self):
-        if self.gray_u8 is None and self.labels_img is None and self.overlay_img is None:
+        if not (self.current_frame.has_prediction or self.current_frame.has_segmentation):
             self._show_info("Nothing to save", "Run segmentation first.")
             return
         default_base = (self.current_image_name or "fiberpose") + "_results.png"
@@ -1016,21 +988,21 @@ class MainWindow(QMainWindow):
         logger.info(f"Saving predictions with base name: {root}")
 
         try:
-            if self.gray_u8 is not None:
-                iio.imwrite(root + "_dt.png", np.asarray(self.gray_u8, dtype=np.uint8))
-            if self.labels_img is not None and self.labels_img.max() > 0:
-                iio.imwrite(root + "_labels.png", labels_to_color(self.labels_img))
-            if self.overlay_img is not None:
-                iio.imwrite(root + "_overlay.png", self.overlay_img.astype(np.uint8))
-            if self.measurements_overlay is not None:
-                iio.imwrite(root + "_debug.png", self.measurements_overlay.astype(np.uint8))
+            if self.current_frame.gray_u8 is not None:
+                iio.imwrite(root + "_dt.png", np.asarray(self.current_frame.gray_u8, dtype=np.uint8))
+            if self.current_frame.labels_2d is not None and self.current_frame.labels_2d.max() > 0:
+                iio.imwrite(root + "_labels.png", labels_to_color(self.current_frame.labels_2d))
+            if self.current_frame.overlay_img is not None:
+                iio.imwrite(root + "_overlay.png", self.current_frame.overlay_img.astype(np.uint8))
+            if self.current_frame.measurements_overlay is not None:
+                iio.imwrite(root + "_debug.png", self.current_frame.measurements_overlay.astype(np.uint8))
             self.working_dir = dest_dir
             self._show_info("Saved", f"Saved to:\n{dest_dir}")
         except Exception as e:
             self._show_error("Error", f"Failed to save:\n{e}")
 
     def save_measurements(self):
-        if self.samples_table is None or len(self.samples_table) == 0:
+        if not self.current_frame.has_measurements or self.current_frame.samples_table is None or len(self.current_frame.samples_table) == 0:
             self._show_info("Nothing to save", "Run Analyze fibers first.")
             return
         default_csv = (self.current_image_name or "fiberpose") + "_measurements.csv"
@@ -1061,11 +1033,11 @@ class MainWindow(QMainWindow):
                 f.write("\n\n")
                 f.write("x,y,diameter,angle_deg,fiber_id\n")
 
-                for idx, row in enumerate(self.samples_table, start=1):
+                for idx, row in enumerate(self.current_frame.samples_table, start=1):
                     x, y, t_px = row[:3]
                     angle_val = float(row[3]) if len(row) > 3 else float("nan")
-                    if self._thickness_units is not None and len(self._thickness_units) >= idx:
-                        diameter_val = float(self._thickness_units[idx - 1])
+                    if self.current_frame.thickness_units is not None and len(self.current_frame.thickness_units) >= idx:
+                        diameter_val = float(self.current_frame.thickness_units[idx - 1])
                     else:
                         diameter_val = float(t_px)
                     f.write(f"{int(x)},{int(y)},{diameter_val:.6f},{angle_val:.6f},0\n")
@@ -1079,7 +1051,7 @@ class MainWindow(QMainWindow):
     # ------------------- Scalebar -------------------
 
     def _on_set_scalebar_clicked(self):
-        if self.orig_img is None:
+        if self.current_frame.orig_img is None:
             self._show_info("No image", "Load an image before setting the scalebar.")
             return
 
@@ -1170,7 +1142,7 @@ class MainWindow(QMainWindow):
         pixel_size = self._scalebar_length_value / pixel_length
         self.le_pixelsize.setText(f"{pixel_size:.6g}")
         index = self.cb_units.findText(self._scalebar_unit)
-        if index is not None and index >= 0:
+        if index >= 0:
             self.cb_units.setCurrentIndex(index)
         else:
             self.cb_units.setCurrentText(self._scalebar_unit)
@@ -1236,46 +1208,6 @@ class MainWindow(QMainWindow):
     def _supported_image_extensions() -> set[str]:
         return {".tif", ".tiff", ".png", ".jpg", ".jpeg", ".bmp", ".webp"}
 
-    def _capture_frame_result(
-        self, z_index: int, frame_id: str, include_measurements: bool
-    ) -> FrameResult:
-        measurements = None
-        if include_measurements:
-            measurements = {
-                "samples_table": self.samples_table,
-                "fiber_summary": self.fiber_summary,
-                "viz_points": self._viz_points,
-                "angles_deg": self._angles_deg,
-                "thickness_units": self._thickness_units,
-                "porosity": self._porosity,
-                "pore_diams_units": self._pore_diams_units,
-                "void_mask": self._void_mask,
-                "pore_dt": self._pore_dt,
-                "pores": self._pores,
-            }
-        extras = {
-            "orig_img": self.orig_img,
-            "dt": self.dt,
-            "gray_u8": self.gray_u8,
-            "gray_img": self.gray_img,
-            "lapl_img": self.lapl_img,
-            "gx": self.gx,
-            "gy": self.gy,
-            "style_vec": self.style_vec,
-            "overlay": self.overlay_img,
-            "sampling_overlay": self.sampling_overlay,
-            "measurements_overlay": self.measurements_overlay,
-            "scale_factor": self.scale_factor,
-        }
-        return FrameResult(
-            labels_2d=self.labels_img,
-            centerlines=getattr(self, "_centerlines_dt", None),
-            measurements=measurements,
-            z_index=int(z_index),
-            frame_id=str(frame_id),
-            extras=extras,
-        )
-
     def _run_batch_analysis(
         self,
         compute_measurements: bool,
@@ -1310,16 +1242,20 @@ class MainWindow(QMainWindow):
             if len(active_batch) > 1:
                 self._batch_mode_active = True
 
-            def _process_frame(frame: np.ndarray, frame_id: str, z_index: int) -> FrameResult:
+            def _process_frame(frame: np.ndarray, frame_id: str, z_index: int) -> Frame:
                 # Per-frame routine: hydrate original image, run processing, capture outputs, optionally export.
-                self.orig_img = frame
-                self._reset_internal_state(preserve_original=True)
+                self._reset_internal_state(preserve_original=False)
+                self.current_frame.begin_frame(frame, str(frame_id), int(z_index))
                 self.current_image_name = self._frame_base_name(frame_id, z_index)
                 if compute_measurements:
                     self.analyze_fibers()
                 else:
                     self.segment()
-                result = self._capture_frame_result(z_index, frame_id, compute_measurements)
+                result = self.current_frame.snapshot(
+                    include_measurements=compute_measurements,
+                    frame_id=str(frame_id),
+                    z_index=int(z_index),
+                )
                 if save_outputs and output_root:
                     self._save_batch_outputs(output_root, self.current_image_name, save_options)
                 return result
@@ -1372,23 +1308,23 @@ class MainWindow(QMainWindow):
         def wants(key: str) -> bool:
             return bool(options.get(key, default_flags.get(key, True)))
 
-        if wants("dt") and self.gray_u8 is not None:
+        if wants("dt") and self.current_frame.gray_u8 is not None:
             dt_path = os.path.join(dest_dir, f"{base_name}_dt.png")
-            iio.imwrite(dt_path, np.asarray(self.gray_u8, dtype=np.uint8))
-        if wants("labels") and self.labels_img is not None and np.max(self.labels_img) > 0:
+            iio.imwrite(dt_path, np.asarray(self.current_frame.gray_u8, dtype=np.uint8))
+        if wants("labels") and self.current_frame.labels_2d is not None and np.max(self.current_frame.labels_2d) > 0:
             labels_path = os.path.join(dest_dir, f"{base_name}_labels.png")
-            iio.imwrite(labels_path, labels_to_color(self.labels_img))
-        if wants("overlay") and self.overlay_img is not None:
+            iio.imwrite(labels_path, labels_to_color(self.current_frame.labels_2d))
+        if wants("overlay") and self.current_frame.overlay_img is not None:
             overlay_path = os.path.join(dest_dir, f"{base_name}_overlay.png")
-            iio.imwrite(overlay_path, np.asarray(self.overlay_img, dtype=np.uint8))
-        if wants("debug") and self.measurements_overlay is not None:
+            iio.imwrite(overlay_path, np.asarray(self.current_frame.overlay_img, dtype=np.uint8))
+        if wants("debug") and self.current_frame.measurements_overlay is not None:
             debug_path = os.path.join(dest_dir, f"{base_name}_debug.png")
-            iio.imwrite(debug_path, np.asarray(self.measurements_overlay, dtype=np.uint8))
-        if wants("style_vector") and self.style_vec is not None:
+            iio.imwrite(debug_path, np.asarray(self.current_frame.measurements_overlay, dtype=np.uint8))
+        if wants("style_vector") and self.current_frame.style_vec is not None:
             style_path = os.path.join(dest_dir, f"{base_name}_style.npy")
-            np.save(style_path, np.asarray(self.style_vec, dtype=np.float32))
+            np.save(style_path, np.asarray(self.current_frame.style_vec, dtype=np.float32))
 
-        if wants("samples") and self.samples_table is not None and len(self.samples_table) > 0:
+        if wants("samples") and self.current_frame.samples_table is not None and len(self.current_frame.samples_table) > 0:
             samples_path = os.path.join(dest_dir, f"{base_name}_samples.csv")
             with open(samples_path, "w", newline="") as f:
                 mean_val, std_val, orientation_index, mean_angle_deg, std_angle_deg, porosity, sample_count = self._measurement_export_summary()
@@ -1403,11 +1339,11 @@ class MainWindow(QMainWindow):
                 f.write("\n\n")
                 f.write("x,y,diameter,angle_deg,fiber_id\n")
 
-                for idx, row in enumerate(self.samples_table, start=1):
+                for idx, row in enumerate(self.current_frame.samples_table, start=1):
                     x, y, t_px = row[:3]
                     angle_val = float(row[3]) if len(row) > 3 else float("nan")
-                    if self._thickness_units is not None and len(self._thickness_units) >= idx:
-                        diameter_val = float(self._thickness_units[idx - 1])
+                    if self.current_frame.thickness_units is not None and len(self.current_frame.thickness_units) >= idx:
+                        diameter_val = float(self.current_frame.thickness_units[idx - 1])
                     else:
                         diameter_val = float(t_px)
                     f.write(f"{int(x)},{int(y)},{diameter_val:.6f},{angle_val:.6f},0\n")
@@ -1435,11 +1371,7 @@ class MainWindow(QMainWindow):
         batch_strict_mode = bool(save_options.get("strict", prev_strict_mode))
         self._set_strict_mode(batch_strict_mode)
         if batch_strict_mode and prev_seg_mode != "ridge":
-            if getattr(self, "rb_ridge", None):
-                self.rb_ridge.setChecked(True)
-            else:
-                self.segmentation_mode = "ridge"
-                self._sync_pipeline_config_from_ui()
+            self.rb_ridge.setChecked(True)
 
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         directory = self.working_dir
@@ -1459,9 +1391,9 @@ class MainWindow(QMainWindow):
         finally:
             self._set_strict_mode(prev_strict_mode)
             if prev_seg_mode != self._current_segmentation_mode():
-                if prev_seg_mode == "ridge" and getattr(self, "rb_ridge", None):
+                if prev_seg_mode == "ridge":
                     self.rb_ridge.setChecked(True)
-                elif prev_seg_mode == "watershed" and getattr(self, "rb_watershed", None):
+                elif prev_seg_mode == "watershed":
                     self.rb_watershed.setChecked(True)
                 else:
                     self.segmentation_mode = prev_seg_mode
@@ -1472,7 +1404,7 @@ class MainWindow(QMainWindow):
         failures: list[tuple[str, str]] = []
         processed = 0
         for result in batch_result.frame_results:
-            if result.labels_2d is None:
+            if not result.has_segmentation:
                 failures.append((result.frame_id, "Segmentation did not produce results"))
             else:
                 processed += 1
@@ -1651,19 +1583,19 @@ class MainWindow(QMainWindow):
         self._update_profile_plot()
 
     def _update_profile_plot(self):
-        if self.dt is None or len(self._profile_points_img) < 2:
+        if not self.current_frame.has_prediction or len(self._profile_points_img) < 2:
             return
         (x0, y0), (x1, y1) = self._profile_points_img[:2]
         length_px = float(np.hypot(x1 - x0, y1 - y0))
         if length_px <= 0:
             return
-        profile_vals = profile_line(self.dt, (y0, x0), (y1, x1), mode="reflect", order=1)
+        profile_vals = profile_line(self.current_frame.dt, (y0, x0), (y1, x1), mode="reflect", order=1)
         if profile_vals is None or profile_vals.size == 0:
             return
 
         profile_vals = np.asarray(profile_vals, dtype=np.float32, copy=False)
-        scale = getattr(self, "scale_factor", 1.0)
-        if scale is None or not np.isfinite(scale) or scale <= 0:
+        scale = float(self.current_frame.scale_factor)
+        if not np.isfinite(scale) or scale <= 0:
             scale = 1.0
         true_length_px = length_px / scale
         distances = np.linspace(0.0, true_length_px, profile_vals.size, dtype=np.float32)
@@ -1678,12 +1610,14 @@ class MainWindow(QMainWindow):
     # ------------------- Segmentation -------------------
 
     def segment(self):
+        fr = self.current_frame
+
         if self._image_batch is not None and not self._batch_processing_active:
             batch_result = self._run_batch_analysis(compute_measurements=False)
             if batch_result is not None:
                 self.progress_bar.setValue(70)
             return
-        if self.orig_img is None:
+        if fr.orig_img is None:
             self._show_info("Load original", "Please load an original image first.")
             logger.info("Segment: No original image loaded.")
             return
@@ -1692,19 +1626,28 @@ class MainWindow(QMainWindow):
             logger.error("Segmentation failed: analyzer not initialized.")
             return
 
-        previous_scale = getattr(self, "scale_factor", 1.0)
+        fr.error_message = None
+        fr.clear_segmentation()
+        fr.clear_measurements()
+
+        previous_scale = float(fr.scale_factor)
         target_scale = self._current_scale_factor()
         scale_changed = not math.isclose(previous_scale, target_scale, rel_tol=1e-6, abs_tol=1e-6)
-        processing_img = self.orig_img
+        if scale_changed:
+            self.analyzer.reset_prediction_state()
+            fr.clear_prediction()
+
+        
+        processing_img = fr.orig_img
         if math.isclose(target_scale, 1.0, rel_tol=1e-6, abs_tol=1e-6):
-            self.scale_factor = 1.0
-            self.orig_img_scaled = None
+            fr.scale_factor = 1.0
+            fr.orig_img_scaled = None
         else:
-            if self.orig_img_scaled is None or scale_changed:
+            if fr.orig_img_scaled is None or scale_changed:
                 interp = cv2.INTER_AREA if target_scale < 1.0 else cv2.INTER_CUBIC
                 try:
-                    self.orig_img_scaled = cv2.resize(
-                        self.orig_img,
+                    fr.orig_img_scaled = cv2.resize(
+                        fr.orig_img,
                         None,
                         fx=target_scale,
                         fy=target_scale,
@@ -1714,11 +1657,9 @@ class MainWindow(QMainWindow):
                     self._show_error("Scaling failed", f"Unable to scale image:\n{e}")
                     logger.error("Scaling failed: %s", e)
                     return
-            processing_img = self.orig_img_scaled
-            self.scale_factor = float(target_scale)
-        self.analyzer.scale_factor = self.scale_factor
-        if scale_changed:
-            self.analyzer.reset_prediction_state()
+            processing_img = fr.orig_img_scaled
+        fr.scale_factor = float(target_scale)
+        self.analyzer.scale_factor = fr.scale_factor
 
         self._sync_pipeline_config_from_ui()
         config = self.pipeline_config
@@ -1750,6 +1691,7 @@ class MainWindow(QMainWindow):
                 )
             except Exception as e:
                 self._show_error("Prediction failed", str(e))
+                fr.fail(str(e))
                 logger.error("Segmentation failed: %s", e)
                 return
 
@@ -1762,6 +1704,7 @@ class MainWindow(QMainWindow):
             )
         except Exception as e:
             self._show_error("Centerline computation failed", str(e))
+            fr.fail(str(e))
             logger.error("Centerline computation failed: %s", e)
             return
 
@@ -1771,16 +1714,25 @@ class MainWindow(QMainWindow):
         gx, gy = self.analyzer.get_gradients()
         if dt is None or gx is None or gy is None:
             self._show_error("Segmentation failed", "Distance transform or gradients unavailable.")
+            fr.fail("Distance transform or gradients unavailable.")
             logger.error("Segmentation failed: DT or gradients unavailable.")
             return
 
-        self.dt = np.asarray(dt, dtype=np.float32, copy=False)
-        self.gx = np.asarray(gx, dtype=np.float32, copy=False)
-        self.gy = np.asarray(gy, dtype=np.float32, copy=False)
-        self.gray_u8 = self.analyzer.get_dt_u8()
-        self.gray_img = self.analyzer.get_dt_norm()
-        self.lapl_img = self.analyzer.get_laplacian()
-        self.style_vec = self.analyzer.get_style_vector()
+        dt_norm = self.analyzer.get_dt_norm()
+        lapl = self.analyzer.get_laplacian()
+        style_vec = self.analyzer.get_style_vector()
+        fr.set_prediction_outputs(
+            dt=np.asarray(dt, dtype=np.float32, copy=False),
+            gx=np.asarray(gx, dtype=np.float32, copy=False),
+            gy=np.asarray(gy, dtype=np.float32, copy=False),
+            gray_u8=self.analyzer.get_dt_u8(),
+            gray_img=dt_norm,
+            lapl_img=lapl,
+            style_vec=style_vec,
+            orig_img_scaled=fr.orig_img_scaled,
+            scale_factor=fr.scale_factor,
+            invalidate_downstream=True,
+        )
 
         thr_u8 = int(watershed_cfg.get("threshold_u8", self._current_segmentation_threshold()))
         mode = self._current_segmentation_mode()
@@ -1788,7 +1740,7 @@ class MainWindow(QMainWindow):
         strict_radius_px = None
         ridge_options = None
         if ridge_mode:
-            current_scale = self.scale_factor if self.scale_factor and np.isfinite(self.scale_factor) else 1.0
+            current_scale = fr.scale_factor if fr.scale_factor and np.isfinite(fr.scale_factor) else 1.0
             radius_thresh_px_val = high_conf_cfg.get("radius_thresh_px")
             if radius_thresh_px_val is None:
                 radius_thresh_px_val = self._current_radius_threshold()
@@ -1799,32 +1751,41 @@ class MainWindow(QMainWindow):
                 "dilate_extra_px": float(high_conf_cfg.get("dilate_extra_px", 0.0)) * current_scale,
                 "min_run_points": int(high_conf_cfg.get("min_run_points", 1)),
             }
+        labels = None
         try:
             if ridge_mode:
                 if strict_radius_px is None:
                     raise ValueError("Ridge segmentation requires a radius threshold.")
-                self.labels_img = self.analyzer.segment_strict_ridge(
+                labels = self.analyzer.segment_strict_ridge(
                     radius_thresh_px=strict_radius_px,
                     dilate_extra_px=float(ridge_options.get("dilate_extra_px", 0.0)) if ridge_options else 0.0,
                     min_run_points=int(ridge_options.get("min_run_points", 1)) if ridge_options else 1,
                 )
             else:
-                self.labels_img = self.analyzer.segment_watershed(thr_u8=thr_u8)
+                labels = self.analyzer.segment_watershed(thr_u8=thr_u8)
         except Exception as e:
             self._show_error("Segmentation failed", str(e))
+            fr.fail(str(e))
             logger.error("Segmentation failed: %s", e)
             return
 
-        if self.labels_img is not None:
-            labels_rgb = labels_to_color(self.labels_img)
-            self._labels_rgb_cache = (id(self.labels_img), labels_rgb)
+        if labels is not None:
+            labels_rgb = labels_to_color(labels)
+            labels_cache = (id(labels), labels_rgb)
         else:
             labels_rgb = None
-            self._labels_rgb_cache = (None, None)
+            labels_cache = (None, None)
 
-        base_img = self.orig_img if self.scale_factor == 1.0 or self.orig_img_scaled is None else self.orig_img_scaled
-        self.overlay_img = self._create_overlay(base_img, self.labels_img, alpha=0.5, labels_rgb=labels_rgb)
-        self._centerlines_dt = self.analyzer.get_centerlines_image()
+        base_img = fr.orig_img if fr.scale_factor == 1.0 or fr.orig_img_scaled is None else fr.orig_img_scaled
+        fr.set_segmentation_outputs(
+            labels_2d=labels,
+            centerlines=self.analyzer.get_centerlines_image(),
+            overlay_img=self._create_overlay(base_img, labels, alpha=0.5, labels_rgb=labels_rgb),
+            sampling_overlay=fr.sampling_overlay,
+            measurements_overlay=fr.measurements_overlay,
+            labels_rgb_cache=labels_cache,
+            invalidate_measurements=True,
+        )
 
         if self.cb_view.currentText() not in ["Overlay", "Segmentation", "Measurements overlay", "Sampling"]:
             self.cb_view.setCurrentText("Overlay")
@@ -1839,6 +1800,7 @@ class MainWindow(QMainWindow):
         """
         Computes thickness samples via analyzer and renders overlays/plots.
         """
+        fr = self.current_frame
         if self._image_batch is not None and not self._batch_processing_active:
             if self._batch_result is not None and self._batch_has_measurements:
                 self._set_current_slice(self._current_z_index, update_view=True)
@@ -1846,16 +1808,18 @@ class MainWindow(QMainWindow):
             self._run_batch_analysis(compute_measurements=True)
             return
         self._sync_pipeline_config_from_ui()
+        fr.error_message = None
+        fr.clear_measurements()
         seg_cfg = self.pipeline_config.get("segmentation", {})
         target_scale = self._current_scale_factor()
-        current_scale = getattr(self, "scale_factor", 1.0)
+        current_scale = float(fr.scale_factor)
         scale_mismatch = (
             self.analyzer is not None
-            and self.labels_img is not None
+            and fr.has_segmentation
             and self.analyzer.dt_predicted()
             and not math.isclose(current_scale, target_scale, rel_tol=1e-6, abs_tol=1e-6)
         )
-        if scale_mismatch or self.gray_u8 is None or self.labels_img is None:
+        if scale_mismatch or not fr.has_segmentation:
             if scale_mismatch:
                 logger.info(
                     "Scale factor changed from %.3f to %.3f; rerunning segmentation for analysis.",
@@ -1863,11 +1827,11 @@ class MainWindow(QMainWindow):
                     target_scale,
                 )
             self.segment()
-            if self.gray_u8 is None or self.labels_img is None:
+            if not fr.has_segmentation:
                 self._show_info("No segmentation", "Segmentation could not be performed.")
                 return
         logger.info("Starting fiber analysis.")
-        self._viz_points = []
+        fr.viz_points = []
 
         # Params
         def _getf(line, default):
@@ -1877,7 +1841,7 @@ class MainWindow(QMainWindow):
             except Exception:
                 return default
         spacing_px_input = max(1.0, float(_getf(self.le_samspacing, 5)))
-        current_scale = self.scale_factor if self.scale_factor and np.isfinite(self.scale_factor) else 1.0
+        current_scale = fr.scale_factor if fr.scale_factor and np.isfinite(fr.scale_factor) else 1.0
         spacing_px_scaled = max(1.0, spacing_px_input * current_scale)
         pixel_size  = float(_getf(self.le_pixelsize, 1.0))
         units_label = self.cb_units.currentText() if self.cb_units.currentText().strip() and self.le_pixelsize.text().strip() else "px"
@@ -1891,12 +1855,12 @@ class MainWindow(QMainWindow):
             self._show_info("No centerlines", "No centerlines available. Run segmentation first.")
             return
 
-        self.analyzer.scale_factor = self.scale_factor
+        self.analyzer.scale_factor = fr.scale_factor
 
         hist_centers, viz_points, angles_deg = self.analyzer.analyze(
             spacing_px=spacing_px_scaled
         )
-        self._viz_points = viz_points
+        fr.viz_points = viz_points
 
         self.progress_bar.setValue(80)
 
@@ -1907,13 +1871,12 @@ class MainWindow(QMainWindow):
             thickness_units = thickness_px * pixel_size
             xs = np.array([c[1] for c in hist_centers], dtype=np.int32)
             ys = np.array([c[0] for c in hist_centers], dtype=np.int32)
-            self.samples_table = np.column_stack([xs, ys, thickness_px, np.array(angles_deg, dtype=np.float32)]).astype(object)
+            samples_table = np.column_stack([xs, ys, thickness_px, np.array(angles_deg, dtype=np.float32)]).astype(object)
         else:
             thickness_units = np.array([], dtype=np.float32)
-            self.samples_table = None
+            samples_table = None
 
-        self._thickness_units = thickness_units
-        self._angles_deg = np.array([a for a in angles_deg if np.isfinite(a)], dtype=np.float32)
+        angles_arr = np.array([a for a in angles_deg if np.isfinite(a)], dtype=np.float32)
 
 
         # --- pore splitting + sampling ------------------------------------------
@@ -1921,14 +1884,9 @@ class MainWindow(QMainWindow):
         thr_u8 = int(watershed_cfg.get("threshold_u8", self._current_segmentation_threshold()))
 
         # Build void mask from your chosen source (DT or grayscale-based threshold).
-        # If you already have self._void_mask, reuse it.
-        void_mask_u8 = getattr(self, "_void_mask", None)
-
-        if void_mask_u8 is None:
-            # If your pipeline stores grayscale in self.gray_u8, pass that DT/threshold you use
-            self._void_mask, self._pore_dt = self.analyzer.void_mask_and_pore_dt(thr_u8)
-
-        self._porosity = float(self._void_mask.mean())
+        if fr.void_mask is None:
+            fr.void_mask, fr.pore_dt = self.analyzer.void_mask_and_pore_dt(thr_u8)
+        porosity = float(fr.void_mask.mean()) if fr.void_mask is not None else float("nan")
 
         # --- NEW: sample pores as inscribed circles from DT peaks ---------------------
         min_radius_px = 1.5 * current_scale   # tweakable; ignores tiny specks
@@ -1936,9 +1894,9 @@ class MainWindow(QMainWindow):
         max_pores     = None  # or set an upper cap for speed/UI clarity
         min_peak_px = 3.0 * current_scale
 
-        self._pores = self.analyzer.sample_inscribed_circles(
-            pore_dt=self._pore_dt,
-            void_mask=self._void_mask,
+        pores = self.analyzer.sample_inscribed_circles(
+            pore_dt=fr.pore_dt,
+            void_mask=fr.void_mask,
             min_radius_px=min_radius_px,
             min_peak_px=min_peak_px,          # <- NEW param
             peak_footprint=peak_footprint,
@@ -1947,11 +1905,11 @@ class MainWindow(QMainWindow):
 
         # convenience arrays for hist/units
         pixel_size  = float(_getf(self.le_pixelsize, 1.0))
-        pore_scale = self.scale_factor if self.scale_factor and np.isfinite(self.scale_factor) else 1.0
+        pore_scale = fr.scale_factor if fr.scale_factor and np.isfinite(fr.scale_factor) else 1.0
         if pore_scale == 0:
             pore_scale = 1.0
-        self._pore_diams_units = np.array(
-            [2.0 * p.get('r_px_orig', p['r_px'] / pore_scale) * pixel_size for p in self._pores],
+        pore_diams_units = np.array(
+            [2.0 * p.get('r_px_orig', p['r_px'] / pore_scale) * pixel_size for p in pores],
             dtype=np.float32,
         )
 
@@ -1959,13 +1917,13 @@ class MainWindow(QMainWindow):
 
 
         # Summary text
-        if self._thickness_units.size:
-            mean_thickness = np.mean(self._thickness_units)
-            std_thickness  = np.std(self._thickness_units)
+        if thickness_units.size:
+            mean_thickness = np.mean(thickness_units)
+            std_thickness  = np.std(thickness_units)
         else:
             mean_thickness = float('nan')
             std_thickness  = float('nan')
-        orientation_index, mean_angle_deg, std_angle_deg = self._compute_orientation_stats(self._angles_deg)
+        orientation_index, mean_angle_deg, std_angle_deg = self._compute_orientation_stats(angles_arr)
 
         info_text = (
             f"Mean diameter: {mean_thickness:.2f} {units_label}\n"
@@ -1973,18 +1931,32 @@ class MainWindow(QMainWindow):
             f"Orientation index: {orientation_index:.2f}\n"
             f"Mean angle: {mean_angle_deg:.2f} deg\n"
             f"Std angle: {std_angle_deg:.2f} deg\n"
-            f"Porosity (area fraction): {self._porosity*100:.1f} %"
+            f"Porosity (area fraction): {porosity*100:.1f} %"
         )
-        self.fiber_summary = {
+        fiber_summary = {
             "mean_diameter": float(mean_thickness),
             "std_diameter": float(std_thickness),
             "orientation_index": float(orientation_index),
             "mean_angle_deg": float(mean_angle_deg),
             "std_angle_deg": float(std_angle_deg),
-            "porosity": float(self._porosity),
+            "porosity": float(porosity),
             "sample_count": len(hist_centers) if hist_centers else 0,
             "units": units_label,
         }
+        fr.set_measurement_outputs(
+            samples_table=samples_table,
+            fiber_summary=fiber_summary,
+            viz_points=viz_points,
+            angles_deg=angles_arr,
+            thickness_units=thickness_units,
+            porosity=porosity,
+            pore_diams_units=pore_diams_units,
+            void_mask=fr.void_mask,
+            pore_dt=fr.pore_dt,
+            pores=pores,
+            measurements_overlay=fr.measurements_overlay,
+            sampling_overlay=fr.sampling_overlay,
+        )
         self.text_edit2.setPlainText(info_text)
 
         # Overlay + plots
@@ -1995,7 +1967,7 @@ class MainWindow(QMainWindow):
         self._show_info(
             "Analysis complete",
             f"Histogram samples: {len(hist_centers)} (spacing={int(spacing_px_input)} px)\n"
-            f"Stored viz points: {len(self._viz_points)}\n"
+            f"Stored viz points: {len(fr.viz_points)}\n"
             f"Mean diameter: {mean_thickness:.2f} {units_label}\n"
             f"Std diameter: {std_thickness:.2f} {units_label}\n"
             f"Orientation index: {orientation_index:.2f}\n"
@@ -2008,7 +1980,7 @@ class MainWindow(QMainWindow):
 
     # ---- single overlay renderer (kept once) ----
     def _render_vector_overlay(self):
-        if not getattr(self, "_viz_points", None):
+        if not self.current_frame.viz_points:
             return
         show_diam   = getattr(self, "rb_show_diam", None) and self.rb_show_diam.isChecked()
         show_direct = getattr(self, "rb_show_direct", None) and self.rb_show_direct.isChecked()
@@ -2018,10 +1990,10 @@ class MainWindow(QMainWindow):
             show_diam = True
 
         if show_pores:
-            base = self._pore_dt_to_rgb(self._pore_dt, self._void_mask)
-            if getattr(self, "_pores", None):
+            base = self._pore_dt_to_rgb(self.current_frame.pore_dt, self.current_frame.void_mask)
+            if self.current_frame.pores:
                 out = base.copy()
-                for p in self._pores:
+                for p in self.current_frame.pores:
                     x, y = int(p['x']), int(p['y'])
                     r = int(round(p['r_px']))
                     if r <= 0:
@@ -2032,14 +2004,14 @@ class MainWindow(QMainWindow):
                 self._set_pixmap_from_array(out)
                 return
 
-        sampling_base = ensure_rgb_u8(self.gray_u8 if self.gray_u8 is not None else self.gray_img)
-        if sampling_base is None and self.overlay_img is not None:
-            sampling_base = ensure_rgb_u8(self.overlay_img)
+        sampling_base = ensure_rgb_u8(self.current_frame.gray_u8 if self.current_frame.gray_u8 is not None else self.current_frame.gray_img)
+        if sampling_base is None and self.current_frame.overlay_img is not None:
+            sampling_base = ensure_rgb_u8(self.current_frame.overlay_img)
         if sampling_base is None:
             return
 
-        base_img = self.orig_img if self.scale_factor == 1.0 or self.orig_img_scaled is None else self.orig_img_scaled
-        measurement_base = self.overlay_img.copy() if self.overlay_img is not None else ensure_rgb_u8(base_img)
+        base_img = self.current_frame.orig_img if self.current_frame.scale_factor == 1.0 or self.current_frame.orig_img_scaled is None else self.current_frame.orig_img_scaled
+        measurement_base = self.current_frame.overlay_img.copy() if self.current_frame.overlay_img is not None else ensure_rgb_u8(base_img)
         sampling_canvas = sampling_base.copy()
         # For angle coloring paint directly over the original image
         measurement_canvas = (
@@ -2050,7 +2022,7 @@ class MainWindow(QMainWindow):
 
         H, W = sampling_canvas.shape[:2]
         MAX_SEGMENTS = 15000
-        pts = self._viz_points if len(self._viz_points) <= MAX_SEGMENTS else self._viz_points[::int(np.ceil(len(self._viz_points)/MAX_SEGMENTS))]
+        pts = self.current_frame.viz_points if len(self.current_frame.viz_points) <= MAX_SEGMENTS else self.current_frame.viz_points[::int(np.ceil(len(self.current_frame.viz_points)/MAX_SEGMENTS))]
 
         line_color = (255, 255, 0)
         point_color = (255, 0, 0)
@@ -2096,8 +2068,8 @@ class MainWindow(QMainWindow):
             )
 
         # Fill watershed regions by nearest angle sample
-        if show_direct and getattr(self, "labels_img", None) is not None and sample_coords:
-            mask = (self.labels_img.astype(np.int32) > 0)
+        if show_direct and self.current_frame.labels_2d is not None and sample_coords:
+            mask = (self.current_frame.labels_2d.astype(np.int32) > 0)
             if mask.any():
                 ys, xs = np.nonzero(mask)
                 coords = np.stack([ys, xs], axis=1)
@@ -2107,8 +2079,8 @@ class MainWindow(QMainWindow):
                 fill_vals = colors_arr[nn_idx]
                 measurement_canvas[ys, xs] = fill_vals
 
-        self.sampling_overlay = sampling_canvas
-        self.measurements_overlay = measurement_canvas
+        self.current_frame.sampling_overlay = sampling_canvas
+        self.current_frame.measurements_overlay = measurement_canvas
         # Default to the new overlay view if user is on an unrelated tab
         if self.cb_view.currentText() not in ("Measurements overlay", "Sampling"):
             self.cb_view.setCurrentText("Measurements overlay")
@@ -2199,7 +2171,7 @@ class MainWindow(QMainWindow):
     def _update_distributions_pyqtgraph(self, units_label: str):
         # Thickness
         self._style_plotwidget(self.graph_diameters, "Fiber thickness", "", f"Thickness ({units_label})")
-        tu = getattr(self, "_thickness_units", np.array([], dtype=np.float32))
+        tu = self.current_frame.thickness_units if self.current_frame.thickness_units is not None else np.array([], dtype=np.float32)
         if tu.size:
             hist, edges = np.histogram(tu, bins=40)
             centers = 0.5 * (edges[:-1] + edges[1:])
@@ -2217,7 +2189,7 @@ class MainWindow(QMainWindow):
         if not show_pores:
             # Angles (-90..90)
             self._style_plotwidget(self.graph_angles, "Fiber orientation", "", "Angle (deg, canonical)")
-            ang = getattr(self, "_angles_deg", np.array([], dtype=np.float32))
+            ang = self.current_frame.angles_deg if self.current_frame.angles_deg is not None else np.array([], dtype=np.float32)
             if ang.size:
                 hist, edges = np.histogram(ang, bins=36, range=(-90, 90))
                 centers = 0.5 * (edges[:-1] + edges[1:])
@@ -2231,7 +2203,7 @@ class MainWindow(QMainWindow):
                 self.graph_angles.addItem(bg)
         else:
             self._style_plotwidget(self.graph_angles, "Pore size distribution", f"Diameter ({units_label})", "Count")
-            ds = getattr(self, "_pore_diams_units", np.array([], dtype=np.float32))
+            ds = self.current_frame.pore_diams_units if self.current_frame.pore_diams_units is not None else np.array([], dtype=np.float32)
             if ds.size:
                 hist, edges = np.histogram(ds, bins=40)
                 centers = 0.5 * (edges[:-1] + edges[1:])
@@ -2248,26 +2220,26 @@ class MainWindow(QMainWindow):
         # Use the combo box text to select appropriate view.
         view = self.cb_view.currentText()
         if view == "Original":
-            img = ensure_rgb_u8(self.orig_img)
+            img = ensure_rgb_u8(self.current_frame.orig_img)
         elif view == "DT":
-            img = to_uint8_for_view(self.gray_img)
+            img = to_uint8_for_view(self.current_frame.gray_img)
         elif view == "Laplacian":
-            img = to_uint8_for_view(self.lapl_img)
+            img = to_uint8_for_view(self.current_frame.lapl_img)
         elif view == "Centerlines":
             img = self._centerlines_with_connections()
         elif view == "Segmentation":
             img = self._labels_rgb()
         elif view == "Overlay":
-            img = self.overlay_img
+            img = self.current_frame.overlay_img
         elif view == "Sampling":
-            img = self.sampling_overlay if self.sampling_overlay is not None else ensure_rgb_u8(self.gray_u8)
+            img = self.current_frame.sampling_overlay if self.current_frame.sampling_overlay is not None else ensure_rgb_u8(self.current_frame.gray_u8)
         elif view in ("Measurements overlay", "Measurements"):
-            fallback = self.overlay_img if self.overlay_img is not None else self._labels_rgb()
-            img = self.measurements_overlay if self.measurements_overlay is not None else fallback
+            fallback = self.current_frame.overlay_img if self.current_frame.overlay_img is not None else self._labels_rgb()
+            img = self.current_frame.measurements_overlay if self.current_frame.measurements_overlay is not None else fallback
         elif view == "gx": 
-            img = to_uint8_for_view(self.gx)
+            img = to_uint8_for_view(self.current_frame.gx)
         elif view == "gy":
-            img = to_uint8_for_view(self.gy)
+            img = to_uint8_for_view(self.current_frame.gy)
 
         self._set_pixmap_from_array(img)
 
@@ -2297,69 +2269,35 @@ class MainWindow(QMainWindow):
             return f"{base}_z{z_index:03d}"
         return base
 
-    def _apply_frame_result(self, frame_result: FrameResult | None):
+    def _apply_frame_result(self, frame_result: Frame | None):
+        current_orig = self.current_frame.orig_img
+        current_frame_id = self.current_frame.frame_id
+        current_z_index = self.current_frame.z_index
         if frame_result is None:
-            self.labels_img = None
-            self.overlay_img = None
-            self.sampling_overlay = None
-            self.measurements_overlay = None
-            self.samples_table = None
-            self.fiber_summary = None
-            self._viz_points = None
-            self._angles_deg = None
-            self._thickness_units = None
-            self._porosity = None
-            self._pore_diams_units = None
-            self._void_mask = None
-            self._pore_dt = None
-            self._pores = None
-            self.dt = None
-            self.gray_u8 = None
-            self.gray_img = None
-            self.lapl_img = None
-            self.gx = None
-            self.gy = None
-            self.style_vec = None
-            self._centerlines_dt = None
-            self._labels_rgb_cache = (None, None)
+            self.current_frame = Frame.empty(
+                frame_id=current_frame_id,
+                z_index=current_z_index,
+                orig_img=current_orig,
+            )
             self.text_edit2.clear()
+            self.graph_diameters.clear()
+            self.graph_angles.clear()
             return
 
-        self.labels_img = frame_result.labels_2d
-        self._centerlines_dt = frame_result.centerlines
-        self.dt = frame_result.extras.get("dt")
-        self.gray_u8 = frame_result.extras.get("gray_u8")
-        self.gray_img = frame_result.extras.get("gray_img")
-        self.lapl_img = frame_result.extras.get("lapl_img")
-        self.gx = frame_result.extras.get("gx")
-        self.gy = frame_result.extras.get("gy")
-        self.style_vec = frame_result.extras.get("style_vec")
-        self.overlay_img = frame_result.extras.get("overlay")
-        self.sampling_overlay = frame_result.extras.get("sampling_overlay")
-        self.measurements_overlay = frame_result.extras.get("measurements_overlay")
-        self.scale_factor = float(frame_result.extras.get("scale_factor", 1.0))
+        applied_frame = frame_result.snapshot()
+        if applied_frame.orig_img is None:
+            applied_frame.orig_img = current_orig
+        self.current_frame = applied_frame
 
-        measurements = frame_result.measurements or {}
-        self.samples_table = measurements.get("samples_table")
-        self.fiber_summary = measurements.get("fiber_summary")
-        self._viz_points = measurements.get("viz_points")
-        self._angles_deg = measurements.get("angles_deg")
-        self._thickness_units = measurements.get("thickness_units")
-        self._porosity = measurements.get("porosity")
-        self._pore_diams_units = measurements.get("pore_diams_units")
-        self._void_mask = measurements.get("void_mask")
-        self._pore_dt = measurements.get("pore_dt")
-        self._pores = measurements.get("pores")
-
-        if self.fiber_summary:
-            units_label = self.fiber_summary.get("units", "px")
+        if self.current_frame.fiber_summary:
+            units_label = self.current_frame.fiber_summary.get("units", "px")
             info_text = (
-                f"Mean diameter: {self.fiber_summary.get('mean_diameter', float('nan')):.2f} {units_label}\n"
-                f"Std diameter: {self.fiber_summary.get('std_diameter', float('nan')):.2f} {units_label}\n"
-                f"Orientation index: {self.fiber_summary.get('orientation_index', float('nan')):.2f}\n"
-                f"Mean angle: {self.fiber_summary.get('mean_angle_deg', float('nan')):.2f} deg\n"
-                f"Std angle: {self.fiber_summary.get('std_angle_deg', float('nan')):.2f} deg\n"
-                f"Porosity (area fraction): {self.fiber_summary.get('porosity', float('nan'))*100:.1f} %"
+                f"Mean diameter: {self.current_frame.fiber_summary.get('mean_diameter', float('nan')):.2f} {units_label}\n"
+                f"Std diameter: {self.current_frame.fiber_summary.get('std_diameter', float('nan')):.2f} {units_label}\n"
+                f"Orientation index: {self.current_frame.fiber_summary.get('orientation_index', float('nan')):.2f}\n"
+                f"Mean angle: {self.current_frame.fiber_summary.get('mean_angle_deg', float('nan')):.2f} deg\n"
+                f"Std angle: {self.current_frame.fiber_summary.get('std_angle_deg', float('nan')):.2f} deg\n"
+                f"Porosity (area fraction): {self.current_frame.fiber_summary.get('porosity', float('nan'))*100:.1f} %"
             )
             self.text_edit2.setPlainText(info_text)
             self._update_distributions_pyqtgraph(units_label)
@@ -2368,11 +2306,11 @@ class MainWindow(QMainWindow):
             self.graph_diameters.clear()
             self.graph_angles.clear()
 
-        if self.labels_img is not None:
-            labels_rgb = labels_to_color(self.labels_img)
-            self._labels_rgb_cache = (id(self.labels_img), labels_rgb)
+        if self.current_frame.labels_2d is not None:
+            labels_rgb = labels_to_color(self.current_frame.labels_2d)
+            self.current_frame.labels_rgb_cache = (id(self.current_frame.labels_2d), labels_rgb)
         else:
-            self._labels_rgb_cache = (None, None)
+            self.current_frame.labels_rgb_cache = (None, None)
 
     def _set_current_slice(self, index: int, update_view: bool = True):
         if self._image_batch is None:
@@ -2392,8 +2330,10 @@ class MainWindow(QMainWindow):
             if self._image_batch.metadata.get("filenames")
             else str(index)
         )
-        self.orig_img = frame
-        self.orig_img_scaled = None
+        self.current_frame.frame_id = str(frame_id)
+        self.current_frame.z_index = int(index)
+        self.current_frame.orig_img = frame
+        self.current_frame.orig_img_scaled = None
         self.current_image_name = self._frame_base_name(str(frame_id), index)
         self._apply_frame_result(
             self._batch_result.frame_at(index) if self._batch_result is not None else None
@@ -2409,46 +2349,27 @@ class MainWindow(QMainWindow):
 
     def _reset_internal_state(self, preserve_original: bool = False):
         """Clear all derived data, images, analysis artifacts, and charts."""
-        
-        self.analyzer.reset_prediction_state()
+
+        if self.analyzer is not None:
+            self.analyzer.reset_prediction_state()
         if self._profile_dialog is not None:
             self._profile_dialog.close()
-        # ---- raw / processing buffers ----
+
+        preserved_orig = self.current_frame.orig_img if preserve_original else None
+        preserved_frame_id = self.current_frame.frame_id if preserve_original else ""
+        preserved_z = self.current_frame.z_index if preserve_original else 0
+        self.current_frame = Frame.empty(
+            frame_id=preserved_frame_id,
+            z_index=preserved_z,
+            orig_img=preserved_orig,
+        )
         if not preserve_original:
-            self.orig_img = None
             self.current_image_name = None
-        self.orig_img_scaled = None
-        self.scale_factor = 1.0
+
         self._scalebar_pending = False
         self._scalebar_points = []
         self.graphicsView.viewport().unsetCursor()
-        self.dt = None
-        self.gray_img = None
-        self.gray_u8 = None
-        self.lapl_img = None
-        self.gx = None
-        self.gy = None
-        self.style_vec = None
 
-        # ---- segmentation outputs ----
-        self.labels_img = None
-        self.overlay_img = None
-        self.sampling_overlay = None
-        self._centerlines_dt = None
-
-        # ---- analysis / debug ----
-        self.samples_table = None
-        self.fiber_summary = None
-        self.measurements_overlay = None
-        self._viz_points = None
-        self._angles_deg = None
-        self._thickness_units = None
-        self._void_mask = None
-        self._pore_dt = None
-        self._pores = None
-        self._porosity = None
-        self._pore_diams_units = None
-        self._labels_rgb_cache = (None, None)
         self._profile_mode_active = False
         self._profile_points_scene = []
         self._profile_points_img = []
@@ -2473,11 +2394,7 @@ class MainWindow(QMainWindow):
 
     def _init_device_from_checkbox(self):
         """On startup: if CUDA is available, check the box and use cuda; else uncheck and use cpu."""
-        cuda_ok = False
-        try:
-            cuda_ok = torch.cuda.is_available()
-        except Exception:
-            cuda_ok = False
+        cuda_ok = torch.cuda.is_available()
 
         if cuda_ok:
             # user prefers GPU by default when available
@@ -2554,10 +2471,7 @@ class MainWindow(QMainWindow):
         ridge_defaults = FiberAnalyzer._default_centerline_kwargs()
         cluster_defaults: Dict[str, Any] = {}
         if self.analyzer is not None:
-            try:
-                cluster_defaults = self.analyzer.get_cluster_config()
-            except Exception:
-                cluster_defaults = {}
+            cluster_defaults = self.analyzer.get_cluster_config()
         self.pipeline_config = {
             "ridge_detection": {
                 "max_angle_deg": self._current_max_angle(),
@@ -2583,7 +2497,7 @@ class MainWindow(QMainWindow):
         }
 
     def _sync_pipeline_config_from_ui(self):
-        if not getattr(self, "pipeline_config", None):
+        if not self.pipeline_config:
             self._init_pipeline_config()
             return
 
@@ -2607,10 +2521,7 @@ class MainWindow(QMainWindow):
         cluster_cfg["enabled"] = bool(self.cluster_enabled)
         if "params" not in cluster_cfg or not cluster_cfg["params"]:
             if self.analyzer is not None:
-                try:
-                    cluster_cfg["params"] = self.analyzer.get_cluster_config()
-                except Exception:
-                    cluster_cfg["params"] = {}
+                cluster_cfg["params"] = self.analyzer.get_cluster_config()
             else:
                 cluster_cfg["params"] = {}
 
@@ -2631,22 +2542,21 @@ class MainWindow(QMainWindow):
         return float(self.sp_max_cent_angle.value())
 
     def _strict_centerline_enabled(self) -> bool:
-        return bool(getattr(self, "chb_strict", None) and self.chb_strict.isChecked())
+        return self.chb_strict.isChecked()
 
     def _set_strict_mode(self, enabled: bool) -> None:
         """Set strict centerline mode across UI, analyzer, and config."""
-        if getattr(self, "chb_strict", None):
-            self.chb_strict.blockSignals(True)
-            self.chb_strict.setChecked(bool(enabled))
-            self.chb_strict.blockSignals(False)
+        self.chb_strict.blockSignals(True)
+        self.chb_strict.setChecked(bool(enabled))
+        self.chb_strict.blockSignals(False)
         if self.analyzer is not None:
             self.analyzer.set_strict_centerline_filter(bool(enabled))
-        if getattr(self, "pipeline_config", None) is not None:
+        if self.pipeline_config is not None:
             ridge_cfg = self.pipeline_config.setdefault("ridge_detection", {})
             ridge_cfg["strict_centerlines"] = bool(enabled)
 
     def _update_strict_checkbox_state(self) -> None:
-        enable = self._uses_ridge_segmentation()
+        enable = self._current_segmentation_mode() == "ridge"
         if enable:
             if not self.chb_strict.isEnabled():
                 self.chb_strict.setEnabled(True)
@@ -2658,14 +2568,8 @@ class MainWindow(QMainWindow):
             if self.chb_strict.isEnabled():
                 self.chb_strict.setEnabled(False)
 
-    def _is_strict_segmentation(self) -> bool:
-        return self._current_segmentation_mode() == "ridge"
-
-    def _uses_ridge_segmentation(self) -> bool:
-        return self._current_segmentation_mode() == "ridge"
-
     def _current_segmentation_mode(self) -> str:
-        mode = getattr(self, "segmentation_mode", "watershed")
+        mode = self.segmentation_mode
         if mode not in ("watershed", "ridge"):
             mode = "watershed"
         return mode
@@ -2674,6 +2578,6 @@ class MainWindow(QMainWindow):
         return int(self.sp_segm_threshold.value())
 
     def _current_radius_threshold(self) -> float | None:
-        if not self._uses_ridge_segmentation():
+        if self._current_segmentation_mode() != "ridge":
             return None
         return float(self._current_segmentation_threshold())

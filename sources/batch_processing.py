@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from copy import copy
 from typing import Any, Callable, Dict, Iterable, List, Optional
 import os
 
@@ -94,23 +95,225 @@ class ImageBatch:
 
 
 @dataclass
-class FrameResult:
-    labels_2d: Optional[np.ndarray]
-    centerlines: Optional[np.ndarray]
-    measurements: Optional[Dict[str, Any]]
-    z_index: int
-    frame_id: str
-    extras: Dict[str, Any] = field(default_factory=dict)
+class Frame:
+    """Flat, stage-aware container for a single frame's processing state."""
+
+    # Identity
+    z_index: int = 0
+    frame_id: str = ""
+
+    # Stage flags
+    has_prediction: bool = False
+    has_segmentation: bool = False
+    has_measurements: bool = False
+    error_message: Optional[str] = None
+
+    # Source and prediction buffers
+    orig_img: Optional[np.ndarray] = None
+    orig_img_scaled: Optional[np.ndarray] = None
+    scale_factor: float = 1.0
+    dt: Optional[np.ndarray] = None
+    gray_u8: Optional[np.ndarray] = None
+    gray_img: Optional[np.ndarray] = None
+    lapl_img: Optional[np.ndarray] = None
+    gx: Optional[np.ndarray] = None
+    gy: Optional[np.ndarray] = None
+    style_vec: Optional[np.ndarray] = None
+
+    # Segmentation products
+    labels_2d: Optional[np.ndarray] = None
+    centerlines: Optional[np.ndarray] = None
+    overlay_img: Optional[np.ndarray] = None
+    sampling_overlay: Optional[np.ndarray] = None
+    measurements_overlay: Optional[np.ndarray] = None
+
+    # Measurement outputs
+    samples_table: Optional[Any] = None
+    fiber_summary: Optional[Dict[str, Any]] = None
+    viz_points: Optional[Any] = None
+    angles_deg: Optional[np.ndarray] = None
+    thickness_units: Optional[np.ndarray] = None
+    porosity: Optional[float] = None
+    pore_diams_units: Optional[np.ndarray] = None
+    void_mask: Optional[np.ndarray] = None
+    pore_dt: Optional[np.ndarray] = None
+    pores: Optional[Any] = None
+
+    # Render cache (local only)
+    labels_rgb_cache: tuple[Optional[int], Optional[np.ndarray]] = field(
+        default_factory=lambda: (None, None),
+        repr=False,
+    )
+
+    @classmethod
+    def empty(
+        cls,
+        *,
+        frame_id: str = "",
+        z_index: int = 0,
+        orig_img: Optional[np.ndarray] = None,
+    ) -> "Frame":
+        return cls(frame_id=str(frame_id), z_index=int(z_index), orig_img=orig_img)
+
+    def clear_prediction(self) -> None:
+        self.has_prediction = False
+        self.dt = None
+        self.gray_u8 = None
+        self.gray_img = None
+        self.lapl_img = None
+        self.gx = None
+        self.gy = None
+        self.style_vec = None
+        self.orig_img_scaled = None
+        self.scale_factor = 1.0
+        self.error_message = None
+
+    def clear_segmentation(self) -> None:
+        self.has_segmentation = False
+        self.labels_2d = None
+        self.centerlines = None
+        self.overlay_img = None
+        self.sampling_overlay = None
+        self.measurements_overlay = None
+        self.labels_rgb_cache = (None, None)
+
+    def clear_measurements(self) -> None:
+        self.has_measurements = False
+        self.samples_table = None
+        self.fiber_summary = None
+        self.viz_points = None
+        self.angles_deg = None
+        self.thickness_units = None
+        self.porosity = None
+        self.pore_diams_units = None
+        self.void_mask = None
+        self.pore_dt = None
+        self.pores = None
+
+    def begin_frame(self, orig_img: Optional[np.ndarray], frame_id: str, z_index: int) -> None:
+        self.frame_id = str(frame_id)
+        self.z_index = int(z_index)
+        self.orig_img = orig_img
+        self.clear_prediction()
+        self.clear_segmentation()
+        self.clear_measurements()
+        self.error_message = None
+
+    def set_prediction_outputs(
+        self,
+        *,
+        dt: Optional[np.ndarray],
+        gx: Optional[np.ndarray],
+        gy: Optional[np.ndarray],
+        gray_u8: Optional[np.ndarray],
+        gray_img: Optional[np.ndarray],
+        lapl_img: Optional[np.ndarray],
+        style_vec: Optional[np.ndarray],
+        orig_img_scaled: Optional[np.ndarray],
+        scale_factor: float,
+        invalidate_downstream: bool = True,
+    ) -> None:
+        self.dt = dt
+        self.gx = gx
+        self.gy = gy
+        self.gray_u8 = gray_u8
+        self.gray_img = gray_img
+        self.lapl_img = lapl_img
+        self.style_vec = style_vec
+        self.orig_img_scaled = orig_img_scaled
+        self.scale_factor = float(scale_factor)
+        self.has_prediction = self.dt is not None
+        self.error_message = None
+        if invalidate_downstream:
+            self.clear_segmentation()
+            self.clear_measurements()
+
+    def set_segmentation_outputs(
+        self,
+        *,
+        labels_2d: Optional[np.ndarray],
+        centerlines: Optional[np.ndarray],
+        overlay_img: Optional[np.ndarray],
+        sampling_overlay: Optional[np.ndarray] = None,
+        measurements_overlay: Optional[np.ndarray] = None,
+        labels_rgb_cache: Optional[tuple[Optional[int], Optional[np.ndarray]]] = None,
+        invalidate_measurements: bool = True,
+    ) -> None:
+        self.labels_2d = labels_2d
+        self.centerlines = centerlines
+        self.overlay_img = overlay_img
+        self.sampling_overlay = sampling_overlay
+        self.measurements_overlay = measurements_overlay
+        if labels_rgb_cache is not None:
+            self.labels_rgb_cache = labels_rgb_cache
+        elif labels_2d is None:
+            self.labels_rgb_cache = (None, None)
+        self.has_segmentation = self.labels_2d is not None
+        self.error_message = None
+        if invalidate_measurements:
+            self.clear_measurements()
+
+    def set_measurement_outputs(
+        self,
+        *,
+        samples_table: Optional[Any],
+        fiber_summary: Optional[Dict[str, Any]],
+        viz_points: Optional[Any],
+        angles_deg: Optional[np.ndarray],
+        thickness_units: Optional[np.ndarray],
+        porosity: Optional[float],
+        pore_diams_units: Optional[np.ndarray],
+        void_mask: Optional[np.ndarray],
+        pore_dt: Optional[np.ndarray],
+        pores: Optional[Any],
+        measurements_overlay: Optional[np.ndarray],
+        sampling_overlay: Optional[np.ndarray],
+    ) -> None:
+        self.samples_table = samples_table
+        self.fiber_summary = fiber_summary
+        self.viz_points = viz_points
+        self.angles_deg = angles_deg
+        self.thickness_units = thickness_units
+        self.porosity = porosity
+        self.pore_diams_units = pore_diams_units
+        self.void_mask = void_mask
+        self.pore_dt = pore_dt
+        self.pores = pores
+        self.measurements_overlay = measurements_overlay
+        self.sampling_overlay = sampling_overlay
+        self.has_measurements = True
+        self.error_message = None
+
+    def fail(self, message: str) -> None:
+        self.error_message = str(message)
+
+    def snapshot(
+        self,
+        *,
+        include_measurements: bool = True,
+        frame_id: Optional[str] = None,
+        z_index: Optional[int] = None,
+    ) -> "Frame":
+        clone: Frame = copy(self)
+        if clone.fiber_summary is not None:
+            clone.fiber_summary = dict(clone.fiber_summary)
+        if frame_id is not None:
+            clone.frame_id = str(frame_id)
+        if z_index is not None:
+            clone.z_index = int(z_index)
+        if not include_measurements:
+            clone.clear_measurements()
+        return clone
 
 
 @dataclass
 class BatchResult:
-    frame_results: List[FrameResult]
+    frame_results: List[Frame]
     labels_3d: Optional[List[np.ndarray]] = None
     object_id_map: Optional[Dict[tuple[int, int], int]] = None
     adjacency_graph: Optional[Any] = None
 
-    def frame_at(self, index: int) -> FrameResult:
+    def frame_at(self, index: int) -> Frame:
         return self.frame_results[index]
 
 
@@ -123,9 +326,9 @@ class BatchAnalyzer:
     def analyze(
         self,
         batch: ImageBatch,
-        frame_processor: Callable[[np.ndarray, str, int], FrameResult],
+        frame_processor: Callable[[np.ndarray, str, int], Frame],
     ) -> BatchResult:
-        results: List[FrameResult] = []
+        results: List[Frame] = []
         z_indices = batch.metadata.get("z_indices", list(range(len(batch))))
         filenames = batch.metadata.get("filenames", [str(i) for i in range(len(batch))])
         for idx, frame in enumerate(batch.frames):
