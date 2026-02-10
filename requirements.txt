@@ -3,6 +3,7 @@ torch
 torchvision
 numpy
 scipy
+numba
 scikit-image
 imageio
 matplotlib

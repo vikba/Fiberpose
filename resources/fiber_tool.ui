@@ -24,10 +24,7 @@
        </size>
       </property>
       <property name="frameShape">
-       <enum>QFrame::Shape::StyledPanel</enum>
-      </property>
-      <property name="frameShadow">
-       <enum>QFrame::Shadow::Raised</enum>
+       <enum>QFrame::NoFrame</enum>
       </property>
       <widget class="QPushButton" name="btn_segment">
        <property name="geometry">
@@ -406,7 +403,7 @@
          <string>use GPU</string>
         </property>
        </widget>
-       <widget class="QCheckBox" name="chb_verbose">
+       <widget class="QCheckBox" name="chb_3D">
         <property name="geometry">
          <rect>
           <x>130</x>
@@ -421,7 +418,7 @@
          </font>
         </property>
         <property name="text">
-         <string>verbose</string>
+         <string>3D</string>
         </property>
        </widget>
        <widget class="QLabel" name="label_5">
@@ -559,7 +556,7 @@
         </property>
         <property name="geometry">
          <rect>
-          <x>20</x>
+          <x>0</x>
           <y>160</y>
           <width>81</width>
           <height>25</height>
@@ -580,7 +577,7 @@
        <widget class="QRadioButton" name="rb_ridge">
         <property name="geometry">
          <rect>
-          <x>130</x>
+          <x>80</x>
           <y>160</y>
           <width>81</width>
           <height>25</height>
@@ -595,14 +592,32 @@
          <string>Ridge</string>
         </property>
        </widget>
+       <widget class="QRadioButton" name="rb_fastest_ascend">
+        <property name="geometry">
+         <rect>
+          <x>130</x>
+          <y>160</y>
+          <width>131</width>
+          <height>25</height>
+         </rect>
+        </property>
+        <property name="font">
+         <font>
+          <pointsize>8</pointsize>
+         </font>
+        </property>
+        <property name="text">
+         <string>Fastest Ascend</string>
+        </property>
+       </widget>
        <widget class="QCheckBox" name="chb_strict">
         <property name="enabled">
          <bool>false</bool>
         </property>
         <property name="geometry">
          <rect>
-          <x>130</x>
-          <y>190</y>
+          <x>160</x>
+          <y>194</y>
           <width>51</width>
           <height>17</height>
          </rect>
@@ -854,11 +869,7 @@
      </layout>
     </item>
     <item>
-     <widget class="QScrollBar" name="z_scroll">
-      <property name="orientation">
-       <enum>Qt::Orientation::Vertical</enum>
-      </property>
-     </widget>
+     <widget class="QScrollBar" name="z_scroll"/>
     </item>
    </layout>
   </widget>
@@ -868,7 +879,7 @@
      <x>0</x>
      <y>0</y>
      <width>879</width>
-     <height>22</height>
+     <height>24</height>
     </rect>
    </property>
    <widget class="QMenu" name="menuFile">

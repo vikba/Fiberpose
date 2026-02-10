@@ -13,6 +13,7 @@ from .clustering import stitch_and_cluster
 from .datastructures import FiberFragment
 from .models import FiberposeModel
 from .ridge_detector import RidgeDetector
+from .segmentation_fastest_ascend import segment_fastest_ascend
 from .utils import (
     _bilinear,
     _sample_vec2,
@@ -34,7 +35,7 @@ class FiberAnalyzer:
     Non-GUI class encapsulating fiber detection, watershed, and analysis.
     The analyzer now owns the full prediction + processing pipeline:
       • predict_dt(image) runs the model, computes gradients, laplacian, and centerlines
-      • segment(threshold) performs watershed using the cached DT/markers
+      • segment(mode, params) dispatches watershed/ridge/fastest-ascend segmentation
       • analysis helpers operate on cached centerlines and gradients
     """
 
@@ -474,28 +475,66 @@ class FiberAnalyzer:
 
     def segment(
         self,
-        thr_u8: int,
-        radius_thresh_px: float | None = None,
-        high_conf_options: Optional[Dict[str, Any]] = None,
+        mode: str = "watershed",
+        params: Optional[Dict[str, Any]] = None,
+        **legacy_kwargs: Any,
     ) -> np.ndarray:
         """
-        Dispatch segmentation mode.
-        - If `radius_thresh_px` is provided, run strict ridge expansion.
-        - Otherwise, run the default watershed using cached DT/markers.
+        Dispatch segmentation by mode.
+
+        Supported modes:
+            - watershed: params = {"threshold_u8": int}
+            - ridge: params = {"radius_thresh_px": float, "dilate_extra_px": float, "min_run_points": int}
+            - fastest_ascend: params = {"sigma": float, "dist_thresh": float, "flux_merge_thresh": float}
         """
         if self._dt_u8 is None:
             raise ValueError("Distance transform not available. Call predict_dt first.")
-        if radius_thresh_px is not None:
-            high_conf_opts = high_conf_options or {}
+
+        opts = dict(params or {})
+        if not isinstance(mode, str):
+            opts.setdefault("threshold_u8", int(mode))
+            mode_name = "watershed"
+        else:
+            mode_name = str(mode or "watershed").strip().lower()
+
+        if legacy_kwargs:
+            if "thr_u8" in legacy_kwargs:
+                mode_name = "watershed"
+                opts["threshold_u8"] = int(legacy_kwargs["thr_u8"])
+            if "radius_thresh_px" in legacy_kwargs:
+                mode_name = "ridge"
+                opts["radius_thresh_px"] = legacy_kwargs["radius_thresh_px"]
+            if "high_conf_options" in legacy_kwargs:
+                hc = legacy_kwargs.get("high_conf_options") or {}
+                if isinstance(hc, dict):
+                    for key in ("dilate_extra_px", "min_run_points"):
+                        if key in hc:
+                            opts[key] = hc[key]
+
+        if mode_name == "watershed":
+            thr_u8 = int(opts.get("threshold_u8", 128))
+            if self._markers is None or self._markers.max() == 0:
+                self.process_centerlines(self._last_max_angle, **self._centerline_kwargs)
+            return self.segment_watershed(thr_u8=thr_u8)
+
+        if mode_name == "ridge":
+            radius_thresh_px = opts.get("radius_thresh_px")
+            if radius_thresh_px is None:
+                raise ValueError("Ridge segmentation requires radius_thresh_px.")
             return self.segment_strict_ridge(
-                radius_thresh_px=radius_thresh_px,
-                dilate_extra_px=float(high_conf_opts.get("dilate_extra_px", 0.0)),
-                min_run_points=int(high_conf_opts.get("min_run_points", 1)),
+                radius_thresh_px=float(radius_thresh_px),
+                dilate_extra_px=float(opts.get("dilate_extra_px", 0.0)),
+                min_run_points=int(opts.get("min_run_points", 1)),
             )
 
-        if self._markers is None or self._markers.max() == 0:
-            self.process_centerlines(self._last_max_angle, **self._centerline_kwargs)
-        return self.segment_watershed(thr_u8=thr_u8)
+        if mode_name == "fastest_ascend":
+            return self.segment_fastest_ascend(
+                sigma=1,
+                dist_thresh=0.1,
+                flux_merge_thresh=1,
+            )
+
+        raise ValueError(f"Unsupported segmentation mode: {mode}")
 
     def segment_watershed(self, thr_u8: int) -> np.ndarray:
         """
@@ -600,6 +639,37 @@ class FiberAnalyzer:
             return labels
 
         labels = mask.astype(np.uint16, copy=False)
+        self._labels = labels
+        return labels
+
+    def segment_fastest_ascend(
+        self,
+        sigma: float = 1.0,
+        dist_thresh: float = 0.2,
+        flux_merge_thresh: float = 5.0,
+    ) -> np.ndarray:
+        """
+        Segment using steepest-ascent flow over the predicted DT.
+        """
+        if self._dt_u8 is None:
+            raise ValueError("Distance transform not available. Call predict_dt first.")
+
+        labels_i32 = segment_fastest_ascend(
+            self._dt_u8,
+            sigma=float(sigma),
+            dist_thresh=float(dist_thresh),
+            flux_merge_thresh=float(flux_merge_thresh),
+        )
+        labels_i32 = np.asarray(labels_i32, dtype=np.int32, copy=False)
+        max_uint16 = np.iinfo(np.uint16).max
+        max_label = int(labels_i32.max()) if labels_i32.size else 0
+        if max_label > max_uint16:
+            logger.warning(
+                "Fastest-ascend produced %d labels; clipping to uint16 max=%d",
+                max_label,
+                max_uint16,
+            )
+        labels = np.clip(labels_i32, 0, max_uint16).astype(np.uint16, copy=False)
         self._labels = labels
         return labels
 

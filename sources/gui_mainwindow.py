@@ -6,7 +6,7 @@ import numpy as np
 import cv2
 
 from PyQt6 import QtGui, QtWidgets
-from PyQt6.QtCore import Qt, QEvent, QTimer, QPoint, QLineF, QSize, pyqtSignal
+from PyQt6.QtCore import Qt, QEvent, QTimer, QPoint, QLineF, QSize
 from PyQt6.QtWidgets import (
     QMainWindow,
     QFileDialog,
@@ -15,7 +15,6 @@ from PyQt6.QtWidgets import (
     QGraphicsEllipseItem,
     QGraphicsItem,
     QToolButton,
-    QDialogButtonBox,
     QMessageBox,
 )
 from PyQt6.uic import loadUi
@@ -154,6 +153,10 @@ class MainWindow(QMainWindow):
         self.rb_ridge.blockSignals(True)
         self.rb_ridge.setChecked(False)
         self.rb_ridge.blockSignals(False)
+        if hasattr(self, "rb_fastest_ascend"):
+            self.rb_fastest_ascend.blockSignals(True)
+            self.rb_fastest_ascend.setChecked(False)
+            self.rb_fastest_ascend.blockSignals(False)
         self.chb_strict.blockSignals(True)
         self.chb_strict.setChecked(False)
         self.chb_strict.setEnabled(False)
@@ -231,6 +234,8 @@ class MainWindow(QMainWindow):
         self._on_cluster_toggled(self.chb_cluster.isChecked())
         self.rb_watershed.toggled.connect(self._on_segmentation_mode_changed)
         self.rb_ridge.toggled.connect(self._on_segmentation_mode_changed)
+        if hasattr(self, "rb_fastest_ascend"):
+            self.rb_fastest_ascend.toggled.connect(self._on_segmentation_mode_changed)
         self.chb_strict.toggled.connect(self._on_strict_checkbox_toggled)
         self._update_strict_checkbox_state()
 
@@ -1094,13 +1099,7 @@ class MainWindow(QMainWindow):
         finally:
             self._set_strict_mode(prev_strict_mode)
             if prev_seg_mode != self._current_segmentation_mode():
-                if prev_seg_mode == "ridge":
-                    self.rb_ridge.setChecked(True)
-                elif prev_seg_mode == "watershed":
-                    self.rb_watershed.setChecked(True)
-                else:
-                    self.segmentation_mode = prev_seg_mode
-                    self._sync_pipeline_config_from_ui()
+                self._set_segmentation_mode(prev_seg_mode)
 
         if batch_result is None:
             return
@@ -1335,14 +1334,15 @@ class MainWindow(QMainWindow):
 
         previous_scale = float(fr.scale_factor)
         target_scale = self._current_scale_factor()
-        scale_changed = not math.isclose(previous_scale, target_scale, rel_tol=1e-6, abs_tol=1e-6)
+        scale_changed = not (previous_scale == target_scale)
+
         if scale_changed:
             self.analyzer.reset_prediction_state()
             fr.clear_prediction()
 
         
         processing_img = fr.orig_img
-        if math.isclose(target_scale, 1.0, rel_tol=1e-6, abs_tol=1e-6):
+        if 1 == target_scale:
             fr.scale_factor = 1.0
             fr.orig_img_scaled = None
         else:
@@ -1369,7 +1369,8 @@ class MainWindow(QMainWindow):
         ridge_cfg = config.get("ridge_detection", {})
         seg_cfg = config.get("segmentation", {})
         watershed_cfg = seg_cfg.get("watershed", {}) if isinstance(seg_cfg, dict) else {}
-        high_conf_cfg = seg_cfg.get("high_confidence", {}) if isinstance(seg_cfg, dict) else {}
+        ridge_seg_cfg = seg_cfg.get("ridge", {}) if isinstance(seg_cfg, dict) else {}
+        fastest_cfg = seg_cfg.get("fastest_ascend", {}) if isinstance(seg_cfg, dict) else {}
 
         max_angle = float(ridge_cfg.get("max_angle_deg", self._current_max_angle()))
         centerline_params = dict(
@@ -1439,33 +1440,31 @@ class MainWindow(QMainWindow):
 
         thr_u8 = int(watershed_cfg.get("threshold_u8", self._current_segmentation_threshold()))
         mode = self._current_segmentation_mode()
-        ridge_mode = mode == "ridge"
-        strict_radius_px = None
-        ridge_options = None
-        if ridge_mode:
+        seg_params: Dict[str, Any]
+        if mode == "ridge":
             current_scale = fr.scale_factor if fr.scale_factor and np.isfinite(fr.scale_factor) else 1.0
-            radius_thresh_px_val = high_conf_cfg.get("radius_thresh_px")
+            radius_thresh_px_val = ridge_seg_cfg.get("radius_thresh_px")
             if radius_thresh_px_val is None:
                 radius_thresh_px_val = self._current_radius_threshold()
             strict_radius_px = float(radius_thresh_px_val) if radius_thresh_px_val is not None else None
             if strict_radius_px is not None:
                 strict_radius_px *= current_scale
-            ridge_options = {
-                "dilate_extra_px": float(high_conf_cfg.get("dilate_extra_px", 0.0)) * current_scale,
-                "min_run_points": int(high_conf_cfg.get("min_run_points", 1)),
+            seg_params = {
+                "radius_thresh_px": strict_radius_px,
+                "dilate_extra_px": float(ridge_seg_cfg.get("dilate_extra_px", 0.0)) * current_scale,
+                "min_run_points": int(ridge_seg_cfg.get("min_run_points", 1)),
             }
+        elif mode == "fastest_ascend":
+            seg_params = {
+                "sigma": float(fastest_cfg.get("sigma", 1.0)),
+                "dist_thresh": float(fastest_cfg.get("dist_thresh", 0.2)),
+                "flux_merge_thresh": float(fastest_cfg.get("flux_merge_thresh", 5.0)),
+            }
+        else:
+            seg_params = {"threshold_u8": thr_u8}
         labels = None
         try:
-            if ridge_mode:
-                if strict_radius_px is None:
-                    raise ValueError("Ridge segmentation requires a radius threshold.")
-                labels = self.analyzer.segment_strict_ridge(
-                    radius_thresh_px=strict_radius_px,
-                    dilate_extra_px=float(ridge_options.get("dilate_extra_px", 0.0)) if ridge_options else 0.0,
-                    min_run_points=int(ridge_options.get("min_run_points", 1)) if ridge_options else 1,
-                )
-            else:
-                labels = self.analyzer.segment_watershed(thr_u8=thr_u8)
+            labels = self.analyzer.segment(mode=mode, params=seg_params)
         except Exception as e:
             self._show_error("Segmentation failed", str(e))
             fr.fail(str(e))
@@ -2132,7 +2131,9 @@ class MainWindow(QMainWindow):
 
     def _on_segmentation_mode_changed(self, checked: bool | None = None):
         new_mode = "watershed"
-        if self.rb_ridge.isChecked():
+        if hasattr(self, "rb_fastest_ascend") and self.rb_fastest_ascend.isChecked():
+            new_mode = "fastest_ascend"
+        elif self.rb_ridge.isChecked():
             new_mode = "ridge"
         elif self.rb_watershed.isChecked():
             new_mode = "watershed"
@@ -2185,12 +2186,16 @@ class MainWindow(QMainWindow):
                 "mode": self._current_segmentation_mode(),
                 "watershed": {
                     "threshold_u8": self._current_segmentation_threshold(),
-                    "radius_thresh_px": None,
                 },
-                "high_confidence": {
+                "ridge": {
                     "radius_thresh_px": self._current_radius_threshold(),
                     "dilate_extra_px": 0.0,
                     "min_run_points": 1,
+                },
+                "fastest_ascend": {
+                    "sigma": 1.0,
+                    "dist_thresh": 0.2,
+                    "flux_merge_thresh": 5.0,
                 },
             },
             "clustering": {
@@ -2213,12 +2218,21 @@ class MainWindow(QMainWindow):
         seg_cfg["mode"] = self._current_segmentation_mode()
         watershed_cfg = seg_cfg.setdefault("watershed", {})
         watershed_cfg["threshold_u8"] = self._current_segmentation_threshold()
-        watershed_cfg.setdefault("radius_thresh_px", None)
 
-        high_conf_cfg = seg_cfg.setdefault("high_confidence", {})
-        high_conf_cfg["radius_thresh_px"] = self._current_radius_threshold()
-        high_conf_cfg.setdefault("dilate_extra_px", 0.0)
-        high_conf_cfg.setdefault("min_run_points", 1)
+        legacy_high_conf = seg_cfg.pop("high_confidence", None)
+        ridge_seg_cfg = seg_cfg.setdefault("ridge", {})
+        if isinstance(legacy_high_conf, dict):
+            ridge_seg_cfg.setdefault("radius_thresh_px", legacy_high_conf.get("radius_thresh_px"))
+            ridge_seg_cfg.setdefault("dilate_extra_px", legacy_high_conf.get("dilate_extra_px", 0.0))
+            ridge_seg_cfg.setdefault("min_run_points", legacy_high_conf.get("min_run_points", 1))
+        ridge_seg_cfg["radius_thresh_px"] = self._current_radius_threshold()
+        ridge_seg_cfg.setdefault("dilate_extra_px", 0.0)
+        ridge_seg_cfg.setdefault("min_run_points", 1)
+
+        fastest_cfg = seg_cfg.setdefault("fastest_ascend", {})
+        fastest_cfg.setdefault("sigma", 1.0)
+        fastest_cfg.setdefault("dist_thresh", 0.2)
+        fastest_cfg.setdefault("flux_merge_thresh", 5.0)
 
         cluster_cfg = self.pipeline_config.setdefault("clustering", {})
         cluster_cfg["enabled"] = bool(self.cluster_enabled)
@@ -2271,9 +2285,19 @@ class MainWindow(QMainWindow):
             if self.chb_strict.isEnabled():
                 self.chb_strict.setEnabled(False)
 
+    def _set_segmentation_mode(self, mode: str) -> None:
+        target = str(mode or "watershed").strip().lower()
+        if target == "ridge":
+            self.rb_ridge.setChecked(True)
+            return
+        if target == "fastest_ascend" and hasattr(self, "rb_fastest_ascend"):
+            self.rb_fastest_ascend.setChecked(True)
+            return
+        self.rb_watershed.setChecked(True)
+
     def _current_segmentation_mode(self) -> str:
         mode = self.segmentation_mode
-        if mode not in ("watershed", "ridge"):
+        if mode not in ("watershed", "ridge", "fastest_ascend"):
             mode = "watershed"
         return mode
 
