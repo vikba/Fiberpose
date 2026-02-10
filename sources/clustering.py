@@ -11,7 +11,9 @@ from typing import Iterable, List, Sequence, Tuple
 import cv2
 import numpy as np
 
-from .fiber_graph import FiberFragment, FragmentEndpoint, INF
+from .datastructures import FiberFragment, FragmentEndpoint
+
+INF = float("inf")
 
 
 class EndpointIndex:

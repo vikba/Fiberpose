@@ -10,7 +10,7 @@ from scipy.ndimage import gaussian_filter, laplace
 from skimage.segmentation import watershed, find_boundaries
 
 from .clustering import stitch_and_cluster
-from .fiber_graph import FiberFragment
+from .datastructures import FiberFragment
 from .models import FiberposeModel
 from .ridge_detector import RidgeDetector
 from .utils import (
