@@ -10,6 +10,7 @@ from PyQt6.QtWidgets import QDialogButtonBox
 import pyqtgraph as pg
 
 from .datastructures import BatchResult
+from .utils import label_to_rgb
 
 
 class PlotProfileDialog(QtWidgets.QDialog):
@@ -396,15 +397,27 @@ class Stack3DWindow(QtWidgets.QDialog):
                 return None
             return stack
         if method == "Labels":
+            if self._batch_result is not None and self._batch_result.merged_labels_volume is not None:
+                labels_volume = np.asarray(self._batch_result.merged_labels_volume)
+                if labels_volume.ndim == 3:
+                    return labels_volume.astype(np.int32, copy=False)
+            if self._batch_result is not None and self._batch_result.labels_volume is not None:
+                labels_volume = np.asarray(self._batch_result.labels_volume)
+                if labels_volume.ndim == 3:
+                    return labels_volume.astype(np.int32, copy=False)
             stack = self._collect_stack(lambda fr: fr.labels_2d)
             if stack is None:
                 return None
-            return (stack > 0).astype(np.float32)
+            return stack.astype(np.int32, copy=False)
         if method == "Centerlines":
+            if self._batch_result is not None and self._batch_result.merged_skeleton_volume is not None:
+                skeleton_volume = np.asarray(self._batch_result.merged_skeleton_volume)
+                if skeleton_volume.ndim == 3:
+                    return skeleton_volume.astype(np.int32, copy=False)
             stack = self._collect_stack(lambda fr: fr.centerlines)
             if stack is None:
                 return None
-            return (stack > 0).astype(np.float32)
+            return (stack > 0).astype(np.int32)
         if method == "DT":
             return self._collect_stack(lambda fr: fr.dt)
         return None
@@ -427,10 +440,30 @@ class Stack3DWindow(QtWidgets.QDialog):
             self.gl_view.removeItem(self._scatter_item)
             self._scatter_item = None
 
+        if method == "Labels":
+            self._set_intensity_controls_enabled(False)
+            self._volume_source_u8 = None
+            labels_volume = np.asarray(stack, dtype=np.int32)
+            if labels_volume.size == 0 or not np.any(labels_volume > 0):
+                return
+            rgba = self._make_rgba_for_labels(labels_volume)
+            if rgba.size == 0:
+                return
+            projection = self.cb_projection.currentText()
+            self._volume_item = self._gl.GLVolumeItem(rgba)
+            self._apply_projection_mode(self._volume_item, projection)
+            self._volume_item.translate(-rgba.shape[0] / 2, -rgba.shape[1] / 2, -rgba.shape[2] / 2)
+            self.gl_view.addItem(self._volume_item)
+            max_dim = float(max(rgba.shape[:3])) if rgba.size else 1.0
+            self.gl_view.opts["center"] = pg.Vector(0.0, 0.0, 0.0)
+            self.gl_view.setCameraPosition(distance=max_dim * 2.0)
+            return
+
         if method == "Centerlines":
             self._set_intensity_controls_enabled(False)
             self._volume_source_u8 = None
-            points = np.column_stack(np.nonzero(stack > 0))
+            skeleton = np.asarray(stack, dtype=np.int32)
+            points = np.column_stack(np.nonzero(skeleton > 0))
             if points.size == 0:
                 return
             max_points = 200000
@@ -438,7 +471,19 @@ class Stack3DWindow(QtWidgets.QDialog):
                 idx = np.random.choice(points.shape[0], max_points, replace=False)
                 points = points[idx]
             pos = np.column_stack([points[:, 2], points[:, 1], points[:, 0]]).astype(np.float32)
-            color = np.tile(np.array([[1.0, 0.0, 0.0, 0.8]], dtype=np.float32), (pos.shape[0], 1))
+            point_labels = skeleton[points[:, 0], points[:, 1], points[:, 2]].astype(np.int32, copy=False)
+            unique_labels, inverse = np.unique(point_labels, return_inverse=True)
+            palette = np.zeros((unique_labels.size, 4), dtype=np.float32)
+            for idx, label in enumerate(unique_labels):
+                if int(label) <= 0:
+                    palette[idx] = np.array([1.0, 0.0, 0.0, 0.8], dtype=np.float32)
+                    continue
+                r, g, b = label_to_rgb(int(label))
+                palette[idx] = np.array(
+                    [float(r) / 255.0, float(g) / 255.0, float(b) / 255.0, 0.85],
+                    dtype=np.float32,
+                )
+            color = palette[inverse]
             self._scatter_item = self._gl.GLScatterPlotItem(pos=pos, color=color, size=1.5)
             try:
                 from OpenGL import GL
@@ -548,6 +593,27 @@ class Stack3DWindow(QtWidgets.QDialog):
             return rgba
 
         rgba[..., 3] = vol_u8
+        return rgba
+
+    def _make_rgba_for_labels(self, labels_volume: np.ndarray) -> np.ndarray:
+        labels = np.asarray(labels_volume, dtype=np.int32)
+        if labels.ndim != 3:
+            return np.zeros((0, 0, 0, 4), dtype=np.ubyte)
+
+        labels_xyz = np.transpose(labels, (2, 1, 0))
+        rgba = np.zeros(labels_xyz.shape + (4,), dtype=np.ubyte)
+        positive = labels_xyz > 0
+        if not positive.any():
+            return rgba
+
+        unique_labels = np.unique(labels_xyz[positive])
+        for label in unique_labels:
+            r, g, b = label_to_rgb(int(label))
+            mask = labels_xyz == int(label)
+            rgba[mask, 0] = np.ubyte(r)
+            rgba[mask, 1] = np.ubyte(g)
+            rgba[mask, 2] = np.ubyte(b)
+            rgba[mask, 3] = np.ubyte(220)
         return rgba
 
     def _dominant_view_axis(self) -> int:

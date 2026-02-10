@@ -32,7 +32,7 @@ logging.basicConfig(level=logging.INFO)
 from .gui_dialogs import PlotProfileDialog, BatchSaveOptionsDialog, Stack3DWindow
 from .fiber_analyzer import FiberAnalyzer
 from .datastructures import BatchResult, Frame, ImageBatch
-from .batch_pipeline import BatchAnalyzer
+from .batch_pipeline import BatchAnalyzer, StackPostprocessor3D
 from .utils import ensure_rgb_u8, label_to_rgb, to_uint8_for_view
 
 # ------------------- Paths -------------------
@@ -185,6 +185,8 @@ class MainWindow(QMainWindow):
         self.btn_save_csv.clicked.connect(self.save_measurements)
         self.btn_set_scalebar.clicked.connect(self._on_set_scalebar_clicked)
         self.btn_plot_profile.clicked.connect(self._on_plot_profile_clicked)
+        if getattr(self, "btn_analyze_3D", None):
+            self.btn_analyze_3D.clicked.connect(self._on_analyze_3d_clicked)
         self.action_batch_processing.triggered.connect(self._on_batch_processing)
         if getattr(self, "btn_open_3d", None):
             self.btn_open_3d.clicked.connect(self._on_open_3d_view)
@@ -970,6 +972,9 @@ class MainWindow(QMainWindow):
 
             try:
                 batch_result = batch_analyzer.analyze(active_batch, _process_frame)
+                batch_result.merge_meta = {
+                    "info": "3D post-processing not run yet. Click 'Analyze 3D' to merge labels across slices."
+                }
             finally:
                 self._batch_mode_active = previous_batch_state
                 self._batch_processing_active = previous_processing_state
@@ -1142,6 +1147,91 @@ class MainWindow(QMainWindow):
         self._stack3d_window.show()
         self._stack3d_window.raise_()
         self._stack3d_window.activateWindow()
+
+    def _apply_merged_labels_to_batch_frames(self, batch_result: BatchResult) -> int:
+        merged_volume = batch_result.merged_labels_volume
+        if merged_volume is None:
+            return 0
+
+        volume = np.asarray(merged_volume, dtype=np.int32)
+        if volume.ndim != 3:
+            return 0
+
+        frame_count = len(batch_result.frame_results)
+        z_count = min(frame_count, int(volume.shape[0]))
+        if z_count <= 0:
+            return 0
+
+        for z in range(z_count):
+            frame = batch_result.frame_results[z]
+            merged_slice = np.asarray(volume[z], dtype=np.int32, copy=False)
+
+            if frame.labels_2d is not None:
+                target_shape = np.asarray(frame.labels_2d).shape[:2]
+            elif frame.orig_img is not None:
+                target_shape = np.asarray(frame.orig_img).shape[:2]
+            else:
+                target_shape = merged_slice.shape
+
+            if merged_slice.shape != target_shape:
+                aligned = np.zeros(target_shape, dtype=np.int32)
+                h = min(target_shape[0], merged_slice.shape[0])
+                w = min(target_shape[1], merged_slice.shape[1])
+                aligned[:h, :w] = merged_slice[:h, :w]
+                labels_2d = aligned
+            else:
+                labels_2d = merged_slice.copy()
+
+            labels_rgb = labels_to_color(labels_2d)
+            base_img = frame.orig_img if frame.scale_factor == 1.0 or frame.orig_img_scaled is None else frame.orig_img_scaled
+            frame.labels_2d = labels_2d
+            frame.overlay_img = self._create_overlay(base_img, labels_2d, alpha=0.5, labels_rgb=labels_rgb)
+            frame.labels_rgb_cache = (id(frame.labels_2d), labels_rgb)
+            frame.has_segmentation = True
+
+        return z_count
+
+    def _on_analyze_3d_clicked(self):
+        if self._batch_result is None:
+            self._show_info("Analyze 3D", "Run segmentation or analysis on a stack first.")
+            return
+        if not self._batch_result.has_3d_input:
+            self._show_info("Analyze 3D", "3D analysis requires at least two slices.")
+            return
+
+        QtWidgets.QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        try:
+            stack_postprocessor = StackPostprocessor3D()
+            self._batch_result = stack_postprocessor.process(
+                self._batch_result,
+                do_merge=True,
+                do_skeleton=True,
+                force=True,
+            )
+        except Exception as exc:
+            logger.warning("3D post-processing failed: %s", exc)
+            self._show_error("Analyze 3D failed", str(exc))
+            return
+        finally:
+            QtWidgets.QApplication.restoreOverrideCursor()
+
+        merge_meta = self._batch_result.merge_meta or {}
+        merge_error = merge_meta.get("error")
+        if merge_error:
+            self._show_warning("Analyze 3D", f"3D processing failed: {merge_error}")
+            return
+
+        applied_slices = self._apply_merged_labels_to_batch_frames(self._batch_result)
+        self._set_current_slice(self._current_z_index, update_view=True)
+        if self._stack3d_window is not None:
+            self._stack3d_window.update_batch_result(self._batch_result)
+        self.action_save_masks_predictions.setEnabled(True)
+
+        if applied_slices <= 0:
+            self._show_warning("Analyze 3D", "3D processing finished, but no merged label volume was produced.")
+            return
+
+        self.statusbar.showMessage(f"3D analysis complete. Applied merged labels to {applied_slices} slice(s).", 5000)
 
     # ------------------- Profile plot tool -------------------
 
