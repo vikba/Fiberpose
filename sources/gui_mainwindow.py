@@ -32,7 +32,7 @@ logging.basicConfig(level=logging.INFO)
 from .gui_dialogs import PlotProfileDialog, BatchSaveOptionsDialog, Stack3DWindow
 from .fiber_analyzer import FiberAnalyzer
 from .datastructures import BatchResult, Frame, ImageBatch
-from .batch_pipeline import BatchAnalyzer, StackPostprocessor3D
+from .batch_pipeline import BatchAnalyzer, StackAnalyzer_3D
 from .utils import ensure_rgb_u8, label_to_rgb, to_uint8_for_view
 
 # ------------------- Paths -------------------
@@ -1201,8 +1201,8 @@ class MainWindow(QMainWindow):
 
         QtWidgets.QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
         try:
-            stack_postprocessor = StackPostprocessor3D()
-            self._batch_result = stack_postprocessor.process(
+            stack_analyzer_3d = StackAnalyzer_3D()
+            self._batch_result = stack_analyzer_3d.process(
                 self._batch_result,
                 do_merge=True,
                 do_skeleton=True,
@@ -1231,7 +1231,14 @@ class MainWindow(QMainWindow):
             self._show_warning("Analyze 3D", "3D processing finished, but no merged label volume was produced.")
             return
 
-        self.statusbar.showMessage(f"3D analysis complete. Applied merged labels to {applied_slices} slice(s).", 5000)
+        method = merge_meta.get("skeleton_method")
+        if method:
+            self.statusbar.showMessage(
+                f"3D analysis complete ({method}). Applied merged labels to {applied_slices} slice(s).",
+                5000,
+            )
+        else:
+            self.statusbar.showMessage(f"3D analysis complete. Applied merged labels to {applied_slices} slice(s).", 5000)
 
     # ------------------- Profile plot tool -------------------
 

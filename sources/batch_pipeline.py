@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from time import perf_counter
-from typing import Any, Callable, Dict, Iterable, List, Optional
+from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
+
+from skimage.morphology import skeletonize
 
 import numpy as np
 
@@ -31,8 +33,8 @@ class BatchAnalyzer:
         return BatchResult(frame_results=results)
 
 
-class StackAnalyzer3D:
-    """Post-processing label merger across adjacent z slices."""
+class StackAnalyzer_3D:
+    """3D stack analyzer that builds volumes, merges labels, and skeletonizes objects."""
 
     class _UnionFind:
         def __init__(self):
@@ -68,6 +70,83 @@ class StackAnalyzer3D:
     def __init__(self, iou_threshold: float = 0.1, min_overlap: int = 1):
         self.iou_threshold = float(iou_threshold)
         self.min_overlap = int(min_overlap)
+
+    def process(
+        self,
+        batch_result: BatchResult,
+        *,
+        do_merge: bool = True,
+        do_skeleton: bool = True,
+        force: bool = False,
+    ) -> BatchResult:
+        if batch_result.has_3d_outputs and not force:
+            return batch_result
+
+        t0 = perf_counter()
+        meta: Dict[str, Any] = {
+            "iou_threshold": float(self.iou_threshold),
+            "min_overlap": int(self.min_overlap),
+            "do_merge": bool(do_merge),
+            "do_skeleton": bool(do_skeleton),
+        }
+
+        try:
+            labels_volume = batch_result.labels_volume
+            if labels_volume is None or force:
+                labels_volume = self._build_labels_volume(batch_result.frame_results)
+            batch_result.labels_volume = labels_volume
+
+            if labels_volume is None:
+                batch_result.merged_labels_volume = None
+                batch_result.merge_object_id_map = None
+                batch_result.merged_skeleton_volume = None
+                meta["error"] = "No per-slice labels available to build a 3D labels volume."
+                batch_result.merge_meta = meta
+                return batch_result
+
+            labels_volume = np.asarray(labels_volume, dtype=np.int32)
+            batch_result.labels_volume = labels_volume
+            meta["volume_shape"] = [int(v) for v in labels_volume.shape]
+            meta["num_labels_raw"] = int(np.max(labels_volume)) if labels_volume.size else 0
+
+            merged_volume: Optional[np.ndarray] = None
+            object_id_map: Optional[Dict[tuple[int, int], int]] = None
+            if do_merge:
+                merged_slices, object_id_map = self.merge_labels(
+                    labels_volume[z] for z in range(labels_volume.shape[0])
+                )
+                if merged_slices:
+                    merged_volume = np.stack(merged_slices, axis=0).astype(np.int32, copy=False)
+                else:
+                    merged_volume = np.zeros_like(labels_volume, dtype=np.int32)
+                batch_result.merged_labels_volume = merged_volume
+                batch_result.merge_object_id_map = object_id_map
+            else:
+                merged_volume = labels_volume.copy()
+                batch_result.merged_labels_volume = merged_volume
+                batch_result.merge_object_id_map = None
+
+            meta["num_labels_merged"] = int(np.max(merged_volume)) if merged_volume.size else 0
+            meta["object_id_map_size"] = len(object_id_map) if object_id_map is not None else 0
+
+            if do_skeleton:
+                skeleton_source = merged_volume if merged_volume is not None else labels_volume
+                merged_skeleton = self._skeletonize_per_label(skeleton_source)
+                batch_result.merged_skeleton_volume = merged_skeleton
+                meta["num_skeleton_voxels"] = int(np.count_nonzero(merged_skeleton))
+            else:
+                batch_result.merged_skeleton_volume = None
+                meta["num_skeleton_voxels"] = 0
+
+            if labels_volume.shape[0] < 2:
+                meta["warning"] = "Single-slice batch: merge ran without cross-slice linking."
+        except Exception as exc:
+            meta["error"] = str(exc)
+        finally:
+            meta["elapsed_ms"] = round((perf_counter() - t0) * 1000.0, 3)
+
+        batch_result.merge_meta = meta
+        return batch_result
 
     def merge_labels(
         self, labels_slices: Iterable[np.ndarray]
@@ -140,90 +219,6 @@ class StackAnalyzer3D:
 
         return labels_3d, object_id_map
 
-
-class StackPostprocessor3D:
-    """3D post-processing orchestrator for label volume build, merge, and skeletonization."""
-
-    def __init__(self, iou_threshold: float = 0.1, min_overlap: int = 1):
-        self._merger = StackAnalyzer3D(iou_threshold=iou_threshold, min_overlap=min_overlap)
-
-    def process(
-        self,
-        batch_result: BatchResult,
-        *,
-        do_merge: bool = True,
-        do_skeleton: bool = True,
-        force: bool = False,
-    ) -> BatchResult:
-        if batch_result.has_3d_outputs and not force:
-            return batch_result
-
-        t0 = perf_counter()
-        meta: Dict[str, Any] = {
-            "iou_threshold": float(self._merger.iou_threshold),
-            "min_overlap": int(self._merger.min_overlap),
-            "do_merge": bool(do_merge),
-            "do_skeleton": bool(do_skeleton),
-        }
-
-        try:
-            labels_volume = batch_result.labels_volume
-            if labels_volume is None or force:
-                labels_volume = self._build_labels_volume(batch_result.frame_results)
-            batch_result.labels_volume = labels_volume
-
-            if labels_volume is None:
-                batch_result.merged_labels_volume = None
-                batch_result.merge_object_id_map = None
-                batch_result.merged_skeleton_volume = None
-                meta["error"] = "No per-slice labels available to build a 3D labels volume."
-                batch_result.merge_meta = meta
-                return batch_result
-
-            labels_volume = np.asarray(labels_volume, dtype=np.int32)
-            batch_result.labels_volume = labels_volume
-            meta["volume_shape"] = [int(v) for v in labels_volume.shape]
-            meta["num_labels_raw"] = int(np.max(labels_volume)) if labels_volume.size else 0
-
-            merged_volume: Optional[np.ndarray] = None
-            object_id_map: Optional[Dict[tuple[int, int], int]] = None
-            if do_merge:
-                merged_slices, object_id_map = self._merger.merge_labels(
-                    labels_volume[z] for z in range(labels_volume.shape[0])
-                )
-                if merged_slices:
-                    merged_volume = np.stack(merged_slices, axis=0).astype(np.int32, copy=False)
-                else:
-                    merged_volume = np.zeros_like(labels_volume, dtype=np.int32)
-                batch_result.merged_labels_volume = merged_volume
-                batch_result.merge_object_id_map = object_id_map
-            else:
-                merged_volume = labels_volume.copy()
-                batch_result.merged_labels_volume = merged_volume
-                batch_result.merge_object_id_map = None
-
-            meta["num_labels_merged"] = int(np.max(merged_volume)) if merged_volume.size else 0
-            meta["object_id_map_size"] = len(object_id_map) if object_id_map is not None else 0
-
-            if do_skeleton:
-                skeleton_source = merged_volume if merged_volume is not None else labels_volume
-                merged_skeleton = self._skeletonize_per_label(skeleton_source)
-                batch_result.merged_skeleton_volume = merged_skeleton
-                meta["num_skeleton_voxels"] = int(np.count_nonzero(merged_skeleton))
-            else:
-                batch_result.merged_skeleton_volume = None
-                meta["num_skeleton_voxels"] = 0
-
-            if labels_volume.shape[0] < 2:
-                meta["warning"] = "Single-slice batch: merge ran without cross-slice linking."
-        except Exception as exc:
-            meta["error"] = str(exc)
-        finally:
-            meta["elapsed_ms"] = round((perf_counter() - t0) * 1000.0, 3)
-
-        batch_result.merge_meta = meta
-        return batch_result
-
     @staticmethod
     def _build_labels_volume(frame_results: List[Frame]) -> Optional[np.ndarray]:
         if not frame_results:
@@ -260,33 +255,19 @@ class StackPostprocessor3D:
         return np.stack(stack, axis=0)
 
     @staticmethod
-    def _skeletonize_per_label(labels_volume: np.ndarray) -> np.ndarray:
+    def _skeletonize_per_label(labels_volume: np.ndarray) -> tuple[np.ndarray, str]:
         labels_volume = np.asarray(labels_volume, dtype=np.int32)
         if labels_volume.size == 0:
-            return np.zeros_like(labels_volume, dtype=np.int32)
+            return np.zeros_like(labels_volume, dtype=np.int32), "none"
 
-        skeletonize_3d = None
-        skeletonize_2d = None
-        try:
-            from skimage.morphology import skeletonize_3d as _skeletonize_3d
-
-            skeletonize_3d = _skeletonize_3d
-        except Exception:
-            from skimage.morphology import skeletonize as _skeletonize_2d
-
-            skeletonize_2d = _skeletonize_2d
+        if labels_volume.ndim != 3:
+            raise ValueError(f"Expected a 3D labels volume, got shape {labels_volume.shape}.")
 
         out = np.zeros_like(labels_volume, dtype=np.int32)
         for object_id in np.unique(labels_volume):
             if object_id == 0:
                 continue
             mask = labels_volume == int(object_id)
-            if skeletonize_3d is not None:
-                skel = np.asarray(skeletonize_3d(mask), dtype=bool)
-            else:
-                skel = np.zeros_like(mask, dtype=bool)
-                assert skeletonize_2d is not None
-                for z in range(mask.shape[0]):
-                    skel[z] = np.asarray(skeletonize_2d(mask[z]), dtype=bool)
+            skel = np.asarray(skeletonize(mask), dtype=bool) 
             out[skel] = int(object_id)
         return out

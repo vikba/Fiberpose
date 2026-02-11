@@ -101,10 +101,10 @@
 - `MainWindow` (`gui_mainwindow.py`): orchestration, UI state, view updates, CSV/image export.
 - `FiberAnalyzer`: prediction, centerline extraction, segmentation, pore and measurement math.
 - `BatchAnalyzer` (`batch_pipeline.py`): frame iteration orchestration.
+- `StackAnalyzer_3D` (`batch_pipeline.py`): 3D label volume build, cross-slice label merge, and skeletonization.
 - `ImageBatch` / `Frame` / `BatchResult` (`datastructures.py`): runtime data transport/state.
 - `RidgeDetector`: ridge/junction extraction backend.
 - `Stack3DWindow` (`gui_dialogs.py`): stack projection + 3D visualization.
 
 ## Notes
-- `StackAnalyzer3D` exists in `batch_pipeline.py` but is currently not called by `MainWindow`.
 - `pipeline_config["ridge_detection"]["centerline_kwargs"]` defaults from `FiberAnalyzer._default_centerline_kwargs()` and is used by `segment()`.

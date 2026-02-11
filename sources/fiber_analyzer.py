@@ -30,7 +30,7 @@ PROJECT_ROOT = os.path.dirname(HERE)
 logger = logging.getLogger(__name__)
 
 
-class FiberAnalyzer:
+class FiberAnalyzer_2D:
     """
     Non-GUI class encapsulating fiber detection, watershed, and analysis.
     The analyzer now owns the full prediction + processing pipeline:
@@ -152,7 +152,7 @@ class FiberAnalyzer:
         self.device = device
         self._model_kwargs["device"] = device
         self._predictor = None  # force re-init on next predict
-        logger.info("FiberAnalyzer device set to %s", device)
+        logger.info("FiberAnalyzer_2D device set to %s", device)
 
     def set_checkpoint_path(self, ckpt_path: str):
         """Update model checkpoint and reset predictor/predictions."""
@@ -161,7 +161,7 @@ class FiberAnalyzer:
         self.ckpt_path = ckpt_path
         self._predictor = None
         self.reset_prediction_state()
-        logger.info("FiberAnalyzer checkpoint switched to %s", ckpt_path)
+        logger.info("FiberAnalyzer_2D checkpoint switched to %s", ckpt_path)
 
     def _ensure_predictor(self) -> FiberposeModel:
         if self._predictor is not None:
@@ -1159,7 +1159,7 @@ class FiberAnalyzer:
                         angle_deg = np.degrees(np.arctan(dI / ds))
                         if angle_deg < max_angle:
                             if strict:
-                                if FiberAnalyzer._window_high_confidence(
+                                if FiberAnalyzer_2D._window_high_confidence(
                                     window_pts_xy,
                                     dt=dt,
                                     grad_x=grad_x,
