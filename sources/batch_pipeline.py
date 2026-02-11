@@ -1,20 +1,19 @@
 from __future__ import annotations
 
 from time import perf_counter
-from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
-
-from skimage.morphology import skeletonize
+from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Tuple
 
 import numpy as np
+from scipy.ndimage import distance_transform_edt
 
 from .datastructures import BatchResult, Frame, ImageBatch
-from .fiber_analyzer import FiberAnalyzer
+from .fiber_analyzer import FiberAnalyzer_2D
 
 
 class BatchAnalyzer:
     """Dimension-agnostic orchestrator that executes per-frame analysis."""
 
-    def __init__(self, analyzer: FiberAnalyzer):
+    def __init__(self, analyzer: FiberAnalyzer_2D):
         self._analyzer = analyzer
 
     def analyze(
@@ -67,9 +66,17 @@ class StackAnalyzer_3D:
                 self.parent[rb] = ra
                 self.rank[ra] += 1
 
-    def __init__(self, iou_threshold: float = 0.1, min_overlap: int = 1):
+    def __init__(
+        self,
+        iou_threshold: float = 0.1,
+        min_overlap: int = 1,
+        voxel_spacing_zyx: Sequence[float] = (1.0, 1.0, 1.0),
+        histogram_bins: int = 40,
+    ):
         self.iou_threshold = float(iou_threshold)
         self.min_overlap = int(min_overlap)
+        self.voxel_spacing_zyx = self._parse_voxel_spacing(voxel_spacing_zyx)
+        self.histogram_bins = max(int(histogram_bins), 1)
 
     def process(
         self,
@@ -88,6 +95,8 @@ class StackAnalyzer_3D:
             "min_overlap": int(self.min_overlap),
             "do_merge": bool(do_merge),
             "do_skeleton": bool(do_skeleton),
+            "voxel_spacing_zyx": [float(v) for v in self.voxel_spacing_zyx],
+            "histogram_bins": int(self.histogram_bins),
         }
 
         try:
@@ -100,6 +109,7 @@ class StackAnalyzer_3D:
                 batch_result.merged_labels_volume = None
                 batch_result.merge_object_id_map = None
                 batch_result.merged_skeleton_volume = None
+                batch_result.skeleton_radius_samples = None
                 meta["error"] = "No per-slice labels available to build a 3D labels volume."
                 batch_result.merge_meta = meta
                 return batch_result
@@ -131,16 +141,41 @@ class StackAnalyzer_3D:
 
             if do_skeleton:
                 skeleton_source = merged_volume if merged_volume is not None else labels_volume
-                merged_skeleton = self._skeletonize_per_label(skeleton_source)
+                merged_skeleton, skeleton_method = self._skeletonize_per_label(skeleton_source)
                 batch_result.merged_skeleton_volume = merged_skeleton
+                batch_result.skeleton_radius_samples = self._recover_radius_samples(
+                    skeleton_source,
+                    merged_skeleton,
+                    self.voxel_spacing_zyx,
+                )
                 meta["num_skeleton_voxels"] = int(np.count_nonzero(merged_skeleton))
+                meta["skeleton_method"] = skeleton_method
+                samples = batch_result.skeleton_radius_samples
+                num_samples = int(samples.shape[0]) if samples is not None else 0
+                meta["num_radius_samples"] = num_samples
+                if num_samples > 0:
+                    radii = np.asarray(samples[:, 4], dtype=np.float32)
+                    meta["radius_min"] = float(np.min(radii))
+                    meta["radius_max"] = float(np.max(radii))
+                    meta["radius_mean"] = float(np.mean(radii))
+                    counts, edges = np.histogram(radii, bins=self.histogram_bins)
+                    meta["radius_hist_counts"] = counts.astype(int).tolist()
+                    meta["radius_hist_edges"] = edges.astype(float).tolist()
+                    meta["radius_hist_kind"] = "radius"
+                else:
+                    meta["radius_hist_counts"] = []
+                    meta["radius_hist_edges"] = []
+                    meta["radius_hist_kind"] = "radius"
             else:
                 batch_result.merged_skeleton_volume = None
+                batch_result.skeleton_radius_samples = None
                 meta["num_skeleton_voxels"] = 0
+                meta["num_radius_samples"] = 0
 
             if labels_volume.shape[0] < 2:
                 meta["warning"] = "Single-slice batch: merge ran without cross-slice linking."
         except Exception as exc:
+            batch_result.skeleton_radius_samples = None
             meta["error"] = str(exc)
         finally:
             meta["elapsed_ms"] = round((perf_counter() - t0) * 1000.0, 3)
@@ -220,6 +255,15 @@ class StackAnalyzer_3D:
         return labels_3d, object_id_map
 
     @staticmethod
+    def _parse_voxel_spacing(voxel_spacing_zyx: Sequence[float]) -> tuple[float, float, float]:
+        if len(voxel_spacing_zyx) != 3:
+            raise ValueError("voxel_spacing_zyx must contain exactly 3 values.")
+        spacing = tuple(float(v) for v in voxel_spacing_zyx)
+        if any(v <= 0 for v in spacing):
+            raise ValueError("voxel_spacing_zyx values must be positive.")
+        return spacing
+
+    @staticmethod
     def _build_labels_volume(frame_results: List[Frame]) -> Optional[np.ndarray]:
         if not frame_results:
             return None
@@ -255,6 +299,45 @@ class StackAnalyzer_3D:
         return np.stack(stack, axis=0)
 
     @staticmethod
+    def _resolve_3d_skeletonizer() -> tuple[Callable[[np.ndarray], np.ndarray], str]:
+        try:
+            from skimage.morphology import skeletonize_3d as _skeletonize_3d
+
+            return _skeletonize_3d, "skimage.morphology.skeletonize_3d"
+        except Exception:
+            pass
+
+        try:
+            from skimage.morphology import skeletonize as _skeletonize
+        except Exception as exc:
+            raise RuntimeError(
+                "True 3D skeletonization requires scikit-image with a 3D skeletonizer."
+            ) from exc
+
+        probe = np.zeros((3, 3, 3), dtype=bool)
+        try:
+            probe_result = np.asarray(_skeletonize(probe, method="lee"), dtype=bool)
+
+            def _skeletonize_lee(mask: np.ndarray) -> np.ndarray:
+                return np.asarray(_skeletonize(mask, method="lee"), dtype=bool)
+
+            method = "skimage.morphology.skeletonize(method='lee')"
+        except Exception:
+            probe_result = np.asarray(_skeletonize(probe), dtype=bool)
+
+            def _skeletonize_lee(mask: np.ndarray) -> np.ndarray:
+                return np.asarray(_skeletonize(mask), dtype=bool)
+
+            method = "skimage.morphology.skeletonize"
+
+        if probe_result.ndim != 3:
+            raise RuntimeError(
+                "Detected a 2D-only skeletonize implementation. Install a scikit-image build with 3D skeletonization support."
+            )
+
+        return _skeletonize_lee, method
+
+    @staticmethod
     def _skeletonize_per_label(labels_volume: np.ndarray) -> tuple[np.ndarray, str]:
         labels_volume = np.asarray(labels_volume, dtype=np.int32)
         if labels_volume.size == 0:
@@ -263,11 +346,67 @@ class StackAnalyzer_3D:
         if labels_volume.ndim != 3:
             raise ValueError(f"Expected a 3D labels volume, got shape {labels_volume.shape}.")
 
+        skeletonize_3d, method = StackAnalyzer_3D._resolve_3d_skeletonizer()
+
         out = np.zeros_like(labels_volume, dtype=np.int32)
         for object_id in np.unique(labels_volume):
             if object_id == 0:
                 continue
             mask = labels_volume == int(object_id)
-            skel = np.asarray(skeletonize(mask), dtype=bool) 
+            skel = np.asarray(skeletonize_3d(mask), dtype=bool)
             out[skel] = int(object_id)
-        return out
+        return out, method
+
+    @staticmethod
+    def _recover_radius_samples(
+        labels_volume: np.ndarray,
+        skeleton_volume: np.ndarray,
+        voxel_spacing_zyx: Sequence[float],
+    ) -> np.ndarray:
+        labels_volume = np.asarray(labels_volume, dtype=np.int32)
+        skeleton_volume = np.asarray(skeleton_volume, dtype=np.int32)
+        if labels_volume.shape != skeleton_volume.shape:
+            raise ValueError("labels_volume and skeleton_volume must share the same shape.")
+        if labels_volume.ndim != 3:
+            raise ValueError(f"Expected a 3D volume, got shape {labels_volume.shape}.")
+
+        spacing = StackAnalyzer_3D._parse_voxel_spacing(voxel_spacing_zyx)
+        rows: List[np.ndarray] = []
+
+        object_ids = np.unique(skeleton_volume)
+        for object_id in object_ids:
+            if object_id == 0:
+                continue
+
+            object_id_int = int(object_id)
+            mask = labels_volume == object_id_int
+            skel = skeleton_volume == object_id_int
+            if not np.any(mask) or not np.any(skel):
+                continue
+
+            coords = np.argwhere(mask)
+            z0, y0, x0 = coords.min(axis=0)
+            z1, y1, x1 = coords.max(axis=0) + 1
+            mask_crop = mask[z0:z1, y0:y1, x0:x1]
+            skel_crop = skel[z0:z1, y0:y1, x0:x1]
+
+            dt = np.asarray(distance_transform_edt(mask_crop, sampling=spacing), dtype=np.float32)
+            zz, yy, xx = np.nonzero(skel_crop)
+            if zz.size == 0:
+                continue
+
+            radii = dt[zz, yy, xx]
+            row = np.column_stack(
+                [
+                    np.full(radii.shape, float(object_id_int), dtype=np.float32),
+                    (zz + z0).astype(np.float32, copy=False),
+                    (yy + y0).astype(np.float32, copy=False),
+                    (xx + x0).astype(np.float32, copy=False),
+                    radii.astype(np.float32, copy=False),
+                ]
+            )
+            rows.append(row.astype(np.float32, copy=False))
+
+        if not rows:
+            return np.zeros((0, 5), dtype=np.float32)
+        return np.concatenate(rows, axis=0).astype(np.float32, copy=False)

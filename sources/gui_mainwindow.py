@@ -30,7 +30,7 @@ logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
 
 from .gui_dialogs import PlotProfileDialog, BatchSaveOptionsDialog, Stack3DWindow
-from .fiber_analyzer import FiberAnalyzer
+from .fiber_analyzer import FiberAnalyzer_2D
 from .datastructures import BatchResult, Frame, ImageBatch
 from .batch_pipeline import BatchAnalyzer, StackAnalyzer_3D
 from .utils import ensure_rgb_u8, label_to_rgb, to_uint8_for_view
@@ -97,7 +97,7 @@ class MainWindow(QMainWindow):
         # Working dir & runtime state setup
         self.working_dir = os.path.dirname(ui_path)
         self.current_frame: Frame = Frame.empty()
-        self.analyzer: FiberAnalyzer | None = None
+        self.analyzer: FiberAnalyzer_2D | None = None
         self.current_image_name: str | None = None
         self._scalebar_pending: bool = False
         self._scalebar_points: list[tuple[float, float]] = []
@@ -130,6 +130,7 @@ class MainWindow(QMainWindow):
         self._image_batch: ImageBatch | None = None
         self._batch_result: BatchResult | None = None
         self._batch_has_measurements: bool = False
+        self._persist_3d_radius_histogram: bool = False
         self._current_z_index: int = 0
         self._stack3d_window: Stack3DWindow | None = None
         self._slice_label = QtWidgets.QLabel("")
@@ -220,7 +221,7 @@ class MainWindow(QMainWindow):
         self._init_device_from_checkbox()   # sets checkbox + self.device accordingly
 
         # Analyzer instantiated once and reused
-        self.analyzer = FiberAnalyzer(
+        self.analyzer = FiberAnalyzer_2D(
             ckpt_path=self.ckpt_path,
             device=self.device,
             strict=self._strict_centerline_enabled(),
@@ -616,6 +617,7 @@ class MainWindow(QMainWindow):
         self._image_batch = image_batch
         self._batch_result = None
         self._batch_has_measurements = False
+        self._persist_3d_radius_histogram = False
         self._current_z_index = 0
         self._configure_z_scroll(len(image_batch))
         self._set_current_slice(0, update_view=True)
@@ -1240,6 +1242,8 @@ class MainWindow(QMainWindow):
         else:
             self.statusbar.showMessage(f"3D analysis complete. Applied merged labels to {applied_slices} slice(s).", 5000)
 
+        self._persist_3d_radius_histogram = self._render_3d_radius_summary(merge_meta)
+
     # ------------------- Profile plot tool -------------------
 
     def _ensure_profile_dialog(self) -> PlotProfileDialog:
@@ -1410,6 +1414,7 @@ class MainWindow(QMainWindow):
 
     def segment(self):
         fr = self.current_frame
+        self._persist_3d_radius_histogram = False
 
         if self._image_batch is not None and not self._batch_processing_active:
             batch_result = self._run_batch_analysis(compute_measurements=False)
@@ -1471,14 +1476,14 @@ class MainWindow(QMainWindow):
 
         max_angle = float(ridge_cfg.get("max_angle_deg", self._current_max_angle()))
         centerline_params = dict(
-            ridge_cfg.get("centerline_kwargs", FiberAnalyzer._default_centerline_kwargs())
+            ridge_cfg.get("centerline_kwargs", FiberAnalyzer_2D._default_centerline_kwargs())
         )
         if not centerline_params:
             params = getattr(self.analyzer, "_centerline_kwargs", None)
             if params:
                 centerline_params = dict(params)
             else:
-                centerline_params = FiberAnalyzer._default_centerline_kwargs()
+                centerline_params = FiberAnalyzer_2D._default_centerline_kwargs()
 
         self.progress_bar.setValue(0)
 
@@ -1600,6 +1605,7 @@ class MainWindow(QMainWindow):
         Computes thickness samples via analyzer and renders overlays/plots.
         """
         fr = self.current_frame
+        self._persist_3d_radius_histogram = False
         if self._image_batch is not None and not self._batch_processing_active:
             if self._batch_result is not None and self._batch_has_measurements:
                 self._set_current_slice(self._current_z_index, update_view=True)
@@ -2012,6 +2018,51 @@ class MainWindow(QMainWindow):
                                     pen=pg.mkPen(color="#507E2D", width=1))
                 self.graph_angles.addItem(bg)
 
+    def _update_3d_radius_histogram(self, merge_meta: dict) -> bool:
+        counts = np.asarray(merge_meta.get("radius_hist_counts", []), dtype=np.float32)
+        edges = np.asarray(merge_meta.get("radius_hist_edges", []), dtype=np.float32)
+        if counts.size == 0 or edges.size != counts.size + 1:
+            return False
+
+        self._style_plotwidget(self.graph_diameters, "3D Skeleton Radius", "Radius", "Count")
+        centers = 0.5 * (edges[:-1] + edges[1:])
+        widths = edges[1:] - edges[:-1]
+        bg = pg.BarGraphItem(
+            x=centers,
+            height=counts,
+            width=widths,
+            brush=pg.mkBrush("#4472C4"),
+            pen=pg.mkPen(color="#2F5597", width=1),
+        )
+        self.graph_diameters.addItem(bg)
+        self._style_plotwidget(self.graph_angles, "3D Analysis", "", "")
+        return True
+
+    def _render_3d_radius_summary(self, merge_meta: dict) -> bool:
+        if not self._update_3d_radius_histogram(merge_meta):
+            return False
+
+        method = merge_meta.get("skeleton_method")
+        num_samples = int(merge_meta.get("num_radius_samples", 0) or 0)
+        radius_min = merge_meta.get("radius_min")
+        radius_max = merge_meta.get("radius_max")
+        radius_mean = merge_meta.get("radius_mean")
+        lines = [
+            "3D radius analysis",
+            f"Skeleton method: {method or 'unknown'}",
+            f"Samples: {num_samples}",
+        ]
+        if radius_min is not None and radius_max is not None and radius_mean is not None:
+            lines.extend(
+                [
+                    f"Radius min: {float(radius_min):.3f}",
+                    f"Radius max: {float(radius_max):.3f}",
+                    f"Radius mean: {float(radius_mean):.3f}",
+                ]
+            )
+        self.text_edit2.setPlainText("\n".join(lines))
+        return True
+
     # ------------------- View & reset -------------------
 
     def refresh_view(self):
@@ -2110,6 +2161,11 @@ class MainWindow(QMainWindow):
             self.current_frame.labels_rgb_cache = (id(self.current_frame.labels_2d), labels_rgb)
         else:
             self.current_frame.labels_rgb_cache = (None, None)
+
+        if self._persist_3d_radius_histogram and self._batch_result is not None:
+            self._persist_3d_radius_histogram = self._render_3d_radius_summary(
+                self._batch_result.merge_meta or {}
+            )
 
     def _set_current_slice(self, index: int, update_view: bool = True):
         if self._image_batch is None:
@@ -2269,7 +2325,7 @@ class MainWindow(QMainWindow):
     # ------------------- Processing configuration -------------------
 
     def _init_pipeline_config(self):
-        ridge_defaults = FiberAnalyzer._default_centerline_kwargs()
+        ridge_defaults = FiberAnalyzer_2D._default_centerline_kwargs()
         cluster_defaults: Dict[str, Any] = {}
         if self.analyzer is not None:
             cluster_defaults = self.analyzer.get_cluster_config()
@@ -2308,7 +2364,7 @@ class MainWindow(QMainWindow):
 
         ridge_cfg = self.pipeline_config.setdefault("ridge_detection", {})
         ridge_cfg["max_angle_deg"] = self._current_max_angle()
-        ridge_cfg.setdefault("centerline_kwargs", dict(FiberAnalyzer._default_centerline_kwargs()))
+        ridge_cfg.setdefault("centerline_kwargs", dict(FiberAnalyzer_2D._default_centerline_kwargs()))
         ridge_cfg["strict_centerlines"] = self._strict_centerline_enabled()
 
         seg_cfg = self.pipeline_config.setdefault("segmentation", {})

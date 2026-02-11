@@ -311,6 +311,7 @@ class BatchResult:
     merged_labels_volume: Optional[np.ndarray] = None
     merge_object_id_map: Optional[Dict[tuple[int, int], int]] = None
     merged_skeleton_volume: Optional[np.ndarray] = None
+    skeleton_radius_samples: Optional[np.ndarray] = None
     merge_meta: Optional[Dict[str, Any]] = None
 
     def frame_at(self, index: int) -> Frame:
@@ -326,6 +327,7 @@ class BatchResult:
             self.labels_volume is not None
             or self.merged_labels_volume is not None
             or self.merged_skeleton_volume is not None
+            or self.skeleton_radius_samples is not None
         )
 
 
