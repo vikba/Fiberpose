@@ -243,6 +243,367 @@ def _ridge_candidates_jit(dr, dc, drr, drc, dcc, w: int, h: int,
 
     return ismax, ev, nx, ny, px, py
 
+# -------------------------
+# Numba kernels for link_contours
+# -------------------------
+
+import numpy as np
+import numba as nb
+
+@nb.njit(cache=True, fastmath=True)
+def _bilinear_ev(ev1d, x, y, w, h):
+    # ev is 1D flattened (h*w,), x=row, y=col but px/py are subpixel in the same coord system you used.
+    # Here x,y are float pixel coords in image space (row/col).
+    if x < 0.0: x = 0.0
+    if y < 0.0: y = 0.0
+    if x > h - 1.001: x = h - 1.001
+    if y > w - 1.001: y = w - 1.001
+
+    x0 = int(x)
+    y0 = int(y)
+    x1 = x0 + 1
+    y1 = y0 + 1
+    if x1 >= h: x1 = h - 1
+    if y1 >= w: y1 = w - 1
+
+    dx = x - x0
+    dy = y - y0
+
+    p00 = x0 * w + y0
+    p01 = x0 * w + y1
+    p10 = x1 * w + y0
+    p11 = x1 * w + y1
+
+    v00 = ev1d[p00]
+    v01 = ev1d[p01]
+    v10 = ev1d[p10]
+    v11 = ev1d[p11]
+
+    v0 = v00 * (1.0 - dy) + v01 * dy
+    v1 = v10 * (1.0 - dy) + v11 * dy
+    return v0 * (1.0 - dx) + v1 * dx
+
+
+@nb.njit(cache=True, fastmath=True, boundscheck=True)
+def _trace_one_direction(
+    x0, y0,
+    dir_flag,                  # 1 or 2 (same semantics as your it loop)
+    ismax, ev, px, py,
+    alpha_arr, oct4_arr, beta0_arr,
+    label, indx, cross_done,
+    w, h,
+    DIRTAB, CLEARTAB,
+    max_angle_diff,
+    line_id,
+    # output buffers:
+    out_x, out_y, out_ang, out_resp,
+    out_start
+):
+    """
+    Traces one direction starting at (x0,y0) excluding the seed itself.
+    Writes points to flat arrays starting at out_start.
+    Returns (out_end, hit_existing_label, hit_label_id_minus1, hit_x, hit_y).
+    """
+    x = x0
+    y = y0
+    p = x * w + y
+
+    alpha_p = alpha_arr[p]
+    last_oct = int(oct4_arr[p])  # 0..3
+    if dir_flag == 2:
+        last_oct += 4
+
+    last_beta = alpha_p + 0.5 * np.pi
+    if last_beta >= np.pi:
+        last_beta -= np.pi
+
+    out_i = out_start
+    hit = 0
+    hit_a = -1
+    hit_b = -1
+    hit_px = 0.0
+    hit_py = 0.0
+
+    while True:
+        p = x * w + y
+        pxx = px[p]
+        pyy = py[p]
+
+        alpha_p = alpha_arr[p]
+        octant = int(oct4_arr[p])  # 0..3
+
+        # unwrap octant to 0..7 as in your code
+        if octant == 0 and 3 <= last_oct <= 5:
+            octant = 4
+        elif octant == 1 and 4 <= last_oct <= 6:
+            octant = 5
+        elif octant == 2 and 4 <= last_oct <= 7:
+            octant = 6
+        elif octant == 3 and (last_oct == 0 or last_oct >= 6):
+            octant = 7
+        last_oct = octant
+
+        # choose next among 3 candidates
+        nextismax = 0
+        nexti = 1
+        mindiff = 1e30
+
+        for i in range(3):
+            xx = x + int(DIRTAB[octant, i, 0])
+            yy = y + int(DIRTAB[octant, i, 1])
+            if xx < 0 or xx >= h or yy < 0 or yy >= w:
+                continue
+            pp = xx * w + yy
+            if ismax[pp] == 0:
+                continue
+
+            npx = px[pp]
+            npy = py[pp]
+            dx = npx - pxx
+            dy = npy - pyy
+            dist = np.sqrt(dx*dx + dy*dy)
+
+            na = alpha_arr[pp]
+            diff = abs(alpha_p - na)
+            if diff >= 0.5*np.pi:
+                diff = np.pi - diff
+
+            score = dist + diff
+            if score < mindiff:
+                mindiff = score
+                nexti = i
+            nextismax = 1
+
+        # clear double responses (same as you do)
+        for i in range(2):
+            xx = x + int(CLEARTAB[octant, i, 0])
+            yy = y + int(CLEARTAB[octant, i, 1])
+            if 0 <= xx < h and 0 <= yy < w:
+                pp = xx * w + yy
+                if ismax[pp] > 0:
+                    na = alpha_arr[pp]
+                    diff = abs(alpha_p - na)
+                    if diff >= 0.5*np.pi:
+                        diff = np.pi - diff
+                    if diff < max_angle_diff:
+                        label[pp] = line_id
+                        idx = indx[pp]
+                        if idx != 0:
+                            cross_done[idx - 1] = True
+
+        if nextismax == 0:
+            break
+
+        # step
+        x += int(DIRTAB[octant, nexti, 0])
+        y += int(DIRTAB[octant, nexti, 1])
+        pp = x * w + y
+
+        if out_i >= out_x.shape[0]:
+            return out_i, 0, -1, -1, 0.0, 0.0
+
+
+        # append point (excluding seed)
+        out_x[out_i] = px[pp]
+        out_y[out_i] = py[pp]
+
+        beta = beta0_arr[pp]  # [0,π)
+        d1 = abs(beta - last_beta)
+        if d1 >= np.pi:
+            d1 = 2.0*np.pi - d1
+        d2 = abs(beta + np.pi - last_beta)
+        if d2 >= np.pi:
+            d2 = 2.0*np.pi - d2
+
+        if d1 < d2:
+            out_ang[out_i] = beta
+            last_beta = beta
+        else:
+            out_ang[out_i] = beta + np.pi
+            last_beta = beta + np.pi
+
+        out_resp[out_i] = _bilinear_ev(ev, x, y, w, h)  # uses integer x,y like your call did
+        out_i += 1
+
+        if label[pp] > 0:
+            hit = 1
+            hit_a = label[pp] - 1
+            hit_b = line_id - 1
+            hit_px = px[pp]
+            hit_py = py[pp]
+            break
+
+        label[pp] = line_id
+        idx = indx[pp]
+        if idx != 0:
+            cross_done[idx - 1] = True
+
+    return out_i, hit, hit_a, hit_b, hit_px, hit_py
+
+
+@nb.njit(cache=True, fastmath=True, boundscheck=True)
+def _link_contours_trace_numba(
+    cross_x, cross_y, cross_val, cross_done,
+    ismax, ev, px, py,
+    alpha_arr, oct4_arr, beta0_arr,
+    indx,
+    w, h,
+    DIRTAB, CLEARTAB,
+    max_angle_diff
+):
+    area = cross_x.shape[0]
+    label = np.zeros((w*h,), dtype=np.int32)
+
+    # Worst-case points: each ridge pixel at most once per line, but safe upper bound is area*2
+    max_points = area * 2 + 8
+    pts_x = np.empty((max_points,), dtype=np.float32)
+    pts_y = np.empty((max_points,), dtype=np.float32)
+    pts_ang = np.empty((max_points,), dtype=np.float32)
+    pts_resp = np.empty((max_points,), dtype=np.float32)
+
+    # line offsets (start index into flat arrays)
+    line_offsets = np.empty((area + 1,), dtype=np.int32)
+    line_count = 0
+    out_i = 0
+
+    # junctions (upper bound: number of lines)
+    j_x = np.empty((area,), dtype=np.float32)
+    j_y = np.empty((area,), dtype=np.float32)
+    j_a = np.empty((area,), dtype=np.int32)
+    j_b = np.empty((area,), dtype=np.int32)
+    j_count = 0
+
+    indx_max = 0
+    while True:
+        while indx_max < area and cross_done[indx_max]:
+            indx_max += 1
+        if indx_max == area:
+            break
+        maxv = float(cross_val[indx_max])
+        if maxv == 0.0:
+            break
+
+        x0 = int(cross_x[indx_max])
+        y0 = int(cross_y[indx_max])
+        pos0 = x0*w + y0
+
+        line_id = line_count + 1
+        label[pos0] = line_id
+        idx0 = indx[pos0]
+        if idx0 != 0:
+            cross_done[idx0 - 1] = True
+
+        if out_i >= pts_x.shape[0]:
+            break  # or return what you have
+
+
+        # seed point
+        line_offsets[line_count] = out_i
+        pts_x[out_i] = px[pos0]
+        pts_y[out_i] = py[pos0]
+
+        alpha0 = alpha_arr[pos0]               # [0,π)
+        beta_seed = alpha0 + 0.5*np.pi
+        if beta_seed >= np.pi:
+            beta_seed -= np.pi
+        pts_ang[out_i] = beta_seed
+        pts_resp[out_i] = _bilinear_ev(ev, x0, y0, w, h)
+        out_i += 1
+
+        # clear double responses around seed (uses oct4)
+        octant0 = int(oct4_arr[pos0])
+        for i in range(2):
+            xx = x0 + int(CLEARTAB[octant0, i, 0])
+            yy = y0 + int(CLEARTAB[octant0, i, 1])
+            if 0 <= xx < h and 0 <= yy < w:
+                p = xx*w + yy
+                if ismax[p] > 0:
+                    na = alpha_arr[p]
+                    diff = abs(alpha0 - na)
+                    if diff >= 0.5*np.pi:
+                        diff = np.pi - diff
+                    if diff < max_angle_diff:
+                        label[p] = line_id
+                        idxp = indx[p]
+                        if idxp != 0:
+                            cross_done[idxp - 1] = True
+
+        # Trace direction 2 (backward) into temp, then direction 1 (forward) into main, so order matches your reverse+append behavior.
+        tmp_start = out_i
+        tmp_end, hit2, ha2, hb2, hpx2, hpy2 = _trace_one_direction(
+            x0, y0, 2,
+            ismax, ev, px, py,
+            alpha_arr, oct4_arr, beta0_arr,
+            label, indx, cross_done,
+            w, h,
+            DIRTAB, CLEARTAB,
+            max_angle_diff,
+            line_id,
+            pts_x, pts_y, pts_ang, pts_resp,
+            tmp_start
+        )
+        tmp_len = tmp_end - tmp_start
+
+        # reverse the backward segment in-place (so it becomes prepended)
+        for k in range(tmp_len // 2):
+            a = tmp_start + k
+            b = tmp_start + (tmp_len - 1 - k)
+            # swap x,y,ang,resp
+            tx = pts_x[a]; pts_x[a] = pts_x[b]; pts_x[b] = tx
+            ty = pts_y[a]; pts_y[a] = pts_y[b]; pts_y[b] = ty
+            ta = pts_ang[a]; pts_ang[a] = pts_ang[b]; pts_ang[b] = ta
+            tr = pts_resp[a]; pts_resp[a] = pts_resp[b]; pts_resp[b] = tr
+
+        out_i = tmp_end
+
+        # forward direction appends after seed+backward
+        out_i, hit1, ha1, hb1, hpx1, hpy1 = _trace_one_direction(
+            x0, y0, 1,
+            ismax, ev, px, py,
+            alpha_arr, oct4_arr, beta0_arr,
+            label, indx, cross_done,
+            w, h,
+            DIRTAB, CLEARTAB,
+            max_angle_diff,
+            line_id,
+            pts_x, pts_y, pts_ang, pts_resp,
+            out_i
+        )
+
+        # junction (if either direction hit)
+        if hit2 == 1:
+            j_x[j_count] = hpx2; j_y[j_count] = hpy2
+            j_a[j_count] = ha2;  j_b[j_count] = hb2
+            j_count += 1
+        elif hit1 == 1:
+            j_x[j_count] = hpx1; j_y[j_count] = hpy1
+            j_a[j_count] = ha1;  j_b[j_count] = hb1
+            j_count += 1
+
+        # keep only lines with >=2 points
+        line_len = out_i - line_offsets[line_count]
+        if line_len > 1:
+            line_count += 1
+        else:
+            # drop seed point
+            out_i = line_offsets[line_count]
+            label[pos0] = 0
+
+    line_offsets[line_count] = out_i
+
+    # trim outputs
+    pts_x = pts_x[:out_i]
+    pts_y = pts_y[:out_i]
+    pts_ang = pts_ang[:out_i]
+    pts_resp = pts_resp[:out_i]
+    line_offsets = line_offsets[:line_count+1]
+
+    j_x = j_x[:j_count]; j_y = j_y[:j_count]
+    j_a = j_a[:j_count]; j_b = j_b[:j_count]
+
+    return pts_x, pts_y, pts_ang, pts_resp, line_offsets, j_x, j_y, j_a, j_b
+
+
 
 # -------------------------
 # Detector
@@ -306,7 +667,9 @@ class RidgeDetector:
         dr, dc, drr, drc, dcc = cls._gauss_derivatives(img, sigma)
         ismax, ev, nx, ny, px, py = cls._ridge_candidates(dr, dc, drr, drc, dcc, w, h, low, high, mode)
 
-        return cls._link_contours(ismax, ev, nx, ny, px, py, w, h)
+        alpha, oct4, beta0 = cls._precompute_angles(nx, ny, w, h)
+
+        return cls._link_contours(ismax, ev, nx, ny, px, py, w, h, alpha, oct4, beta0)
 
     # -------------------------
     # Helpers
@@ -428,26 +791,34 @@ class RidgeDetector:
     # Linking (Python; unchanged)
     # -------------------------
 
-    @classmethod
-    def _threshold_runs(cls, ismax: np.ndarray, minv: int, w: int, h: int) -> List[Tuple[int, int, int]]:
-        runs: List[Tuple[int, int, int]] = []
-        inside = False
-        cb = 0
-        for r in range(h):
-            for c in range(w):
-                grey = int(ismax[cls._lin(r, c, w)])
-                if grey >= minv:
-                    if not inside:
-                        inside = True
-                        cb = c
-                else:
-                    if inside:
-                        inside = False
-                        runs.append((r, cb, c - 1))
-            if inside:
-                inside = False
-                runs.append((r, cb, w - 1))
-        return runs
+
+    @staticmethod
+    def _threshold_runs(ismax: np.ndarray, minv: int, w: int, h: int) -> List[Tuple[int, int, int]]:
+        """
+        Vectorized replacement for _threshold_runs.
+        ismax is flattened (w*h,) as in your code.
+        Returns list of (r, cb, ce) with ismax[r, cb:ce+1] >= minv.
+        """
+        m = (ismax.reshape(h, w) >= minv)  # bool (h,w)
+
+        # Find transitions per row: start where False->True, end where True->False
+        # Pad with False at both ends so runs touching borders are handled.
+        mp = np.pad(m, ((0, 0), (1, 1)), mode="constant", constant_values=False)
+
+        starts = np.flatnonzero((~mp[:, :-1]) & (mp[:, 1:]))  # indices in flattened (h*(w+1))
+        ends   = np.flatnonzero((mp[:, :-1]) & (~mp[:, 1:]))
+
+        # Convert flattened indices to (row, col) in the padded grid
+        Wp = w + 1
+        rs = starts // Wp
+        cs = starts % Wp
+        re = ends // Wp
+        ce = (ends % Wp) - 1  # inclusive end in original coords
+
+        # starts/ends are aligned per row because of padding; rs==re always
+        # Build python list of tuples (row, cb, ce)
+        return list(zip(rs.astype(int).tolist(), cs.astype(int).tolist(), ce.astype(int).tolist()))
+
 
     @classmethod
     def _interpolate_response(cls, resp: np.ndarray, x: int, y: int, px: float, py: float, w: int, h: int) -> float:
@@ -469,14 +840,37 @@ class RidgeDetector:
         xx = px - x
         yy = py - y
         return d + xx*dr + yy*dc + xx*xx*drr + xx*yy*drc + yy*yy*dcc
+    
+    @staticmethod
+    def _precompute_angles(nx, ny, w, h):
+        # Flatten to 1D to match your indexing (p = x*w + y)
+        nx1 = np.asarray(nx, np.float32).reshape(-1)
+        ny1 = np.asarray(ny, np.float32).reshape(-1)
+
+        # alpha = atan2(nx, -ny) normalized to [0, π)
+        alpha = np.arctan2(nx1, -ny1).astype(np.float32)
+        alpha = np.where(alpha < 0.0, alpha + 2.0*np.pi, alpha)
+        alpha = np.where(alpha >= np.pi, alpha - np.pi, alpha)  # now [0,π)
+
+        # oct4 = round(4/pi*alpha) mod 4  (matches your floor(...+0.5))
+        oct4 = (np.floor((4.0/np.pi) * alpha + 0.5).astype(np.int32) & 3).astype(np.uint8)
+
+        # beta0 = atan2(ny, nx) normalized to [0, π)
+        beta0 = np.arctan2(ny1, nx1).astype(np.float32)
+        beta0 = np.where(beta0 < 0.0, beta0 + 2.0*np.pi, beta0)
+        beta0 = np.where(beta0 >= np.pi, beta0 - np.pi, beta0)  # [0,π)
+
+        return alpha, oct4, beta0
 
     @classmethod
-    def _link_contours(cls, ismax, ev, nx, ny, px, py, w, h) -> Tuple[List[RidgeLine], List[Junction]]:
+    def _link_contours(cls, ismax, ev, nx, ny, px, py, w, h, alpha_arr, oct4_arr, beta0_arr) -> Tuple[List[RidgeLine], List[Junction]]:
+
         label = np.zeros((w * h,), dtype=np.int32)
-        indx = np.zeros((w * h,), dtype=np.int32)
+        indx  = np.zeros((w * h,), dtype=np.int32)
 
         runs = cls._threshold_runs(ismax, 2, w, h)
         area = sum((ce - cb + 1) for (_, cb, ce) in runs)
+
         if area == 0:
             return [], []
 
@@ -484,11 +878,11 @@ class RidgeDetector:
         cross_y = np.empty((area,), dtype=np.int16)
         cross_val = np.empty((area,), dtype=np.float64)
         cross_done = np.zeros((area,), dtype=np.bool_)
-
         k = 0
         for r, cb, ce in runs:
+            base = r * w
             for c in range(cb, ce + 1):
-                pos = r * w + c
+                pos = base + c
                 cross_x[k] = r
                 cross_y[k] = c
                 cross_val[k] = float(ev[pos])
@@ -501,184 +895,51 @@ class RidgeDetector:
             pos = int(cross_x[i]) * w + int(cross_y[i])
             indx[pos] = i + 1
 
-        lines: List[RidgeLine] = []
-        junctions: List[Junction] = []
 
-        indx_max = 0
-        while True:
-            while indx_max < area and cross_done[indx_max]:
-                indx_max += 1
-            if indx_max == area:
-                break
-            maxv = float(cross_val[indx_max])
-            if maxv == 0.0:
-                break
+        # --- NUMBA TRACE HERE ---
+        DIRTAB = np.asarray(cls._DIRTAB, dtype=np.int8)
+        CLEARTAB = np.asarray(cls._CLEARTAB, dtype=np.int8)
 
-            x0 = int(cross_x[indx_max]); y0 = int(cross_y[indx_max])
-            pos0 = x0 * w + y0
+        pts_x, pts_y, pts_ang, pts_resp, offsets, jx, jy, ja, jb = _link_contours_trace_numba(
+            cross_x.astype(np.int32),
+            cross_y.astype(np.int32),
+            cross_val.astype(np.float32),
+            cross_done,                        # bool ok
+            ismax.astype(np.uint8),            # or np.int8
+            ev.astype(np.float32),
+            px.astype(np.float32),
+            py.astype(np.float32),
+            alpha_arr.astype(np.float32),
+            oct4_arr.astype(np.uint8),
+            beta0_arr.astype(np.float32),
+            indx.astype(np.int32),
+            w, h,
+            DIRTAB, CLEARTAB,
+            float(cls.MAX_ANGLE_DIFFERENCE),
+        )
 
-            row: List[float] = []
-            col: List[float] = []
-            ang: List[float] = []
-            resp: List[float] = []
+        # --- WRAP NUMBA OUTPUTS TO PY OBJECTS ---
+        lines = []
+        for i in range(len(offsets) - 1):
+            a = int(offsets[i]); b = int(offsets[i+1])
+            if b - a <= 1:
+                continue
+            pts = np.empty((b - a, 2), np.float32)
+            pts[:, 0] = pts_x[a:b]
+            pts[:, 1] = pts_y[a:b]
+            lines.append(RidgeLine(
+                pts=pts,
+                angle=pts_ang[a:b].copy(),
+                response=pts_resp[a:b].copy(),
+            ))
 
-            label[pos0] = len(lines) + 1
-            if indx[pos0] != 0:
-                cross_done[indx[pos0] - 1] = True
-
-            row.append(float(px[pos0])); col.append(float(py[pos0]))
-
-            nnx = -float(ny[pos0]); nny = float(nx[pos0])
-            alpha = math.atan2(nny, nnx)
-            if alpha < 0.0: alpha += 2.0 * math.pi
-            if alpha >= math.pi: alpha -= math.pi
-            octant = int(math.floor(4.0 / math.pi * alpha + 0.5)) % 4
-
-            beta = alpha + math.pi / 2.0
-            if beta >= 2.0 * math.pi: beta -= 2.0 * math.pi
-            ang.append(beta)
-            resp.append(cls._interpolate_response(ev, x0, y0, float(px[pos0]), float(py[pos0]), w, h))
-
-            # clear "double responses"
-            for i in range(2):
-                xx = x0 + int(cls._CLEARTAB[octant, i, 0])
-                yy = y0 + int(cls._CLEARTAB[octant, i, 1])
-                if 0 <= xx < h and 0 <= yy < w:
-                    p = xx * w + yy
-                    if ismax[p] > 0:
-                        nnx2 = -float(ny[p]); nny2 = float(nx[p])
-                        na = math.atan2(nny2, nnx2)
-                        if na < 0.0: na += 2.0 * math.pi
-                        if na >= math.pi: na -= math.pi
-                        diff = abs(alpha - na)
-                        if diff >= math.pi / 2.0: diff = math.pi - diff
-                        if diff < cls.MAX_ANGLE_DIFFERENCE:
-                            label[p] = len(lines) + 1
-                            if indx[p] != 0:
-                                cross_done[indx[p] - 1] = True
-
-            for it in (1, 2):
-                x = x0; y = y0
-
-                p = x * w + y
-                nnx = -float(ny[p]); nny = float(nx[p])
-                alpha = math.atan2(nny, nnx)
-                if alpha < 0.0: alpha += 2.0 * math.pi
-                if alpha >= math.pi: alpha -= math.pi
-                last_oct = int(math.floor(4.0 / math.pi * alpha + 0.5)) % 4
-                if it == 2:
-                    last_oct += 4
-
-                last_beta = alpha + math.pi / 2.0
-                if last_beta >= 2.0 * math.pi: last_beta -= 2.0 * math.pi
-
-                if it == 2:
-                    row.reverse(); col.reverse(); ang.reverse(); resp.reverse()
-
-                while True:
-                    p = x * w + y
-                    nnx = -float(ny[p]); nny = float(nx[p])
-                    pxx = float(px[p]); pyy = float(py[p])
-
-                    alpha = math.atan2(nny, nnx)
-                    if alpha < 0.0: alpha += 2.0 * math.pi
-                    if alpha >= math.pi: alpha -= math.pi
-                    octant = int(math.floor(4.0 / math.pi * alpha + 0.5)) % 4
-
-                    if octant == 0 and 3 <= last_oct <= 5: octant = 4
-                    elif octant == 1 and 4 <= last_oct <= 6: octant = 5
-                    elif octant == 2 and 4 <= last_oct <= 7: octant = 6
-                    elif octant == 3 and (last_oct == 0 or last_oct >= 6): octant = 7
-                    last_oct = octant
-
-                    nextismax = False
-                    nexti = 1
-                    mindiff = float("inf")
-                    for i in range(3):
-                        xx = x + int(cls._DIRTAB[octant, i, 0])
-                        yy = y + int(cls._DIRTAB[octant, i, 1])
-                        if not (0 <= xx < h and 0 <= yy < w):
-                            continue
-                        pp = xx * w + yy
-                        if ismax[pp] == 0:
-                            continue
-                        npx = float(px[pp]); npy = float(py[pp])
-                        dx = npx - pxx; dy = npy - pyy
-                        dist = math.sqrt(dx * dx + dy * dy)
-
-                        nnx2 = -float(ny[pp]); nny2 = float(nx[pp])
-                        na = math.atan2(nny2, nnx2)
-                        if na < 0.0: na += 2.0 * math.pi
-                        if na >= math.pi: na -= math.pi
-                        diff = abs(alpha - na)
-                        if diff >= math.pi / 2.0: diff = math.pi - diff
-                        score = dist + diff
-                        if score < mindiff:
-                            mindiff = score
-                            nexti = i
-                        nextismax = True
-
-                    # clear double responses
-                    for i in range(2):
-                        xx = x + int(cls._CLEARTAB[octant, i, 0])
-                        yy = y + int(cls._CLEARTAB[octant, i, 1])
-                        if 0 <= xx < h and 0 <= yy < w:
-                            pp = xx * w + yy
-                            if ismax[pp] > 0:
-                                nnx2 = -float(ny[pp]); nny2 = float(nx[pp])
-                                na = math.atan2(nny2, nnx2)
-                                if na < 0.0: na += 2.0 * math.pi
-                                if na >= math.pi: na -= math.pi
-                                diff = abs(alpha - na)
-                                if diff >= math.pi / 2.0: diff = math.pi - diff
-                                if diff < cls.MAX_ANGLE_DIFFERENCE:
-                                    label[pp] = len(lines) + 1
-                                    if indx[pp] != 0:
-                                        cross_done[indx[pp] - 1] = True
-
-                    if not nextismax:
-                        break
-
-                    x += int(cls._DIRTAB[octant, nexti, 0])
-                    y += int(cls._DIRTAB[octant, nexti, 1])
-                    pp = x * w + y
-
-                    row.append(float(px[pp]))
-                    col.append(float(py[pp]))
-
-                    # orient normal vs last_beta
-                    beta = math.atan2(float(ny[pp]), float(nx[pp]))
-                    if beta < 0.0: beta += 2.0 * math.pi
-                    if beta >= math.pi: beta -= math.pi
-                    d1 = abs(beta - last_beta);  d1 = 2.0*math.pi - d1 if d1 >= math.pi else d1
-                    d2 = abs(beta + math.pi - last_beta); d2 = 2.0*math.pi - d2 if d2 >= math.pi else d2
-                    if d1 < d2:
-                        ang.append(beta); last_beta = beta
-                    else:
-                        ang.append(beta + math.pi); last_beta = beta + math.pi
-
-                    resp.append(cls._interpolate_response(ev, x, y, float(px[pp]), float(py[pp]), w, h))
-
-                    if label[pp] > 0:
-                        jpt = np.array([float(px[pp]), float(py[pp])], dtype=np.float32)
-                        junctions.append(Junction(pt=jpt, a=label[pp]-1, b=len(lines)))
-                        break
-
-                    label[pp] = len(lines) + 1
-                    if indx[pp] != 0:
-                        cross_done[indx[pp] - 1] = True
-
-            if len(row) > 1:
-                pts = np.empty((len(row), 2), dtype=np.float32)
-                pts[:, 0] = np.array(row, dtype=np.float32)
-                pts[:, 1] = np.array(col, dtype=np.float32)
-                lines.append(RidgeLine(
-                    pts=pts,
-                    angle=np.array(ang, dtype=np.float32),
-                    response=np.array(resp, dtype=np.float32),
-                ))
-            else:
-                label[pos0] = 0
+        junctions = []
+        for i in range(jx.shape[0]):
+            junctions.append(Junction(
+                pt=np.array([jx[i], jy[i]], dtype=np.float32),
+                a=int(ja[i]),
+                b=int(jb[i]),
+            ))
 
         return lines, junctions
 

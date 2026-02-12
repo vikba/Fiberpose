@@ -1,5 +1,5 @@
 
-from typing import Dict
+from typing import Dict, Tuple
 import numpy as np
 
 from PyQt6 import QtGui, QtWidgets
@@ -302,6 +302,7 @@ class Stack3DWindow(QtWidgets.QDialog):
 
         self._volume_item = None
         self._scatter_item = None
+        self._line_items = []
         self._volume_source_u8: np.ndarray | None = None
 
         self._imaging_options = ["Original", "Labels", "Centerlines", "DT"]
@@ -439,6 +440,10 @@ class Stack3DWindow(QtWidgets.QDialog):
         if self._scatter_item is not None:
             self.gl_view.removeItem(self._scatter_item)
             self._scatter_item = None
+        if self._line_items:
+            for line_item in self._line_items:
+                self.gl_view.removeItem(line_item)
+            self._line_items = []
 
         if method == "Labels":
             self._set_intensity_controls_enabled(False)
@@ -468,23 +473,29 @@ class Stack3DWindow(QtWidgets.QDialog):
                 return
             max_points = 200000
             if points.shape[0] > max_points:
-                idx = np.random.choice(points.shape[0], max_points, replace=False)
-                points = points[idx]
+                step = int(np.ceil(points.shape[0] / max_points))
+                points = points[::step]
             pos = np.column_stack([points[:, 2], points[:, 1], points[:, 0]]).astype(np.float32)
             point_labels = skeleton[points[:, 0], points[:, 1], points[:, 2]].astype(np.int32, copy=False)
-            unique_labels, inverse = np.unique(point_labels, return_inverse=True)
-            palette = np.zeros((unique_labels.size, 4), dtype=np.float32)
-            for idx, label in enumerate(unique_labels):
-                if int(label) <= 0:
-                    palette[idx] = np.array([1.0, 0.0, 0.0, 0.8], dtype=np.float32)
-                    continue
-                r, g, b = label_to_rgb(int(label))
-                palette[idx] = np.array(
-                    [float(r) / 255.0, float(g) / 255.0, float(b) / 255.0, 0.85],
-                    dtype=np.float32,
-                )
-            color = palette[inverse]
-            self._scatter_item = self._gl.GLScatterPlotItem(pos=pos, color=color, size=1.5)
+            color = self._labels_to_rgba(point_labels, alpha=0.9)
+
+            line_pos, line_color = self._build_centerline_segments_xyz(skeleton, max_segments=350000)
+            if line_pos.size > 0:
+                try:
+                    line_item = self._gl.GLLinePlotItem(
+                        pos=line_pos,
+                        color=line_color,
+                        width=1.5,
+                        mode="lines",
+                        antialias=True,
+                    )
+                    line_item.setGLOptions("translucent")
+                    self.gl_view.addItem(line_item)
+                    self._line_items.append(line_item)
+                except Exception:
+                    pass
+
+            self._scatter_item = self._gl.GLScatterPlotItem(pos=pos, color=color, size=3.0)
             try:
                 from OpenGL import GL
 
@@ -615,6 +626,107 @@ class Stack3DWindow(QtWidgets.QDialog):
             rgba[mask, 2] = np.ubyte(b)
             rgba[mask, 3] = np.ubyte(220)
         return rgba
+
+    @staticmethod
+    def _labels_to_rgba(label_values: np.ndarray, alpha: float = 0.85) -> np.ndarray:
+        labels = np.asarray(label_values, dtype=np.int32).reshape(-1)
+        if labels.size == 0:
+            return np.zeros((0, 4), dtype=np.float32)
+
+        unique_labels, inverse = np.unique(labels, return_inverse=True)
+        palette = np.zeros((unique_labels.size, 4), dtype=np.float32)
+        for idx, label in enumerate(unique_labels):
+            if int(label) <= 0:
+                palette[idx] = np.array([1.0, 0.0, 0.0, float(alpha)], dtype=np.float32)
+                continue
+            r, g, b = label_to_rgb(int(label))
+            palette[idx] = np.array(
+                [float(r) / 255.0, float(g) / 255.0, float(b) / 255.0, float(alpha)],
+                dtype=np.float32,
+            )
+        return palette[inverse]
+
+    @staticmethod
+    def _build_centerline_segments_xyz(
+        skeleton: np.ndarray,
+        max_segments: int = 350000,
+    ) -> Tuple[np.ndarray, np.ndarray]:
+        skel = np.asarray(skeleton, dtype=np.int32)
+        if skel.ndim != 3 or skel.size == 0:
+            return np.zeros((0, 3), dtype=np.float32), np.zeros((0, 4), dtype=np.float32)
+
+        # Use forward 26-neighborhood directions to avoid duplicate segments.
+        directions = (
+            (1, 0, 0),
+            (0, 1, 0),
+            (0, 0, 1),
+            (1, 1, 0),
+            (1, -1, 0),
+            (1, 0, 1),
+            (1, 0, -1),
+            (0, 1, 1),
+            (0, 1, -1),
+            (1, 1, 1),
+            (1, 1, -1),
+            (1, -1, 1),
+            (1, -1, -1),
+        )
+
+        by_label = bool(np.any(skel > 1))
+        src_chunks = []
+        dst_chunks = []
+        label_chunks = []
+        z_max, y_max, x_max = skel.shape
+        for dz, dy, dx in directions:
+            z0 = max(0, -dz)
+            y0 = max(0, -dy)
+            x0 = max(0, -dx)
+            z1 = z_max - max(0, dz)
+            y1 = y_max - max(0, dy)
+            x1 = x_max - max(0, dx)
+            if z0 >= z1 or y0 >= y1 or x0 >= x1:
+                continue
+
+            src = skel[z0:z1, y0:y1, x0:x1]
+            dst = skel[z0 + dz : z1 + dz, y0 + dy : y1 + dy, x0 + dx : x1 + dx]
+            mask = (src > 0) & (dst > 0)
+            if by_label:
+                mask &= src == dst
+            if not np.any(mask):
+                continue
+
+            local = np.column_stack(np.nonzero(mask))
+            src_xyz = np.column_stack(
+                (
+                    local[:, 2] + x0,
+                    local[:, 1] + y0,
+                    local[:, 0] + z0,
+                )
+            ).astype(np.float32, copy=False)
+            dst_xyz = src_xyz + np.array([dx, dy, dz], dtype=np.float32)
+            seg_labels = src[mask].astype(np.int32, copy=False)
+
+            src_chunks.append(src_xyz)
+            dst_chunks.append(dst_xyz)
+            label_chunks.append(seg_labels)
+
+        if not src_chunks:
+            return np.zeros((0, 3), dtype=np.float32), np.zeros((0, 4), dtype=np.float32)
+
+        src_xyz = np.concatenate(src_chunks, axis=0)
+        dst_xyz = np.concatenate(dst_chunks, axis=0)
+        labels = np.concatenate(label_chunks, axis=0)
+        if src_xyz.shape[0] > max_segments:
+            step = int(np.ceil(src_xyz.shape[0] / max_segments))
+            src_xyz = src_xyz[::step]
+            dst_xyz = dst_xyz[::step]
+            labels = labels[::step]
+
+        pos = np.empty((src_xyz.shape[0] * 2, 3), dtype=np.float32)
+        pos[0::2] = src_xyz
+        pos[1::2] = dst_xyz
+        color = Stack3DWindow._labels_to_rgba(np.repeat(labels, 2), alpha=0.95)
+        return pos, color
 
     def _dominant_view_axis(self) -> int:
         # GLVolumeItem selects slices from the dominant camera axis (x=0, y=1, z=2).

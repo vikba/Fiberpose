@@ -994,6 +994,7 @@ class FiberAnalyzer_2D:
             constant_segments_xy = [seg.points_xy.reshape(-1, 1, 2) for seg in self._constant_segments]
         else:
             constant_segments_xy = []
+            
         dt = self._dt
         gx = self._gx
         gy = self._gy

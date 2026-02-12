@@ -30,7 +30,7 @@ logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
 
 from .gui_dialogs import PlotProfileDialog, BatchSaveOptionsDialog, Stack3DWindow
-from .fiber_analyzer import FiberAnalyzer_2D
+from .fiber_analyzer_2D import FiberAnalyzer_2D
 from .datastructures import BatchResult, Frame, ImageBatch
 from .batch_pipeline import BatchAnalyzer, StackAnalyzer_3D
 from .utils import ensure_rgb_u8, label_to_rgb, to_uint8_for_view
