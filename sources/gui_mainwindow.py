@@ -186,11 +186,9 @@ class MainWindow(QMainWindow):
         self.btn_save_csv.clicked.connect(self.save_measurements)
         self.btn_set_scalebar.clicked.connect(self._on_set_scalebar_clicked)
         self.btn_plot_profile.clicked.connect(self._on_plot_profile_clicked)
-        if getattr(self, "btn_analyze_3D", None):
-            self.btn_analyze_3D.clicked.connect(self._on_analyze_3d_clicked)
+        self.btn_analyze_3D.clicked.connect(self._on_analyze_3d_clicked)
         self.action_batch_processing.triggered.connect(self._on_batch_processing)
-        if getattr(self, "btn_open_3d", None):
-            self.btn_open_3d.clicked.connect(self._on_open_3d_view)
+        self.btn_open_3d.clicked.connect(self._on_open_3d_view)
 
         # Remove connection of radiobutton signals and instead hook up the combobox change
         self.cb_view.currentIndexChanged.connect(self.refresh_view)

@@ -1,5 +1,7 @@
 import colorsys
 import numpy as np
+from numba import njit
+
 
 
 def label_to_rgb(label: int) -> tuple[int, int, int]:
@@ -42,28 +44,39 @@ def ensure_rgb_u8(img: np.ndarray | None) -> np.ndarray | None:
     return ensure_rgb_u8(to_uint8_for_view(img))
 
 # ------------- core math helpers -------------
+@njit(cache=True)
 def _normalize(v, eps=1e-12):
-    n = np.linalg.norm(v)
+    n = np.sqrt(np.sum(v * v))
     return v / (n + eps)
 
+@njit(cache=True)
 def _bilinear(arr, y, x):
     """Bilinear sample arr at (y, x) with clamped borders. arr is HxW."""
     h, w = arr.shape
-    y0 = int(np.floor(y)); x0 = int(np.floor(x))
-    y1 = y0 + 1;          x1 = x0 + 1
-    y0c = np.clip(y0, 0, h-1); y1c = np.clip(y1, 0, h-1)
-    x0c = np.clip(x0, 0, w-1); x1c = np.clip(x1, 0, w-1)
-    wy = y - y0; wx = x - x0
+    y0 = int(np.floor(y))
+    x0 = int(np.floor(x))
+    y1 = y0 + 1
+    x1 = x0 + 1
+
+    y0c = 0 if y0 < 0 else (h - 1 if y0 >= h else y0)
+    y1c = 0 if y1 < 0 else (h - 1 if y1 >= h else y1)
+    x0c = 0 if x0 < 0 else (w - 1 if x0 >= w else x0)
+    x1c = 0 if x1 < 0 else (w - 1 if x1 >= w else x1)
+
+    wy = y - y0
+    wx = x - x0
     a = arr[y0c, x0c]
     b = arr[y0c, x1c]
     c = arr[y1c, x0c]
     d = arr[y1c, x1c]
     return (1-wy) * ((1-wx)*a + wx*b) + wy * ((1-wx)*c + wx*d)
 
+@njit(cache=True)
 def _sample_vec2(gx, gy, y, x):
     """Sample gradient vector [dy, dx] at (y,x)."""
     return np.array([_bilinear(gy, y, x), _bilinear(gx, y, x)])
 
+@njit(cache=True)
 def _tangent2d(centerline, k):
     """Unit tangent at index k using central/one-sided differences. centerline is Nx2 in (y,x)."""
     N = len(centerline)
@@ -75,11 +88,13 @@ def _tangent2d(centerline, k):
         t = centerline[k+1] - centerline[k-1]
     return _normalize(t)
 
+@njit(cache=True)
 def _rot90_ccw(v):
     """Rotate (y,x) by +90° in image coordinates."""
     return np.array([-v[1], v[0]])
 
 # ------------- normals from DT -------------
+@njit(cache=True)
 def normals_from_dt_2d(centerline, dt, gx, gy, alpha=0.5, iters=3, tau_g=1e-3, eps=1e-8):
     """
     centerline: (N,2) float array of (y,x) points (same pixel coords as dt)
@@ -92,6 +107,7 @@ def normals_from_dt_2d(centerline, dt, gx, gy, alpha=0.5, iters=3, tau_g=1e-3, e
     """
     N = len(centerline)
     normals = np.zeros((N, 2), dtype=np.float64)
+    n_iter = max(1, iters)
 
     for k in range(N):
         y, x = centerline[k]
@@ -107,7 +123,7 @@ def normals_from_dt_2d(centerline, dt, gx, gy, alpha=0.5, iters=3, tau_g=1e-3, e
             n = -n
 
         # fixed-point refinement
-        for _ in range(max(1, iters)):
+        for _ in range(n_iter):
             yp, xp = y + h * n[0], x + h * n[1]
             ym, xm = y - h * n[0], x - h * n[1]
             gp = _sample_vec2(gx, gy, yp, xp)   # ∇DT at +h along n

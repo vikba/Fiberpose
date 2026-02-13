@@ -304,6 +304,10 @@ class Stack3DWindow(QtWidgets.QDialog):
         self._scatter_item = None
         self._line_items = []
         self._volume_source_u8: np.ndarray | None = None
+        self._display_shape_zyx: tuple[int, int, int] | None = None
+        self._display_step_zyx: tuple[int, int, int] = (1, 1, 1)
+        self._max_display_voxels = 8_000_000
+        self._max_display_edge = 320
 
         self._imaging_options = ["Original", "Labels", "Centerlines", "DT"]
         self._projection_options = ["Nearest Point", "Brightest Point", "Mean Value"]
@@ -326,6 +330,10 @@ class Stack3DWindow(QtWidgets.QDialog):
         controls.addWidget(self.cb_projection)
         controls.addStretch(1)
         layout.addLayout(controls)
+
+        self.lbl_render_info = QtWidgets.QLabel("")
+        self.lbl_render_info.setStyleSheet("color: #9A9A9A;")
+        layout.addWidget(self.lbl_render_info)
 
         if self._gl is None:
             label = QtWidgets.QLabel(
@@ -429,6 +437,7 @@ class Stack3DWindow(QtWidgets.QDialog):
         method = self.cb_imaging.currentText()
         stack = self._stack_for_method(method)
         if stack is None:
+            self.lbl_render_info.setText("")
             return
 
         if self._gl is None:
@@ -445,6 +454,13 @@ class Stack3DWindow(QtWidgets.QDialog):
                 self.gl_view.removeItem(line_item)
             self._line_items = []
 
+        stack = np.asarray(stack)
+        stack = self._downsample_for_display(
+            stack,
+            preserve_nonzero=(method == "Centerlines"),
+        )
+        self._update_render_info(method)
+
         if method == "Labels":
             self._set_intensity_controls_enabled(False)
             self._volume_source_u8 = None
@@ -457,9 +473,9 @@ class Stack3DWindow(QtWidgets.QDialog):
             projection = self.cb_projection.currentText()
             self._volume_item = self._gl.GLVolumeItem(rgba)
             self._apply_projection_mode(self._volume_item, projection)
-            self._volume_item.translate(-rgba.shape[0] / 2, -rgba.shape[1] / 2, -rgba.shape[2] / 2)
+            self._center_and_scale_volume_item(self._volume_item, rgba.shape[:3])
             self.gl_view.addItem(self._volume_item)
-            max_dim = float(max(rgba.shape[:3])) if rgba.size else 1.0
+            max_dim = self._scaled_extent_max(rgba.shape[:3]) if rgba.size else 1.0
             self.gl_view.opts["center"] = pg.Vector(0.0, 0.0, 0.0)
             self.gl_view.setCameraPosition(distance=max_dim * 2.0)
             return
@@ -476,10 +492,14 @@ class Stack3DWindow(QtWidgets.QDialog):
                 step = int(np.ceil(points.shape[0] / max_points))
                 points = points[::step]
             pos = np.column_stack([points[:, 2], points[:, 1], points[:, 0]]).astype(np.float32)
+            scale_xyz = np.asarray(self._display_scale_xyz(), dtype=np.float32)
+            pos *= scale_xyz
             point_labels = skeleton[points[:, 0], points[:, 1], points[:, 2]].astype(np.int32, copy=False)
             color = self._labels_to_rgba(point_labels, alpha=0.9)
 
             line_pos, line_color = self._build_centerline_segments_xyz(skeleton, max_segments=350000)
+            if line_pos.size > 0:
+                line_pos = line_pos * scale_xyz
             if line_pos.size > 0:
                 try:
                     line_item = self._gl.GLLinePlotItem(
@@ -530,9 +550,9 @@ class Stack3DWindow(QtWidgets.QDialog):
 
         self._volume_item = self._gl.GLVolumeItem(rgba)
         self._apply_projection_mode(self._volume_item, projection)
-        self._volume_item.translate(-rgba.shape[0] / 2, -rgba.shape[1] / 2, -rgba.shape[2] / 2)
+        self._center_and_scale_volume_item(self._volume_item, rgba.shape[:3])
         self.gl_view.addItem(self._volume_item)
-        max_dim = float(max(rgba.shape[:3])) if rgba.size else 1.0
+        max_dim = self._scaled_extent_max(rgba.shape[:3]) if rgba.size else 1.0
         self.gl_view.opts["center"] = pg.Vector(0.0, 0.0, 0.0)
         self.gl_view.setCameraPosition(distance=max_dim * 2.0)
 
@@ -568,7 +588,7 @@ class Stack3DWindow(QtWidgets.QDialog):
         rgba = self._make_rgba_for_projection(vol_u8, projection)
         self._volume_item = self._gl.GLVolumeItem(rgba)
         self._apply_projection_mode(self._volume_item, projection)
-        self._volume_item.translate(-rgba.shape[0] / 2, -rgba.shape[1] / 2, -rgba.shape[2] / 2)
+        self._center_and_scale_volume_item(self._volume_item, rgba.shape[:3])
         self.gl_view.addItem(self._volume_item)
 
     def _make_rgba_for_projection(self, vol_u8: np.ndarray, projection: str) -> np.ndarray:
@@ -612,20 +632,112 @@ class Stack3DWindow(QtWidgets.QDialog):
             return np.zeros((0, 0, 0, 4), dtype=np.ubyte)
 
         labels_xyz = np.transpose(labels, (2, 1, 0))
-        rgba = np.zeros(labels_xyz.shape + (4,), dtype=np.ubyte)
-        positive = labels_xyz > 0
-        if not positive.any():
-            return rgba
-
-        unique_labels = np.unique(labels_xyz[positive])
-        for label in unique_labels:
+        flat = labels_xyz.reshape(-1)
+        unique_labels, inverse = np.unique(flat, return_inverse=True)
+        palette = np.zeros((unique_labels.size, 4), dtype=np.ubyte)
+        for idx, label in enumerate(unique_labels):
+            if int(label) <= 0:
+                continue
             r, g, b = label_to_rgb(int(label))
-            mask = labels_xyz == int(label)
-            rgba[mask, 0] = np.ubyte(r)
-            rgba[mask, 1] = np.ubyte(g)
-            rgba[mask, 2] = np.ubyte(b)
-            rgba[mask, 3] = np.ubyte(220)
-        return rgba
+            palette[idx, 0] = np.ubyte(r)
+            palette[idx, 1] = np.ubyte(g)
+            palette[idx, 2] = np.ubyte(b)
+            palette[idx, 3] = np.ubyte(220)
+        return palette[inverse].reshape(labels_xyz.shape + (4,))
+
+    def _downsample_for_display(
+        self,
+        stack_zyx: np.ndarray,
+        preserve_nonzero: bool = False,
+    ) -> np.ndarray:
+        arr = np.asarray(stack_zyx)
+        if arr.ndim != 3:
+            self._display_shape_zyx = None
+            self._display_step_zyx = (1, 1, 1)
+            return arr
+
+        z, y, x = arr.shape
+        steps = [
+            max(1, int(np.ceil(z / float(self._max_display_edge)))),
+            max(1, int(np.ceil(y / float(self._max_display_edge)))),
+            max(1, int(np.ceil(x / float(self._max_display_edge)))),
+        ]
+
+        def reduced_dims() -> tuple[int, int, int]:
+            return (
+                int(np.ceil(z / steps[0])),
+                int(np.ceil(y / steps[1])),
+                int(np.ceil(x / steps[2])),
+            )
+
+        rz, ry, rx = reduced_dims()
+        while (rz * ry * rx) > self._max_display_voxels:
+            axis = int(np.argmax([rz, ry, rx]))
+            steps[axis] += 1
+            rz, ry, rx = reduced_dims()
+
+        sz, sy, sx = int(steps[0]), int(steps[1]), int(steps[2])
+        self._display_shape_zyx = (rz, ry, rx)
+        self._display_step_zyx = (sz, sy, sx)
+        if sz == 1 and sy == 1 and sx == 1:
+            return arr
+
+        if not preserve_nonzero:
+            return arr[::sz, ::sy, ::sx]
+
+        # For sparse skeleton/centerline data, block max keeps any occupied voxel
+        # in each downsampled cell and avoids aliasing from strided sampling.
+        pad_z = int(rz * sz - z)
+        pad_y = int(ry * sy - y)
+        pad_x = int(rx * sx - x)
+        arr_pad = np.pad(
+            arr,
+            ((0, pad_z), (0, pad_y), (0, pad_x)),
+            mode="constant",
+            constant_values=0,
+        )
+        arr_blocks = arr_pad.reshape(rz, sz, ry, sy, rx, sx)
+        reduced = arr_blocks.max(axis=(1, 3, 5))
+        return reduced.astype(arr.dtype, copy=False)
+
+    def _update_render_info(self, method: str):
+        if self._display_shape_zyx is None:
+            self.lbl_render_info.setText("")
+            return
+        rz, ry, rx = self._display_shape_zyx
+        sz, sy, sx = self._display_step_zyx
+        if (sz, sy, sx) == (1, 1, 1):
+            self.lbl_render_info.setText(f"Render grid (z,y,x): {rz} x {ry} x {rx}")
+            return
+        self.lbl_render_info.setText(
+            f"Render grid (z,y,x): {rz} x {ry} x {rx} (downsample {method}, step {sz}/{sy}/{sx})"
+        )
+
+    def _display_scale_xyz(self) -> tuple[float, float, float]:
+        sz, sy, sx = self._display_step_zyx
+        return float(max(1, sx)), float(max(1, sy)), float(max(1, sz))
+
+    def _scaled_extent_max(self, shape_xyz: tuple[int, int, int]) -> float:
+        scale_x, scale_y, scale_z = self._display_scale_xyz()
+        return float(
+            max(
+                float(shape_xyz[0]) * scale_x,
+                float(shape_xyz[1]) * scale_y,
+                float(shape_xyz[2]) * scale_z,
+            )
+        )
+
+    def _center_and_scale_volume_item(self, volume_item, shape_xyz: tuple[int, int, int]) -> None:
+        scale_x, scale_y, scale_z = self._display_scale_xyz()
+        try:
+            volume_item.scale(scale_x, scale_y, scale_z)
+        except Exception:
+            pass
+        volume_item.translate(
+            -(float(shape_xyz[0]) * scale_x) / 2.0,
+            -(float(shape_xyz[1]) * scale_y) / 2.0,
+            -(float(shape_xyz[2]) * scale_z) / 2.0,
+        )
 
     @staticmethod
     def _labels_to_rgba(label_values: np.ndarray, alpha: float = 0.85) -> np.ndarray:

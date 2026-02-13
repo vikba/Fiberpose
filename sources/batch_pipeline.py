@@ -6,8 +6,151 @@ from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Tupl
 import numpy as np
 from scipy.ndimage import distance_transform_edt
 
+try:
+    from numba import njit
+    from numba.typed import List as NumbaList
+
+    _HAVE_NUMBA = True
+except Exception:
+    _HAVE_NUMBA = False
+
+    def njit(*args, **kwargs):  # type: ignore
+        def _decorator(fn):
+            return fn
+
+        return _decorator
+
+    NumbaList = None  # type: ignore
+
 from .datastructures import BatchResult, Frame, ImageBatch
-from .fiber_analyzer import FiberAnalyzer_2D
+from .fiber_analyzer_2D import FiberAnalyzer_2D
+
+_NUMBA_PAIR_CODE_LIMIT = 8_000_000
+
+
+@njit(cache=True)
+def _uf_find_numba(parent: np.ndarray, item: int) -> int:
+    root = int(item)
+    while parent[root] != root:
+        root = int(parent[root])
+
+    while parent[item] != item:
+        nxt = int(parent[item])
+        parent[item] = root
+        item = nxt
+    return root
+
+
+@njit(cache=True)
+def _uf_union_numba(parent: np.ndarray, rank: np.ndarray, a: int, b: int) -> None:
+    ra = _uf_find_numba(parent, int(a))
+    rb = _uf_find_numba(parent, int(b))
+    if ra == rb:
+        return
+    if rank[ra] < rank[rb]:
+        parent[ra] = rb
+    elif rank[ra] > rank[rb]:
+        parent[rb] = ra
+    else:
+        parent[rb] = ra
+        rank[ra] += 1
+
+
+@njit(cache=True)
+def _link_adjacent_labels_numba(
+    labels_list,
+    max_labels: np.ndarray,
+    offsets: np.ndarray,
+    min_overlap: int,
+    iou_threshold: float,
+    parent: np.ndarray,
+    rank: np.ndarray,
+) -> None:
+    n_slices = len(labels_list)
+    for z in range(n_slices - 1):
+        a = labels_list[z]
+        b = labels_list[z + 1]
+        if a.shape[0] != b.shape[0] or a.shape[1] != b.shape[1]:
+            continue
+
+        max_a = int(max_labels[z]) + 1
+        max_b = int(max_labels[z + 1]) + 1
+        area_a = np.zeros(max_a, dtype=np.int64)
+        area_b = np.zeros(max_b, dtype=np.int64)
+        overlap = np.zeros(max_a * max_b, dtype=np.int32)
+        touched = np.empty(a.shape[0] * a.shape[1], dtype=np.int64)
+        touched_n = 0
+
+        for y in range(a.shape[0]):
+            for x in range(a.shape[1]):
+                la = int(a[y, x])
+                lb = int(b[y, x])
+
+                if 0 <= la < max_a:
+                    area_a[la] += 1
+                else:
+                    la = 0
+
+                if 0 <= lb < max_b:
+                    area_b[lb] += 1
+                else:
+                    lb = 0
+
+                if la > 0 and lb > 0:
+                    code = la * max_b + lb
+                    if overlap[code] == 0:
+                        touched[touched_n] = code
+                        touched_n += 1
+                    overlap[code] += 1
+
+        for idx in range(touched_n):
+            code = int(touched[idx])
+            ov = int(overlap[code])
+            if ov < min_overlap:
+                continue
+            la = int(code // max_b)
+            lb = int(code - (la * max_b))
+            denom = int(area_a[la] + area_b[lb] - ov)
+            if denom <= 0:
+                continue
+            if (ov / float(denom)) < iou_threshold:
+                continue
+
+            ua = int(offsets[z]) + la
+            ub = int(offsets[z + 1]) + lb
+            _uf_union_numba(parent, rank, ua, ub)
+
+
+@njit(cache=True)
+def _assign_object_ids_numba(
+    parent: np.ndarray,
+    max_labels: np.ndarray,
+    offsets: np.ndarray,
+    present_labels_list,
+) -> np.ndarray:
+    root_to_object = np.zeros(parent.shape[0], dtype=np.int32)
+    node_to_object = np.zeros(parent.shape[0], dtype=np.int32)
+    next_id = 1
+
+    for z in range(max_labels.shape[0]):
+        max_label = int(max_labels[z])
+        if max_label <= 0:
+            continue
+
+        present = present_labels_list[z]
+        base = int(offsets[z])
+        for lbl in range(1, max_label + 1):
+            if lbl >= present.shape[0] or present[lbl] == 0:
+                continue
+            gid = base + lbl
+            root = _uf_find_numba(parent, gid)
+            oid = int(root_to_object[root])
+            if oid == 0:
+                oid = next_id
+                root_to_object[root] = oid
+                next_id += 1
+            node_to_object[gid] = oid
+    return node_to_object
 
 
 class BatchAnalyzer:
@@ -186,10 +329,93 @@ class StackAnalyzer_3D:
     def merge_labels(
         self, labels_slices: Iterable[np.ndarray]
     ) -> tuple[List[np.ndarray], Dict[tuple[int, int], int]]:
-        labels_list = [np.asarray(lbl) for lbl in labels_slices]
+        labels_list = [np.asarray(lbl, dtype=np.int32) for lbl in labels_slices]
         if not labels_list:
             return [], {}
 
+        if not _HAVE_NUMBA:
+            return self._merge_labels_python(labels_list)
+
+        try:
+            return self._merge_labels_numba(labels_list)
+        except Exception:
+            return self._merge_labels_python(labels_list)
+
+    def _merge_labels_numba(
+        self, labels_list: List[np.ndarray]
+    ) -> tuple[List[np.ndarray], Dict[tuple[int, int], int]]:
+        n_slices = len(labels_list)
+        max_labels = np.zeros(n_slices, dtype=np.int32)
+        offsets = np.zeros(n_slices, dtype=np.int64)
+
+        next_offset = 0
+        for z, labels in enumerate(labels_list):
+            arr = np.ascontiguousarray(labels, dtype=np.int32)
+            labels_list[z] = arr
+            max_label = int(np.max(arr)) if arr.size else 0
+            max_labels[z] = max_label
+            offsets[z] = next_offset
+            next_offset += max_label + 1
+
+        for z in range(n_slices - 1):
+            a = labels_list[z]
+            b = labels_list[z + 1]
+            if a.shape != b.shape:
+                continue
+            pair_codes = (int(max_labels[z]) + 1) * (int(max_labels[z + 1]) + 1)
+            if pair_codes > _NUMBA_PAIR_CODE_LIMIT:
+                return self._merge_labels_python(labels_list)
+
+        labels_numba = NumbaList()  # type: ignore[operator]
+        present_numba = NumbaList()  # type: ignore[operator]
+        for z, labels in enumerate(labels_list):
+            labels_numba.append(labels)
+            max_label = int(max_labels[z])
+            if max_label <= 0:
+                present_numba.append(np.zeros(1, dtype=np.uint8))
+                continue
+            counts = np.bincount(labels.ravel().astype(np.int64), minlength=max_label + 1)
+            present = (counts > 0).astype(np.uint8)
+            present[0] = 0
+            present_numba.append(present)
+
+        parent = np.arange(next_offset, dtype=np.int64)
+        rank = np.zeros(next_offset, dtype=np.int16)
+
+        _link_adjacent_labels_numba(
+            labels_numba,
+            max_labels,
+            offsets,
+            int(self.min_overlap),
+            float(self.iou_threshold),
+            parent,
+            rank,
+        )
+        node_to_object = _assign_object_ids_numba(parent, max_labels, offsets, present_numba)
+
+        labels_3d: List[np.ndarray] = []
+        object_id_map: Dict[tuple[int, int], int] = {}
+        for z, labels in enumerate(labels_list):
+            max_label = int(max_labels[z])
+            if max_label <= 0:
+                labels_3d.append(np.zeros_like(labels, dtype=np.int32))
+                continue
+
+            base = int(offsets[z])
+            lut = np.zeros(max_label + 1, dtype=np.int32)
+            lut[1:] = node_to_object[base + 1 : base + max_label + 1]
+            labels_3d.append(lut[labels])
+
+            for lbl in range(1, max_label + 1):
+                oid = int(lut[lbl])
+                if oid > 0:
+                    object_id_map[(z, lbl)] = oid
+
+        return labels_3d, object_id_map
+
+    def _merge_labels_python(
+        self, labels_list: List[np.ndarray]
+    ) -> tuple[List[np.ndarray], Dict[tuple[int, int], int]]:
         uf = self._UnionFind()
         label_offsets: List[int] = []
         next_offset = 0
