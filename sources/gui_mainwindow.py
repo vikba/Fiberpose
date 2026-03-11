@@ -19,7 +19,6 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.uic import loadUi
 
-import imageio.v3 as iio
 import pyqtgraph as pg
 import torch
 from scipy.spatial import cKDTree
@@ -538,7 +537,10 @@ class MainWindow(QMainWindow):
                         if u.isLocalFile():
                             p = u.toLocalFile()
                             if self._is_loadable_path(p):
-                                self.open_source(path=p, source_kind="auto")
+                                if os.path.isdir(p):
+                                    self._run_batch_processing_for_folder(p)
+                                else:
+                                    self.open_source(path=p, source_kind="auto")
                                 event.acceptProposedAction()
                                 return True
         return super().eventFilter(obj, event)
@@ -680,6 +682,55 @@ class MainWindow(QMainWindow):
         self.open_source(path=path, source_kind="auto")
 
     def save_predictions(self):
+        batch_frame_count = (
+            len(self._batch_result.frame_results)
+            if self._batch_result is not None
+            else 0
+        )
+        if batch_frame_count > 1:
+            has_predictions = any(
+                fr.has_prediction or fr.has_segmentation
+                for fr in self._batch_result.frame_results
+            )
+            if not has_predictions:
+                self._show_info("Nothing to save", "Run segmentation first.")
+                return
+
+            dest_dir = QFileDialog.getExistingDirectory(
+                self,
+                "Save batch predictions to folder",
+                self.working_dir,
+            )
+            if not dest_dir:
+                return
+            export_config = {
+                "preset": "predictions",
+                "image_format": "png",
+                "naming": "frame_id_z",
+                "collision": "suffix",
+                "write_manifest": True,
+            }
+            try:
+                export_result = self._batch_result.save_all(dest_dir, export_config)
+            except Exception as e:
+                self._show_error("Error", f"Failed to save batch predictions:\n{e}")
+                return
+
+            self.working_dir = dest_dir
+            error_count = len(export_result.get("errors", []))
+            if error_count:
+                self._show_warning(
+                    "Saved with issues",
+                    f"Saved {export_result.get('written_count', 0)} file(s) to:\n{dest_dir}\n"
+                    f"Encountered {error_count} export error(s).",
+                )
+                return
+            self._show_info(
+                "Saved",
+                f"Saved {export_result.get('written_count', 0)} file(s) to:\n{dest_dir}",
+            )
+            return
+
         if not (self.current_frame.has_prediction or self.current_frame.has_segmentation):
             self._show_info("Nothing to save", "Run segmentation first.")
             return
@@ -692,26 +743,88 @@ class MainWindow(QMainWindow):
         )
         if not base:
             return
-        dest_dir = os.path.dirname(base)
-        root_name = self.current_image_name or os.path.splitext(os.path.basename(base))[0]
-        root = os.path.join(dest_dir, root_name)
-        logger.info(f"Saving predictions with base name: {root}")
+        dest_dir = os.path.dirname(base) or self.working_dir
+        base_name = os.path.splitext(os.path.basename(base))[0] or (self.current_image_name or "fiberpose")
+        selected_ext = os.path.splitext(base)[1].lower()
+        image_format = "tiff" if selected_ext in {".tif", ".tiff"} else "png"
+        export_config = {
+            "preset": "predictions",
+            "image_format": image_format,
+            "naming": "frame_id",
+            "collision": "overwrite",
+            "base_name": base_name,
+            "write_manifest": False,
+        }
 
         try:
-            if self.current_frame.gray_u8 is not None:
-                iio.imwrite(root + "_dt.png", np.asarray(self.current_frame.gray_u8, dtype=np.uint8))
-            if self.current_frame.labels_2d is not None and self.current_frame.labels_2d.max() > 0:
-                iio.imwrite(root + "_labels.png", labels_to_color(self.current_frame.labels_2d))
-            if self.current_frame.overlay_img is not None:
-                iio.imwrite(root + "_overlay.png", self.current_frame.overlay_img.astype(np.uint8))
-            if self.current_frame.measurements_overlay is not None:
-                iio.imwrite(root + "_debug.png", self.current_frame.measurements_overlay.astype(np.uint8))
-            self.working_dir = dest_dir
-            self._show_info("Saved", f"Saved to:\n{dest_dir}")
+            export_result = self._export_current_frame(dest_dir, export_config)
         except Exception as e:
             self._show_error("Error", f"Failed to save:\n{e}")
+            return
+
+        self.working_dir = dest_dir
+        error_count = len(export_result.get("errors", []))
+        if error_count:
+            self._show_warning(
+                "Saved with issues",
+                f"Saved {export_result.get('written_count', 0)} file(s) to:\n{dest_dir}\n"
+                f"Encountered {error_count} export error(s).",
+            )
+            return
+        self._show_info(
+            "Saved",
+            f"Saved {export_result.get('written_count', 0)} file(s) to:\n{dest_dir}",
+        )
 
     def save_measurements(self):
+        batch_frame_count = (
+            len(self._batch_result.frame_results)
+            if self._batch_result is not None
+            else 0
+        )
+        if batch_frame_count > 1:
+            has_measurements = any(
+                fr.has_measurements and fr.samples_table is not None and len(fr.samples_table) > 0
+                for fr in self._batch_result.frame_results
+            )
+            if not has_measurements:
+                self._show_info("Nothing to save", "Run Analyze fibers first.")
+                return
+
+            dest_dir = QFileDialog.getExistingDirectory(
+                self,
+                "Save batch measurements to folder",
+                self.working_dir,
+            )
+            if not dest_dir:
+                return
+            export_config = {
+                "preset": "measurements",
+                "naming": "frame_id_z",
+                "collision": "suffix",
+                "write_manifest": True,
+            }
+            try:
+                export_result = self._batch_result.save_all(dest_dir, export_config)
+            except Exception as e:
+                self._show_error("Error", f"Failed to save batch measurements:\n{e}")
+                return
+
+            self.working_dir = dest_dir
+            error_count = len(export_result.get("errors", []))
+            if error_count:
+                self._show_warning(
+                    "Saved with issues",
+                    f"Saved {export_result.get('written_count', 0)} file(s) to:\n{dest_dir}\n"
+                    f"Encountered {error_count} export error(s).",
+                )
+                return
+            self._show_info(
+                "Saved",
+                f"Saved {export_result.get('written_count', 0)} file(s) to:\n{dest_dir}",
+            )
+            return
+
         if not self.current_frame.has_measurements or self.current_frame.samples_table is None or len(self.current_frame.samples_table) == 0:
             self._show_info("Nothing to save", "Run Analyze fibers first.")
             return
@@ -724,38 +837,44 @@ class MainWindow(QMainWindow):
         )
         if not base:
             return
-        dest_dir = os.path.dirname(base)
-        root_name = self.current_image_name or os.path.splitext(os.path.basename(base))[0]
-        root = os.path.join(dest_dir, root_name)
-        logger.info(f"Saving measurements to base: {root}")
+        dest_dir = os.path.dirname(base) or self.working_dir
+        base_name = os.path.splitext(os.path.basename(base))[0] or (self.current_image_name or "fiberpose")
+        export_config = {
+            "preset": "measurements",
+            "naming": "frame_id",
+            "collision": "overwrite",
+            "base_name": base_name,
+            "write_manifest": False,
+        }
 
         try:
-            with open(root + "_samples.csv", "w", newline="") as f:
-                mean_val, std_val, orientation_index, mean_angle_deg, std_angle_deg, porosity, sample_count = self._measurement_export_summary()
-                f.write("metric,value\n")
-                f.write(f"mean,{mean_val:.6f}\n")
-                f.write(f"std,{std_val:.6f}\n")
-                f.write(f"orientation_index,{orientation_index:.6f}\n")
-                f.write(f"mean_angle_deg,{mean_angle_deg:.6f}\n")
-                f.write(f"std_angle_deg,{std_angle_deg:.6f}\n")
-                f.write(f"porosity,{porosity:.6f}\n")
-                f.write(f"sample_number,{sample_count}\n")
-                f.write("\n\n")
-                f.write("x,y,diameter,angle_deg,fiber_id\n")
-
-                for idx, row in enumerate(self.current_frame.samples_table, start=1):
-                    x, y, t_px = row[:3]
-                    angle_val = float(row[3]) if len(row) > 3 else float("nan")
-                    if self.current_frame.thickness_units is not None and len(self.current_frame.thickness_units) >= idx:
-                        diameter_val = float(self.current_frame.thickness_units[idx - 1])
-                    else:
-                        diameter_val = float(t_px)
-                    f.write(f"{int(x)},{int(y)},{diameter_val:.6f},{angle_val:.6f},0\n")
+            export_result = self._export_current_frame(dest_dir, export_config)
         except Exception as e:
             self._show_error("Error", f"Failed to save CSVs:\n{e}")
             return
+
+        error_count = len(export_result.get("errors", []))
+        if error_count:
+            self._show_warning(
+                "Saved with issues",
+                f"Saved {export_result.get('written_count', 0)} file(s) to:\n{dest_dir}\n"
+                f"Encountered {error_count} export error(s).",
+            )
+            return
         self.working_dir = dest_dir
-        self._show_info("Saved", f"Saved CSV(s) to:\n{dest_dir}")
+        self._show_info(
+            "Saved",
+            f"Saved {export_result.get('written_count', 0)} CSV file(s) to:\n{dest_dir}",
+        )
+
+    def _export_current_frame(self, output_dir: str, export_config: Dict[str, Any]) -> Dict[str, Any]:
+        frame_result = self.current_frame.snapshot(
+            include_measurements=True,
+            frame_id=str(self.current_frame.frame_id),
+            z_index=int(self.current_frame.z_index),
+        )
+        batch_result = BatchResult(frame_results=[frame_result])
+        return batch_result.save_all(output_dir, export_config)
 
 
     # ------------------- Scalebar -------------------
@@ -922,9 +1041,6 @@ class MainWindow(QMainWindow):
         self,
         compute_measurements: bool,
         image_batch: ImageBatch | None = None,
-        save_outputs: bool = False,
-        output_root: str | None = None,
-        save_options: Dict[str, bool] | None = None,
         error_title: str | None = None,
     ) -> BatchResult | None:
         # Resolve the active batch source. Most callers use the currently loaded batch.
@@ -940,7 +1056,8 @@ class MainWindow(QMainWindow):
 
         QtWidgets.QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
         try:
-            self.statusbar.showMessage(f"Processing {len(active_batch)} frames")
+            total_images = len(active_batch)
+            self.statusbar.showMessage(f"Processing 0/{total_images} images")
             if self.analyzer is None:
                 raise RuntimeError("Fiber analyzer has not been initialized.")
 
@@ -952,8 +1069,14 @@ class MainWindow(QMainWindow):
             if len(active_batch) > 1:
                 self._batch_mode_active = True
 
+            processed_images = 0
+
             def _process_frame(frame: np.ndarray, frame_id: str, z_index: int) -> Frame:
-                # Per-frame routine: hydrate original image, run processing, capture outputs, optionally export.
+                nonlocal processed_images
+                processed_images += 1
+                self.statusbar.showMessage(f"Processing {processed_images}/{total_images} images")
+                QtWidgets.QApplication.processEvents()
+                # Per-frame routine: hydrate original image, run processing, capture outputs.
                 self._reset_internal_state(preserve_original=False)
                 self.current_frame.begin_frame(frame, str(frame_id), int(z_index))
                 self.current_image_name = self._frame_base_name(frame_id, z_index)
@@ -966,8 +1089,6 @@ class MainWindow(QMainWindow):
                     frame_id=str(frame_id),
                     z_index=int(z_index),
                 )
-                if save_outputs and output_root:
-                    self._save_batch_outputs(output_root, self.current_image_name, save_options)
                 return result
 
             try:
@@ -1000,15 +1121,8 @@ class MainWindow(QMainWindow):
         )
         return batch_result
 
-    def _save_batch_outputs(
-        self,
-        dest_dir: str,
-        base_name: str,
-        save_options: Dict[str, bool] | None = None,
-    ):
-        """Persist batch artifacts according to the save options selected by the user."""
-        options = save_options or {}
-
+    @staticmethod
+    def _batch_export_config_from_options(options: Dict[str, bool]) -> Dict[str, Any]:
         default_flags = {
             "dt": True,
             "labels": True,
@@ -1017,49 +1131,20 @@ class MainWindow(QMainWindow):
             "samples": True,
             "style_vector": False,
         }
-
-        def wants(key: str) -> bool:
-            return bool(options.get(key, default_flags.get(key, True)))
-
-        if wants("dt") and self.current_frame.gray_u8 is not None:
-            dt_path = os.path.join(dest_dir, f"{base_name}_dt.png")
-            iio.imwrite(dt_path, np.asarray(self.current_frame.gray_u8, dtype=np.uint8))
-        if wants("labels") and self.current_frame.labels_2d is not None and np.max(self.current_frame.labels_2d) > 0:
-            labels_path = os.path.join(dest_dir, f"{base_name}_labels.png")
-            iio.imwrite(labels_path, labels_to_color(self.current_frame.labels_2d))
-        if wants("overlay") and self.current_frame.overlay_img is not None:
-            overlay_path = os.path.join(dest_dir, f"{base_name}_overlay.png")
-            iio.imwrite(overlay_path, np.asarray(self.current_frame.overlay_img, dtype=np.uint8))
-        if wants("debug") and self.current_frame.measurements_overlay is not None:
-            debug_path = os.path.join(dest_dir, f"{base_name}_debug.png")
-            iio.imwrite(debug_path, np.asarray(self.current_frame.measurements_overlay, dtype=np.uint8))
-        if wants("style_vector") and self.current_frame.style_vec is not None:
-            style_path = os.path.join(dest_dir, f"{base_name}_style.npy")
-            np.save(style_path, np.asarray(self.current_frame.style_vec, dtype=np.float32))
-
-        if wants("samples") and self.current_frame.samples_table is not None and len(self.current_frame.samples_table) > 0:
-            samples_path = os.path.join(dest_dir, f"{base_name}_samples.csv")
-            with open(samples_path, "w", newline="") as f:
-                mean_val, std_val, orientation_index, mean_angle_deg, std_angle_deg, porosity, sample_count = self._measurement_export_summary()
-                f.write("metric,value\n")
-                f.write(f"mean,{mean_val:.6f}\n")
-                f.write(f"std,{std_val:.6f}\n")
-                f.write(f"orientation_index,{orientation_index:.6f}\n")
-                f.write(f"mean_angle_deg,{mean_angle_deg:.6f}\n")
-                f.write(f"std_angle_deg,{std_angle_deg:.6f}\n")
-                f.write(f"porosity,{porosity:.6f}\n")
-                f.write(f"sample_number,{sample_count}\n")
-                f.write("\n\n")
-                f.write("x,y,diameter,angle_deg,fiber_id\n")
-
-                for idx, row in enumerate(self.current_frame.samples_table, start=1):
-                    x, y, t_px = row[:3]
-                    angle_val = float(row[3]) if len(row) > 3 else float("nan")
-                    if self.current_frame.thickness_units is not None and len(self.current_frame.thickness_units) >= idx:
-                        diameter_val = float(self.current_frame.thickness_units[idx - 1])
-                    else:
-                        diameter_val = float(t_px)
-                    f.write(f"{int(x)},{int(y)},{diameter_val:.6f},{angle_val:.6f},0\n")
+        artifacts = tuple(default_flags.keys())
+        excluded = [
+            name
+            for name in artifacts
+            if not bool(options.get(name, default_flags[name]))
+        ]
+        return {
+            "preset": "full",
+            "image_format": "png",
+            "naming": "frame_id_z",
+            "collision": "suffix",
+            "exclude": excluded,
+            "write_manifest": True,
+        }
 
     def _prompt_batch_save_options(self) -> Dict[str, bool] | None:
         dialog = BatchSaveOptionsDialog(self, self._batch_save_options)
@@ -1071,7 +1156,10 @@ class MainWindow(QMainWindow):
         return None
 
     def _on_batch_processing(self):
-        image_batch = self.open_source(source_kind="folder")
+        self._run_batch_processing_for_folder(None)
+
+    def _run_batch_processing_for_folder(self, folder_path: str | None):
+        image_batch = self.open_source(path=folder_path, source_kind="folder")
         if image_batch is None:
             return
 
@@ -1096,9 +1184,6 @@ class MainWindow(QMainWindow):
             batch_result = self._run_batch_analysis(
                 compute_measurements=True,
                 image_batch=image_batch,
-                save_outputs=True,
-                output_root=output_root,
-                save_options=save_options,
                 error_title="Batch processing failed",
             )
         finally:
@@ -1108,6 +1193,10 @@ class MainWindow(QMainWindow):
 
         if batch_result is None:
             return
+
+        export_config = self._batch_export_config_from_options(save_options)
+        export_result = batch_result.save_all(output_root, export_config)
+
         failures: list[tuple[str, str]] = []
         processed = 0
         for result in batch_result.frame_results:
@@ -1115,10 +1204,19 @@ class MainWindow(QMainWindow):
                 failures.append((result.frame_id, "Segmentation did not produce results"))
             else:
                 processed += 1
+        export_errors = export_result.get("errors", [])
+        if export_errors:
+            failures.extend(
+                (
+                    err.get("frame_id", f"frame_{err.get('frame_index', '?')}"),
+                    f"Export {err.get('artifact', 'artifact')} failed: {err.get('error', 'unknown error')}",
+                )
+                for err in export_errors
+            )
 
         summary_lines = [
             f"Processed {processed} of {len(image_batch)} frames.",
-            f"Results saved in: {output_root}",
+            f"Saved {export_result.get('written_count', 0)} file(s) in: {output_root}",
         ]
         if failures:
             summary_lines.append("Failures:")

@@ -330,6 +330,12 @@ class BatchResult:
             or self.skeleton_radius_samples is not None
         )
 
+    def save_all(self, output_dir: str, export_config: Dict[str, Any] | None = None) -> Dict[str, Any]:
+        from .exporter import BatchResultExporter
+
+        exporter = BatchResultExporter(export_config=export_config)
+        return exporter.save_all(self, output_dir, export_config=export_config)
+
 
 @dataclass
 class FiberFragment:

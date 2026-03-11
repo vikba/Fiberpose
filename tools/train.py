@@ -60,10 +60,17 @@ import tifffile as tiff
 # -------------------------
 # Model import (your project)
 # -------------------------
-# Adjust import to your repo layout:
-#   - if resunet.py is in the same folder: from resunet import ResUnet
-#   - if it's in a package: from fiberpose.resunet import ResUnet
-from resunet import ResUnet
+# ResUnet lives in `sources/resunet.py`.
+# Make sibling package imports work whether this script is run from repo root
+# (`python tools/train.py`) or from inside `tools/`.
+try:
+    from sources.resunet import ResUnet
+except ModuleNotFoundError:
+    import sys
+    repo_root = Path(__file__).resolve().parents[1]
+    if str(repo_root) not in sys.path:
+        sys.path.insert(0, str(repo_root))
+    from sources.resunet import ResUnet
 
 
 # -------------------------
@@ -375,7 +382,7 @@ class TrainCfg:
     w_dt: float = 1
     w_eik_flow: float = 0.5
     w_eik_dt: float = 0.5
-    fg_weight: float = 3.0
+    fg_weight: float = 5.0
     bg_weight: float = 1.0
     ignore_bg: bool = False
     amp: bool = True
@@ -390,7 +397,7 @@ def main():
     ap.add_argument("--start-epoch", type=int, default=1, help="starting epoch index (1-based)")
     ap.add_argument("--epochs", type=int, default=50)
     ap.add_argument("--batch", type=int, default=9)
-    ap.add_argument("--lr", type=float, default=3e-4)
+    ap.add_argument("--lr", type=float, default=1e-3)
     ap.add_argument("--crop", type=int, default=512)
     ap.add_argument("--workers", type=int, default=2)
     ap.add_argument("--seed", type=int, default=0)
@@ -404,7 +411,7 @@ def main():
     ap.add_argument(
         "--target-template",
         type=str,
-        default="{stem}_{kind}.tif",
+        default="{stem}_masks_{kind}.tif",
         help="target filename template with {stem} and {kind} (kind=flow_y|flow_x|dt)",
     )
     ap.add_argument("--targets-dir", type=str, default=None, help="folder with precomputed targets (default: data/targets)")
@@ -525,15 +532,13 @@ def main():
             # loss weights: control background vs foreground contribution
             # Here dt<=0 was clamped to -dist_bg, so "foreground-ish" can be dt > -dist_bg
             dt = yb[:, 2:3]
-            #fg = (dt > -cfg.dist_bg + 1e-6).float()
-            fg = (dt > 1e-6).float()
+            fg = (dt > -cfg.dist_bg + 1e-6).float()
             bg = 1.0 - fg
-            """if cfg.ignore_bg:
+            if cfg.ignore_bg:
                 w = cfg.fg_weight * fg
             else:
-                w = cfg.fg_weight * fg + cfg.bg_weight * bg"""
+                w = cfg.fg_weight * fg + cfg.bg_weight * bg
             
-            w = cfg.fg_weight * fg + cfg.bg_weight * bg
 
             opt.zero_grad(set_to_none=True)
             with torch.amp.autocast(device_type=device.type, enabled=scaler.is_enabled()):
