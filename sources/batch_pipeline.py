@@ -1,157 +1,19 @@
 from __future__ import annotations
 
 from time import perf_counter
-from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence
 
 import numpy as np
-from scipy.ndimage import distance_transform_edt
-
-try:
-    from numba import njit
-    from numba.typed import List as NumbaList
-
-    _HAVE_NUMBA = True
-except Exception:
-    _HAVE_NUMBA = False
-
-    def njit(*args, **kwargs):  # type: ignore
-        def _decorator(fn):
-            return fn
-
-        return _decorator
-
-    NumbaList = None  # type: ignore
+from scipy.ndimage import (
+    binary_dilation,
+    binary_opening,
+    convolve,
+    distance_transform_edt,
+    label as ndi_label,
+)
 
 from .datastructures import BatchResult, Frame, ImageBatch
 from .fiber_analyzer_2D import FiberAnalyzer_2D
-
-_NUMBA_PAIR_CODE_LIMIT = 8_000_000
-
-
-@njit(cache=True)
-def _uf_find_numba(parent: np.ndarray, item: int) -> int:
-    root = int(item)
-    while parent[root] != root:
-        root = int(parent[root])
-
-    while parent[item] != item:
-        nxt = int(parent[item])
-        parent[item] = root
-        item = nxt
-    return root
-
-
-@njit(cache=True)
-def _uf_union_numba(parent: np.ndarray, rank: np.ndarray, a: int, b: int) -> None:
-    ra = _uf_find_numba(parent, int(a))
-    rb = _uf_find_numba(parent, int(b))
-    if ra == rb:
-        return
-    if rank[ra] < rank[rb]:
-        parent[ra] = rb
-    elif rank[ra] > rank[rb]:
-        parent[rb] = ra
-    else:
-        parent[rb] = ra
-        rank[ra] += 1
-
-
-@njit(cache=True)
-def _link_adjacent_labels_numba(
-    labels_list,
-    max_labels: np.ndarray,
-    offsets: np.ndarray,
-    min_overlap: int,
-    iou_threshold: float,
-    parent: np.ndarray,
-    rank: np.ndarray,
-) -> None:
-    n_slices = len(labels_list)
-    for z in range(n_slices - 1):
-        a = labels_list[z]
-        b = labels_list[z + 1]
-        if a.shape[0] != b.shape[0] or a.shape[1] != b.shape[1]:
-            continue
-
-        max_a = int(max_labels[z]) + 1
-        max_b = int(max_labels[z + 1]) + 1
-        area_a = np.zeros(max_a, dtype=np.int64)
-        area_b = np.zeros(max_b, dtype=np.int64)
-        overlap = np.zeros(max_a * max_b, dtype=np.int32)
-        touched = np.empty(a.shape[0] * a.shape[1], dtype=np.int64)
-        touched_n = 0
-
-        for y in range(a.shape[0]):
-            for x in range(a.shape[1]):
-                la = int(a[y, x])
-                lb = int(b[y, x])
-
-                if 0 <= la < max_a:
-                    area_a[la] += 1
-                else:
-                    la = 0
-
-                if 0 <= lb < max_b:
-                    area_b[lb] += 1
-                else:
-                    lb = 0
-
-                if la > 0 and lb > 0:
-                    code = la * max_b + lb
-                    if overlap[code] == 0:
-                        touched[touched_n] = code
-                        touched_n += 1
-                    overlap[code] += 1
-
-        for idx in range(touched_n):
-            code = int(touched[idx])
-            ov = int(overlap[code])
-            if ov < min_overlap:
-                continue
-            la = int(code // max_b)
-            lb = int(code - (la * max_b))
-            denom = int(area_a[la] + area_b[lb] - ov)
-            if denom <= 0:
-                continue
-            if (ov / float(denom)) < iou_threshold:
-                continue
-
-            ua = int(offsets[z]) + la
-            ub = int(offsets[z + 1]) + lb
-            _uf_union_numba(parent, rank, ua, ub)
-
-
-@njit(cache=True)
-def _assign_object_ids_numba(
-    parent: np.ndarray,
-    max_labels: np.ndarray,
-    offsets: np.ndarray,
-    present_labels_list,
-) -> np.ndarray:
-    root_to_object = np.zeros(parent.shape[0], dtype=np.int32)
-    node_to_object = np.zeros(parent.shape[0], dtype=np.int32)
-    next_id = 1
-
-    for z in range(max_labels.shape[0]):
-        max_label = int(max_labels[z])
-        if max_label <= 0:
-            continue
-
-        present = present_labels_list[z]
-        base = int(offsets[z])
-        for lbl in range(1, max_label + 1):
-            if lbl >= present.shape[0] or present[lbl] == 0:
-                continue
-            gid = base + lbl
-            root = _uf_find_numba(parent, gid)
-            oid = int(root_to_object[root])
-            if oid == 0:
-                oid = next_id
-                root_to_object[root] = oid
-                next_id += 1
-            node_to_object[gid] = oid
-    return node_to_object
-
 
 class BatchAnalyzer:
     """Dimension-agnostic orchestrator that executes per-frame analysis."""
@@ -176,57 +38,42 @@ class BatchAnalyzer:
 
 
 class StackAnalyzer_3D:
-    """3D stack analyzer that builds volumes, merges labels, and skeletonizes objects."""
-
-    class _UnionFind:
-        def __init__(self):
-            self.parent: Dict[int, int] = {}
-            self.rank: Dict[int, int] = {}
-
-        def add(self, item: int) -> None:
-            if item in self.parent:
-                return
-            self.parent[item] = item
-            self.rank[item] = 0
-
-        def find(self, item: int) -> int:
-            parent = self.parent.get(item, item)
-            if parent != item:
-                parent = self.find(parent)
-                self.parent[item] = parent
-            return parent
-
-        def union(self, a: int, b: int) -> None:
-            ra = self.find(a)
-            rb = self.find(b)
-            if ra == rb:
-                return
-            if self.rank[ra] < self.rank[rb]:
-                self.parent[ra] = rb
-            elif self.rank[ra] > self.rank[rb]:
-                self.parent[rb] = ra
-            else:
-                self.parent[rb] = ra
-                self.rank[ra] += 1
+    """3D stack analyzer for semantic mask skeletonization and fragment splitting."""
 
     def __init__(
         self,
-        iou_threshold: float = 0.1,
-        min_overlap: int = 1,
         voxel_spacing_zyx: Sequence[float] = (1.0, 1.0, 1.0),
         histogram_bins: int = 40,
+        junction_cut_scale: float = 1.6,
+        junction_cut_min_radius: float = 1.25,
+        junction_cut_radius_bias: float = 0.5,
+        junction_dilation_iters: int = 1,
+        opening_kernel_zyx: Sequence[int] = (1, 3, 3),
+        junction_cut_max_radius: Optional[float] = None,
     ):
-        self.iou_threshold = float(iou_threshold)
-        self.min_overlap = int(min_overlap)
         self.voxel_spacing_zyx = self._parse_voxel_spacing(voxel_spacing_zyx)
         self.histogram_bins = max(int(histogram_bins), 1)
+        self.junction_cut_scale = float(junction_cut_scale)
+        self.junction_cut_min_radius = max(0.0, float(junction_cut_min_radius))
+        self.junction_cut_radius_bias = max(0.0, float(junction_cut_radius_bias))
+        self.junction_dilation_iters = max(0, int(junction_dilation_iters))
+        if len(opening_kernel_zyx) != 3:
+            raise ValueError("opening_kernel_zyx must contain exactly 3 values.")
+        kz, ky, kx = (int(v) for v in opening_kernel_zyx)
+        if kz < 1 or ky < 1 or kx < 1:
+            raise ValueError("opening_kernel_zyx values must be >= 1.")
+        self.opening_kernel_zyx = (kz, ky, kx)
+        self.opening_kernel = np.ones(self.opening_kernel_zyx, dtype=bool)
+        self.junction_cut_max_radius = (
+            float(junction_cut_max_radius) if junction_cut_max_radius is not None else None
+        )
+        if self.junction_cut_max_radius is not None and self.junction_cut_max_radius <= 0.0:
+            raise ValueError("junction_cut_max_radius must be positive when provided.")
 
     def process(
         self,
         batch_result: BatchResult,
         *,
-        do_merge: bool = True,
-        do_skeleton: bool = True,
         force: bool = False,
     ) -> BatchResult:
         if batch_result.has_3d_outputs and not force:
@@ -234,12 +81,19 @@ class StackAnalyzer_3D:
 
         t0 = perf_counter()
         meta: Dict[str, Any] = {
-            "iou_threshold": float(self.iou_threshold),
-            "min_overlap": int(self.min_overlap),
-            "do_merge": bool(do_merge),
-            "do_skeleton": bool(do_skeleton),
+            "pipeline": "semantic_skeleton",
             "voxel_spacing_zyx": [float(v) for v in self.voxel_spacing_zyx],
             "histogram_bins": int(self.histogram_bins),
+            "junction_cut_scale": float(self.junction_cut_scale),
+            "junction_cut_min_radius": float(self.junction_cut_min_radius),
+            "junction_cut_radius_bias": float(self.junction_cut_radius_bias),
+            "junction_dilation_iters": int(self.junction_dilation_iters),
+            "opening_kernel_zyx": [int(v) for v in self.opening_kernel_zyx],
+            "junction_cut_max_radius": (
+                float(self.junction_cut_max_radius)
+                if self.junction_cut_max_radius is not None
+                else None
+            ),
         }
 
         try:
@@ -249,8 +103,8 @@ class StackAnalyzer_3D:
             batch_result.labels_volume = labels_volume
 
             if labels_volume is None:
+                batch_result.raw_skeleton_volume = None
                 batch_result.merged_labels_volume = None
-                batch_result.merge_object_id_map = None
                 batch_result.merged_skeleton_volume = None
                 batch_result.skeleton_radius_samples = None
                 meta["error"] = "No per-slice labels available to build a 3D labels volume."
@@ -261,63 +115,96 @@ class StackAnalyzer_3D:
             batch_result.labels_volume = labels_volume
             meta["volume_shape"] = [int(v) for v in labels_volume.shape]
             meta["num_labels_raw"] = int(np.max(labels_volume)) if labels_volume.size else 0
-
-            merged_volume: Optional[np.ndarray] = None
-            object_id_map: Optional[Dict[tuple[int, int], int]] = None
-            if do_merge:
-                merged_slices, object_id_map = self.merge_labels(
-                    labels_volume[z] for z in range(labels_volume.shape[0])
-                )
-                if merged_slices:
-                    merged_volume = np.stack(merged_slices, axis=0).astype(np.int32, copy=False)
-                else:
-                    merged_volume = np.zeros_like(labels_volume, dtype=np.int32)
-                batch_result.merged_labels_volume = merged_volume
-                batch_result.merge_object_id_map = object_id_map
-            else:
-                merged_volume = labels_volume.copy()
-                batch_result.merged_labels_volume = merged_volume
-                batch_result.merge_object_id_map = None
-
-            meta["num_labels_merged"] = int(np.max(merged_volume)) if merged_volume.size else 0
-            meta["object_id_map_size"] = len(object_id_map) if object_id_map is not None else 0
-
-            if do_skeleton:
-                skeleton_source = merged_volume if merged_volume is not None else labels_volume
-                merged_skeleton, skeleton_method = self._skeletonize_per_label(skeleton_source)
-                batch_result.merged_skeleton_volume = merged_skeleton
-                batch_result.skeleton_radius_samples = self._recover_radius_samples(
-                    skeleton_source,
-                    merged_skeleton,
-                    self.voxel_spacing_zyx,
-                )
-                meta["num_skeleton_voxels"] = int(np.count_nonzero(merged_skeleton))
-                meta["skeleton_method"] = skeleton_method
-                samples = batch_result.skeleton_radius_samples
-                num_samples = int(samples.shape[0]) if samples is not None else 0
-                meta["num_radius_samples"] = num_samples
-                if num_samples > 0:
-                    radii = np.asarray(samples[:, 4], dtype=np.float32)
-                    meta["radius_min"] = float(np.min(radii))
-                    meta["radius_max"] = float(np.max(radii))
-                    meta["radius_mean"] = float(np.mean(radii))
-                    counts, edges = np.histogram(radii, bins=self.histogram_bins)
-                    meta["radius_hist_counts"] = counts.astype(int).tolist()
-                    meta["radius_hist_edges"] = edges.astype(float).tolist()
-                    meta["radius_hist_kind"] = "radius"
-                else:
-                    meta["radius_hist_counts"] = []
-                    meta["radius_hist_edges"] = []
-                    meta["radius_hist_kind"] = "radius"
-            else:
-                batch_result.merged_skeleton_volume = None
-                batch_result.skeleton_radius_samples = None
+            binary_mask = labels_volume > 0
+            meta["num_foreground_voxels"] = int(np.count_nonzero(binary_mask))
+            if not np.any(binary_mask):
+                zero_labels = np.zeros_like(labels_volume, dtype=np.int32)
+                batch_result.raw_skeleton_volume = zero_labels
+                batch_result.merged_labels_volume = zero_labels
+                batch_result.merged_skeleton_volume = zero_labels
+                batch_result.skeleton_radius_samples = np.zeros((0, 5), dtype=np.float32)
+                meta["num_labels_merged"] = 0
                 meta["num_skeleton_voxels"] = 0
+                meta["num_junction_voxels"] = 0
                 meta["num_radius_samples"] = 0
+                meta["radius_hist_counts"] = []
+                meta["radius_hist_edges"] = []
+                meta["radius_hist_kind"] = "radius"
+                batch_result.merge_meta = meta
+                return batch_result
+
+            skeletonize_3d, skeleton_method = self._resolve_3d_skeletonizer()
+            dt3d = np.asarray(
+                distance_transform_edt(binary_mask, sampling=self.voxel_spacing_zyx),
+                dtype=np.float32,
+            )
+            skeleton_raw = np.asarray(skeletonize_3d(binary_mask), dtype=bool)
+            raw_skeleton = skeleton_raw.astype(np.int32, copy=False)
+            batch_result.raw_skeleton_volume = raw_skeleton
+            junction_mask = self._detect_junctions(
+                skeleton_raw,
+                dilation_iters=self.junction_dilation_iters,
+            )
+            cut_mask = self._cut_at_junctions(
+                binary_mask,
+                dt3d,
+                junction_mask,
+                self.voxel_spacing_zyx,
+                self.junction_cut_scale,
+                self.junction_cut_min_radius,
+                self.junction_cut_radius_bias,
+                self.junction_cut_max_radius,
+            )
+            if np.any(cut_mask):
+                cut_mask = np.asarray(
+                    binary_opening(cut_mask, structure=self.opening_kernel),
+                    dtype=bool,
+                )
+            fragment_labels, n_fragments = ndi_label(
+                cut_mask.astype(np.uint8),
+                structure=np.ones((3, 3, 3), dtype=np.uint8),
+            )
+            fragment_labels = np.asarray(fragment_labels, dtype=np.int32)
+            skeleton_frag = np.asarray(skeletonize_3d(cut_mask), dtype=bool)
+            fragment_skeleton = np.zeros_like(fragment_labels, dtype=np.int32)
+            fragment_skeleton[skeleton_frag] = fragment_labels[skeleton_frag]
+
+            batch_result.merged_labels_volume = fragment_labels
+            batch_result.merged_skeleton_volume = fragment_skeleton
+            batch_result.skeleton_radius_samples = self._recover_radius_samples(
+                fragment_labels,
+                fragment_skeleton,
+                self.voxel_spacing_zyx,
+            )
+
+            meta["skeleton_method"] = skeleton_method
+            meta["num_skeleton_voxels_raw"] = int(np.count_nonzero(skeleton_raw))
+            meta["num_junction_voxels"] = int(np.count_nonzero(junction_mask))
+            meta["num_foreground_voxels_cut"] = int(np.count_nonzero(cut_mask))
+            meta["num_labels_merged"] = int(n_fragments)
+            meta["num_skeleton_voxels"] = int(np.count_nonzero(fragment_skeleton))
+            samples = batch_result.skeleton_radius_samples
+            num_samples = int(samples.shape[0]) if samples is not None else 0
+            meta["num_radius_samples"] = num_samples
+            if num_samples > 0:
+                radii = np.asarray(samples[:, 4], dtype=np.float32)
+                meta["radius_min"] = float(np.min(radii))
+                meta["radius_max"] = float(np.max(radii))
+                meta["radius_mean"] = float(np.mean(radii))
+                counts, edges = np.histogram(radii, bins=self.histogram_bins)
+                meta["radius_hist_counts"] = counts.astype(int).tolist()
+                meta["radius_hist_edges"] = edges.astype(float).tolist()
+                meta["radius_hist_kind"] = "radius"
+            else:
+                meta["radius_hist_counts"] = []
+                meta["radius_hist_edges"] = []
+                meta["radius_hist_kind"] = "radius"
 
             if labels_volume.shape[0] < 2:
-                meta["warning"] = "Single-slice batch: merge ran without cross-slice linking."
+                meta["warning"] = "Single-slice batch: semantic 3D flow ran on one slice."
         except Exception as exc:
+            batch_result.raw_skeleton_volume = None
+            batch_result.merged_skeleton_volume = None
             batch_result.skeleton_radius_samples = None
             meta["error"] = str(exc)
         finally:
@@ -325,160 +212,6 @@ class StackAnalyzer_3D:
 
         batch_result.merge_meta = meta
         return batch_result
-
-    def merge_labels(
-        self, labels_slices: Iterable[np.ndarray]
-    ) -> tuple[List[np.ndarray], Dict[tuple[int, int], int]]:
-        labels_list = [np.asarray(lbl, dtype=np.int32) for lbl in labels_slices]
-        if not labels_list:
-            return [], {}
-
-        if not _HAVE_NUMBA:
-            return self._merge_labels_python(labels_list)
-
-        try:
-            return self._merge_labels_numba(labels_list)
-        except Exception:
-            return self._merge_labels_python(labels_list)
-
-    def _merge_labels_numba(
-        self, labels_list: List[np.ndarray]
-    ) -> tuple[List[np.ndarray], Dict[tuple[int, int], int]]:
-        n_slices = len(labels_list)
-        max_labels = np.zeros(n_slices, dtype=np.int32)
-        offsets = np.zeros(n_slices, dtype=np.int64)
-
-        next_offset = 0
-        for z, labels in enumerate(labels_list):
-            arr = np.ascontiguousarray(labels, dtype=np.int32)
-            labels_list[z] = arr
-            max_label = int(np.max(arr)) if arr.size else 0
-            max_labels[z] = max_label
-            offsets[z] = next_offset
-            next_offset += max_label + 1
-
-        for z in range(n_slices - 1):
-            a = labels_list[z]
-            b = labels_list[z + 1]
-            if a.shape != b.shape:
-                continue
-            pair_codes = (int(max_labels[z]) + 1) * (int(max_labels[z + 1]) + 1)
-            if pair_codes > _NUMBA_PAIR_CODE_LIMIT:
-                return self._merge_labels_python(labels_list)
-
-        labels_numba = NumbaList()  # type: ignore[operator]
-        present_numba = NumbaList()  # type: ignore[operator]
-        for z, labels in enumerate(labels_list):
-            labels_numba.append(labels)
-            max_label = int(max_labels[z])
-            if max_label <= 0:
-                present_numba.append(np.zeros(1, dtype=np.uint8))
-                continue
-            counts = np.bincount(labels.ravel().astype(np.int64), minlength=max_label + 1)
-            present = (counts > 0).astype(np.uint8)
-            present[0] = 0
-            present_numba.append(present)
-
-        parent = np.arange(next_offset, dtype=np.int64)
-        rank = np.zeros(next_offset, dtype=np.int16)
-
-        _link_adjacent_labels_numba(
-            labels_numba,
-            max_labels,
-            offsets,
-            int(self.min_overlap),
-            float(self.iou_threshold),
-            parent,
-            rank,
-        )
-        node_to_object = _assign_object_ids_numba(parent, max_labels, offsets, present_numba)
-
-        labels_3d: List[np.ndarray] = []
-        object_id_map: Dict[tuple[int, int], int] = {}
-        for z, labels in enumerate(labels_list):
-            max_label = int(max_labels[z])
-            if max_label <= 0:
-                labels_3d.append(np.zeros_like(labels, dtype=np.int32))
-                continue
-
-            base = int(offsets[z])
-            lut = np.zeros(max_label + 1, dtype=np.int32)
-            lut[1:] = node_to_object[base + 1 : base + max_label + 1]
-            labels_3d.append(lut[labels])
-
-            for lbl in range(1, max_label + 1):
-                oid = int(lut[lbl])
-                if oid > 0:
-                    object_id_map[(z, lbl)] = oid
-
-        return labels_3d, object_id_map
-
-    def _merge_labels_python(
-        self, labels_list: List[np.ndarray]
-    ) -> tuple[List[np.ndarray], Dict[tuple[int, int], int]]:
-        uf = self._UnionFind()
-        label_offsets: List[int] = []
-        next_offset = 0
-        for z, labels in enumerate(labels_list):
-            max_label = int(np.max(labels)) if labels.size else 0
-            label_offsets.append(next_offset)
-            for lbl in range(1, max_label + 1):
-                uf.add(next_offset + lbl)
-            next_offset += max_label + 1
-
-        for z in range(len(labels_list) - 1):
-            a = labels_list[z]
-            b = labels_list[z + 1]
-            if a.shape != b.shape:
-                continue
-            mask = (a > 0) & (b > 0)
-            if not mask.any():
-                continue
-            pairs = np.stack([a[mask], b[mask]], axis=1)
-            unique_pairs, counts = np.unique(pairs, axis=0, return_counts=True)
-            area_a = np.bincount(a.ravel().astype(np.int64))
-            area_b = np.bincount(b.ravel().astype(np.int64))
-            for (la, lb), overlap in zip(unique_pairs, counts):
-                if overlap < self.min_overlap:
-                    continue
-                denom = area_a[int(la)] + area_b[int(lb)] - overlap
-                if denom <= 0:
-                    continue
-                iou = overlap / float(denom)
-                if iou < self.iou_threshold:
-                    continue
-                ua = label_offsets[z] + int(la)
-                ub = label_offsets[z + 1] + int(lb)
-                uf.union(ua, ub)
-
-        root_to_id: Dict[int, int] = {}
-        object_id_map: Dict[tuple[int, int], int] = {}
-        next_id = 1
-        for z, labels in enumerate(labels_list):
-            unique_labels = np.unique(labels)
-            for lbl in unique_labels:
-                if lbl == 0:
-                    continue
-                key = label_offsets[z] + int(lbl)
-                root = uf.find(key)
-                if root not in root_to_id:
-                    root_to_id[root] = next_id
-                    next_id += 1
-                object_id_map[(z, int(lbl))] = root_to_id[root]
-
-        labels_3d: List[np.ndarray] = []
-        for z, labels in enumerate(labels_list):
-            if labels.size == 0:
-                labels_3d.append(labels.copy())
-                continue
-            mapped = np.zeros_like(labels, dtype=np.int32)
-            for lbl in np.unique(labels):
-                if lbl == 0:
-                    continue
-                mapped[labels == lbl] = object_id_map.get((z, int(lbl)), 0)
-            labels_3d.append(mapped)
-
-        return labels_3d, object_id_map
 
     @staticmethod
     def _parse_voxel_spacing(voxel_spacing_zyx: Sequence[float]) -> tuple[float, float, float]:
@@ -564,24 +297,84 @@ class StackAnalyzer_3D:
         return _skeletonize_lee, method
 
     @staticmethod
-    def _skeletonize_per_label(labels_volume: np.ndarray) -> tuple[np.ndarray, str]:
-        labels_volume = np.asarray(labels_volume, dtype=np.int32)
-        if labels_volume.size == 0:
-            return np.zeros_like(labels_volume, dtype=np.int32), "none"
+    def _detect_junctions(skeleton_mask: np.ndarray, dilation_iters: int = 0) -> np.ndarray:
+        skeleton = np.asarray(skeleton_mask, dtype=bool)
+        if skeleton.ndim != 3:
+            raise ValueError(f"Expected a 3D skeleton mask, got shape {skeleton.shape}.")
+        if not np.any(skeleton):
+            return np.zeros_like(skeleton, dtype=bool)
 
-        if labels_volume.ndim != 3:
-            raise ValueError(f"Expected a 3D labels volume, got shape {labels_volume.shape}.")
+        kernel = np.ones((3, 3, 3), dtype=np.uint8)
+        neighbor_count = convolve(skeleton.astype(np.uint8), kernel, mode="constant", cval=0)
+        neighbor_count = neighbor_count - skeleton.astype(np.uint8)
+        junctions = skeleton & (neighbor_count >= 3)
+        if dilation_iters > 0 and np.any(junctions):
+            junctions = binary_dilation(
+                junctions,
+                structure=np.ones((3, 3, 3), dtype=bool),
+                iterations=int(dilation_iters),
+            )
+        return junctions
 
-        skeletonize_3d, method = StackAnalyzer_3D._resolve_3d_skeletonizer()
+    @staticmethod
+    def _cut_at_junctions(
+        binary_mask: np.ndarray,
+        dt_volume: np.ndarray,
+        junction_mask: np.ndarray,
+        voxel_spacing_zyx: Sequence[float],
+        radius_scale: float,
+        min_radius: float,
+        radius_bias: float,
+        max_radius: Optional[float],
+    ) -> np.ndarray:
+        mask = np.asarray(binary_mask, dtype=bool)
+        dt = np.asarray(dt_volume, dtype=np.float32)
+        junctions = np.asarray(junction_mask, dtype=bool)
+        if mask.shape != dt.shape or mask.shape != junctions.shape:
+            raise ValueError("binary_mask, dt_volume, and junction_mask must have the same shape.")
+        if mask.ndim != 3:
+            raise ValueError(f"Expected a 3D mask, got shape {mask.shape}.")
 
-        out = np.zeros_like(labels_volume, dtype=np.int32)
-        for object_id in np.unique(labels_volume):
-            if object_id == 0:
+        spacing = StackAnalyzer_3D._parse_voxel_spacing(voxel_spacing_zyx)
+        sz, sy, sx = spacing
+        out = mask.copy()
+        coords = np.argwhere(junctions)
+        if coords.size == 0:
+            return out
+
+        for z, y, x in coords:
+            local_r = float(dt[z, y, x]) * float(radius_scale) + float(radius_bias)
+            if not np.isfinite(local_r) or local_r <= 0.0:
                 continue
-            mask = labels_volume == int(object_id)
-            skel = np.asarray(skeletonize_3d(mask), dtype=bool)
-            out[skel] = int(object_id)
-        return out, method
+            radius = max(float(min_radius), local_r)
+            if max_radius is not None:
+                radius = min(radius, float(max_radius))
+            if radius <= 0.0:
+                continue
+
+            rz = max(1, int(np.ceil(radius / sz)))
+            ry = max(1, int(np.ceil(radius / sy)))
+            rx = max(1, int(np.ceil(radius / sx)))
+
+            z0 = max(0, int(z) - rz)
+            y0 = max(0, int(y) - ry)
+            x0 = max(0, int(x) - rx)
+            z1 = min(mask.shape[0], int(z) + rz + 1)
+            y1 = min(mask.shape[1], int(y) + ry + 1)
+            x1 = min(mask.shape[2], int(x) + rx + 1)
+
+            zz, yy, xx = np.ogrid[z0:z1, y0:y1, x0:x1]
+            dist2 = (
+                ((zz - int(z)) * sz) ** 2
+                + ((yy - int(y)) * sy) ** 2
+                + ((xx - int(x)) * sx) ** 2
+            )
+            sphere = dist2 <= (radius * radius)
+            region = out[z0:z1, y0:y1, x0:x1]
+            region[sphere] = False
+            out[z0:z1, y0:y1, x0:x1] = region
+
+        return out
 
     @staticmethod
     def _recover_radius_samples(

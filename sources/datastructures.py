@@ -308,8 +308,8 @@ class Frame:
 class BatchResult:
     frame_results: List[Frame]
     labels_volume: Optional[np.ndarray] = None
+    raw_skeleton_volume: Optional[np.ndarray] = None
     merged_labels_volume: Optional[np.ndarray] = None
-    merge_object_id_map: Optional[Dict[tuple[int, int], int]] = None
     merged_skeleton_volume: Optional[np.ndarray] = None
     skeleton_radius_samples: Optional[np.ndarray] = None
     merge_meta: Optional[Dict[str, Any]] = None
@@ -325,6 +325,7 @@ class BatchResult:
     def has_3d_outputs(self) -> bool:
         return (
             self.labels_volume is not None
+            or self.raw_skeleton_volume is not None
             or self.merged_labels_volume is not None
             or self.merged_skeleton_volume is not None
             or self.skeleton_radius_samples is not None

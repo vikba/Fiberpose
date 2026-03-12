@@ -1302,8 +1302,6 @@ class MainWindow(QMainWindow):
             stack_analyzer_3d = StackAnalyzer_3D()
             self._batch_result = stack_analyzer_3d.process(
                 self._batch_result,
-                do_merge=True,
-                do_skeleton=True,
                 force=True,
             )
         except Exception as exc:

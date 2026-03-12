@@ -8,6 +8,7 @@ from PyQt6.QtGui import QColor, QPainter, QPen, QPolygonF
 from PyQt6.QtWidgets import QDialogButtonBox
 
 import pyqtgraph as pg
+from scipy.ndimage import convolve
 
 from .datastructures import BatchResult
 from .utils import label_to_rgb
@@ -302,6 +303,7 @@ class Stack3DWindow(QtWidgets.QDialog):
 
         self._volume_item = None
         self._scatter_item = None
+        self._junction_scatter_item = None
         self._line_items = []
         self._volume_source_u8: np.ndarray | None = None
         self._display_shape_zyx: tuple[int, int, int] | None = None
@@ -322,11 +324,13 @@ class Stack3DWindow(QtWidgets.QDialog):
         controls.addWidget(QtWidgets.QLabel("Imaging:"))
         self.cb_imaging = QtWidgets.QComboBox()
         self.cb_imaging.addItems(self._imaging_options)
+        self.cb_imaging.setCurrentText("Labels")
         controls.addWidget(self.cb_imaging)
 
         controls.addWidget(QtWidgets.QLabel("Projection Mode:"))
         self.cb_projection = QtWidgets.QComboBox()
         self.cb_projection.addItems(self._projection_options)
+        self.cb_projection.setCurrentText("Brightest Point")
         controls.addWidget(self.cb_projection)
         controls.addStretch(1)
         layout.addLayout(controls)
@@ -419,14 +423,11 @@ class Stack3DWindow(QtWidgets.QDialog):
                 return None
             return stack.astype(np.int32, copy=False)
         if method == "Centerlines":
-            if self._batch_result is not None and self._batch_result.merged_skeleton_volume is not None:
-                skeleton_volume = np.asarray(self._batch_result.merged_skeleton_volume)
+            if self._batch_result is not None and self._batch_result.raw_skeleton_volume is not None:
+                skeleton_volume = np.asarray(self._batch_result.raw_skeleton_volume)
                 if skeleton_volume.ndim == 3:
                     return skeleton_volume.astype(np.int32, copy=False)
-            stack = self._collect_stack(lambda fr: fr.centerlines)
-            if stack is None:
-                return None
-            return (stack > 0).astype(np.int32)
+            return None
         if method == "DT":
             return self._collect_stack(lambda fr: fr.dt)
         return None
@@ -437,7 +438,10 @@ class Stack3DWindow(QtWidgets.QDialog):
         method = self.cb_imaging.currentText()
         stack = self._stack_for_method(method)
         if stack is None:
-            self.lbl_render_info.setText("")
+            if method == "Centerlines":
+                self.lbl_render_info.setText("Centerlines require 3D skeleton. Run Analyze 3D first.")
+            else:
+                self.lbl_render_info.setText("")
             return
 
         if self._gl is None:
@@ -449,6 +453,9 @@ class Stack3DWindow(QtWidgets.QDialog):
         if self._scatter_item is not None:
             self.gl_view.removeItem(self._scatter_item)
             self._scatter_item = None
+        if self._junction_scatter_item is not None:
+            self.gl_view.removeItem(self._junction_scatter_item)
+            self._junction_scatter_item = None
         if self._line_items:
             for line_item in self._line_items:
                 self.gl_view.removeItem(line_item)
@@ -462,15 +469,15 @@ class Stack3DWindow(QtWidgets.QDialog):
         self._update_render_info(method)
 
         if method == "Labels":
-            self._set_intensity_controls_enabled(False)
+            self._set_intensity_controls_enabled(False, projection_enabled=True)
             self._volume_source_u8 = None
             labels_volume = np.asarray(stack, dtype=np.int32)
             if labels_volume.size == 0 or not np.any(labels_volume > 0):
                 return
-            rgba = self._make_rgba_for_labels(labels_volume)
+            projection = self.cb_projection.currentText()
+            rgba = self._make_rgba_for_labels(labels_volume, projection=projection)
             if rgba.size == 0:
                 return
-            projection = self.cb_projection.currentText()
             self._volume_item = self._gl.GLVolumeItem(rgba)
             self._apply_projection_mode(self._volume_item, projection)
             self._center_and_scale_volume_item(self._volume_item, rgba.shape[:3])
@@ -481,11 +488,63 @@ class Stack3DWindow(QtWidgets.QDialog):
             return
 
         if method == "Centerlines":
-            self._set_intensity_controls_enabled(False)
+            self._set_intensity_controls_enabled(False, projection_enabled=True)
             self._volume_source_u8 = None
             skeleton = np.asarray(stack, dtype=np.int32)
+            sz, sy, sx = self._display_step_zyx
+            projection = self.cb_projection.currentText()
+            overlay_on_top = projection == "Brightest Point"
+
+            semantic_stack = None
+            if self._batch_result is not None and self._batch_result.labels_volume is not None:
+                labels_volume = np.asarray(self._batch_result.labels_volume)
+                if labels_volume.ndim == 3:
+                    semantic_stack = labels_volume
+            if semantic_stack is None:
+                semantic_stack = self._collect_stack(lambda fr: fr.labels_2d)
+            if semantic_stack is not None:
+                semantic = np.asarray(semantic_stack)
+                if semantic.ndim == 3:
+                    semantic_mask = semantic > 0
+                    semantic_ds = self._downsample_with_steps(
+                        semantic_mask,
+                        (int(sz), int(sy), int(sx)),
+                        preserve_nonzero=True,
+                    )
+                    target = skeleton.shape
+                    if semantic_ds.shape != target:
+                        aligned = np.zeros(target, dtype=bool)
+                        z = min(target[0], semantic_ds.shape[0])
+                        y = min(target[1], semantic_ds.shape[1])
+                        x = min(target[2], semantic_ds.shape[2])
+                        aligned[:z, :y, :x] = semantic_ds[:z, :y, :x]
+                        semantic_ds = aligned
+                    if semantic_ds.size > 0 and np.any(semantic_ds):
+                        semantic_u8_xyz = np.transpose(
+                            semantic_ds.astype(np.ubyte, copy=False) * np.ubyte(255),
+                            (2, 1, 0),
+                        )
+                        rgba = self._make_rgba_for_projection(semantic_u8_xyz, projection)
+                        if rgba.size > 0:
+                            self._volume_item = self._gl.GLVolumeItem(rgba)
+                            self._apply_projection_mode(self._volume_item, projection)
+                            # Keep semantic volume in the same positive coordinate frame
+                            # as centerline points/segments (no centering translate).
+                            scale_x, scale_y, scale_z = self._display_scale_xyz()
+                            try:
+                                self._volume_item.scale(scale_x, scale_y, scale_z)
+                            except Exception:
+                                pass
+                            self.gl_view.addItem(self._volume_item)
+
             points = np.column_stack(np.nonzero(skeleton > 0))
             if points.size == 0:
+                if self._volume_item is not None:
+                    max_dim = self._scaled_extent_max(
+                        (int(skeleton.shape[2]), int(skeleton.shape[1]), int(skeleton.shape[0]))
+                    )
+                    self.gl_view.opts["center"] = pg.Vector(0.0, 0.0, 0.0)
+                    self.gl_view.setCameraPosition(distance=max_dim * 2.0)
                 return
             max_points = 200000
             if points.shape[0] > max_points:
@@ -494,35 +553,102 @@ class Stack3DWindow(QtWidgets.QDialog):
             pos = np.column_stack([points[:, 2], points[:, 1], points[:, 0]]).astype(np.float32)
             scale_xyz = np.asarray(self._display_scale_xyz(), dtype=np.float32)
             pos *= scale_xyz
-            point_labels = skeleton[points[:, 0], points[:, 1], points[:, 2]].astype(np.int32, copy=False)
-            color = self._labels_to_rgba(point_labels, alpha=0.9)
+            color = np.tile(np.array([[1.0, 0.0, 0.0, 1.0]], dtype=np.float32), (pos.shape[0], 1))
+
+            skel_mask = skeleton > 0
+            if np.any(skel_mask):
+                neighbor_count = convolve(
+                    skel_mask.astype(np.uint8),
+                    np.ones((3, 3, 3), dtype=np.uint8),
+                    mode="constant",
+                    cval=0,
+                ) - skel_mask.astype(np.uint8)
+                junctions = np.column_stack(np.nonzero(skel_mask & (neighbor_count >= 3)))
+                if junctions.size > 0:
+                    max_junctions = 40000
+                    if junctions.shape[0] > max_junctions:
+                        j_step = int(np.ceil(junctions.shape[0] / max_junctions))
+                        junctions = junctions[::j_step]
+                    j_pos = np.column_stack(
+                        [junctions[:, 2], junctions[:, 1], junctions[:, 0]]
+                    ).astype(np.float32)
+                    j_pos *= scale_xyz
+                    j_color = np.tile(
+                        np.array([[1.0, 0.25, 0.2, 1.0]], dtype=np.float32),
+                        (j_pos.shape[0], 1),
+                    )
+                    self._junction_scatter_item = self._gl.GLScatterPlotItem(
+                        pos=j_pos,
+                        color=j_color,
+                        size=9.0 if overlay_on_top else 7.0,
+                    )
+                    if overlay_on_top:
+                        try:
+                            self._junction_scatter_item.setGLOptions("additive")
+                            from OpenGL import GL
+
+                            self._junction_scatter_item.updateGLOptions(
+                                {
+                                    "glBlendEquation": (GL.GL_FUNC_ADD,),
+                                    "glBlendFunc": (GL.GL_SRC_ALPHA, GL.GL_ONE_MINUS_SRC_ALPHA),
+                                }
+                            )
+                        except Exception:
+                            pass
+                    self.gl_view.addItem(self._junction_scatter_item)
 
             line_pos, line_color = self._build_centerline_segments_xyz(skeleton, max_segments=350000)
             if line_pos.size > 0:
                 line_pos = line_pos * scale_xyz
+                line_color = np.tile(
+                    np.array([[1.0, 0.0, 0.0, 1.0]], dtype=np.float32),
+                    (line_pos.shape[0], 1),
+                )
             if line_pos.size > 0:
                 try:
                     line_item = self._gl.GLLinePlotItem(
                         pos=line_pos,
                         color=line_color,
-                        width=1.5,
+                        width=2.5 if overlay_on_top else 1.5,
                         mode="lines",
                         antialias=True,
                     )
-                    line_item.setGLOptions("translucent")
+                    if overlay_on_top:
+                        try:
+                            line_item.setGLOptions("additive")
+                            from OpenGL import GL
+
+                            line_item.updateGLOptions(
+                                {
+                                    "glBlendEquation": (GL.GL_FUNC_ADD,),
+                                    "glBlendFunc": (GL.GL_SRC_ALPHA, GL.GL_ONE_MINUS_SRC_ALPHA),
+                                }
+                            )
+                        except Exception:
+                            pass
                     self.gl_view.addItem(line_item)
                     self._line_items.append(line_item)
                 except Exception:
                     pass
 
-            self._scatter_item = self._gl.GLScatterPlotItem(pos=pos, color=color, size=3.0)
-            try:
-                from OpenGL import GL
+            self._scatter_item = self._gl.GLScatterPlotItem(
+                pos=pos,
+                color=color,
+                size=4.5 if overlay_on_top else 3.0,
+            )
+            if overlay_on_top:
+                try:
+                    self._scatter_item.setGLOptions("additive")
+                    from OpenGL import GL
 
-                self._scatter_item.setGLOptions("translucent")
-                self._scatter_item.updateGLOptions({"glBlendEquation": (GL.GL_FUNC_ADD,)})
-            except Exception:
-                pass
+                    self._scatter_item.updateGLOptions(
+                        {
+                            "glBlendEquation": (GL.GL_FUNC_ADD,),
+                            "glBlendFunc": (GL.GL_SRC_ALPHA, GL.GL_ONE_MINUS_SRC_ALPHA),
+                        }
+                    )
+                except Exception:
+                    pass
             self.gl_view.addItem(self._scatter_item)
             center = np.mean(pos, axis=0)
             max_dim = float(np.max(np.ptp(pos, axis=0))) if pos.shape[0] > 1 else 1.0
@@ -556,8 +682,10 @@ class Stack3DWindow(QtWidgets.QDialog):
         self.gl_view.opts["center"] = pg.Vector(0.0, 0.0, 0.0)
         self.gl_view.setCameraPosition(distance=max_dim * 2.0)
 
-    def _set_intensity_controls_enabled(self, enabled: bool):
-        self.cb_projection.setEnabled(enabled)
+    def _set_intensity_controls_enabled(self, enabled: bool, projection_enabled: bool | None = None):
+        if projection_enabled is None:
+            projection_enabled = enabled
+        self.cb_projection.setEnabled(bool(projection_enabled))
         self.range_slider.setEnabled(enabled)
         self.lbl_low.setEnabled(enabled)
         self.lbl_high.setEnabled(enabled)
@@ -626,12 +754,31 @@ class Stack3DWindow(QtWidgets.QDialog):
         rgba[..., 3] = vol_u8
         return rgba
 
-    def _make_rgba_for_labels(self, labels_volume: np.ndarray) -> np.ndarray:
+    def _make_rgba_for_labels(
+        self,
+        labels_volume: np.ndarray,
+        alpha_u8: int = 220,
+        projection: str = "Brightest Point",
+    ) -> np.ndarray:
         labels = np.asarray(labels_volume, dtype=np.int32)
         if labels.ndim != 3:
             return np.zeros((0, 0, 0, 4), dtype=np.ubyte)
 
         labels_xyz = np.transpose(labels, (2, 1, 0))
+        label_mask = labels_xyz > 0
+        if projection == "Mean Value":
+            axis = self._dominant_view_axis()
+            counts = np.count_nonzero(label_mask, axis=axis)
+            nz_counts = counts[counts > 0]
+            if nz_counts.size > 0:
+                effective_depth = float(np.percentile(nz_counts, 90))
+            else:
+                effective_depth = float(labels_xyz.shape[axis])
+            effective_depth = max(1.0, min(effective_depth, float(labels_xyz.shape[axis])))
+            alpha_u8 = int(np.clip(np.rint(255.0 / effective_depth), 1.0, 255.0))
+        elif projection == "Nearest Point":
+            alpha_u8 = 255
+
         flat = labels_xyz.reshape(-1)
         unique_labels, inverse = np.unique(flat, return_inverse=True)
         palette = np.zeros((unique_labels.size, 4), dtype=np.ubyte)
@@ -642,8 +789,42 @@ class Stack3DWindow(QtWidgets.QDialog):
             palette[idx, 0] = np.ubyte(r)
             palette[idx, 1] = np.ubyte(g)
             palette[idx, 2] = np.ubyte(b)
-            palette[idx, 3] = np.ubyte(220)
+            palette[idx, 3] = np.ubyte(max(0, min(255, int(alpha_u8))))
         return palette[inverse].reshape(labels_xyz.shape + (4,))
+
+    @staticmethod
+    def _downsample_with_steps(
+        stack_zyx: np.ndarray,
+        steps_zyx: tuple[int, int, int],
+        preserve_nonzero: bool = False,
+    ) -> np.ndarray:
+        arr = np.asarray(stack_zyx)
+        if arr.ndim != 3:
+            return arr
+        sz = max(1, int(steps_zyx[0]))
+        sy = max(1, int(steps_zyx[1]))
+        sx = max(1, int(steps_zyx[2]))
+        if (sz, sy, sx) == (1, 1, 1):
+            return arr
+        if not preserve_nonzero:
+            return arr[::sz, ::sy, ::sx]
+
+        z, y, x = arr.shape
+        rz = int(np.ceil(z / sz))
+        ry = int(np.ceil(y / sy))
+        rx = int(np.ceil(x / sx))
+        pad_z = int(rz * sz - z)
+        pad_y = int(ry * sy - y)
+        pad_x = int(rx * sx - x)
+        arr_pad = np.pad(
+            arr,
+            ((0, pad_z), (0, pad_y), (0, pad_x)),
+            mode="constant",
+            constant_values=0,
+        )
+        arr_blocks = arr_pad.reshape(rz, sz, ry, sy, rx, sx)
+        reduced = arr_blocks.max(axis=(1, 3, 5))
+        return reduced.astype(arr.dtype, copy=False)
 
     def _downsample_for_display(
         self,
