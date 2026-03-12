@@ -9,8 +9,9 @@ from tqdm import tqdm
 # ==========================================
 # Configuration
 # ==========================================
-INPUT_DIR = Path("/home/vk/workspace/Training/3D/dataset/masks/")
-OUTPUT_DIR = Path("/home/vk/workspace/Training/3D/dataset/targets2/")
+ROOT_DIR = Path("/home/vk/workspace/Training/3D_MT/")
+INPUT_DIR = ROOT_DIR / "dataset/masks"
+OUTPUT_DIR = ROOT_DIR / "dataset/targets2/"
 PREVIEW_DIR = OUTPUT_DIR / "previews"
 
 # Contour Smoothing Settings

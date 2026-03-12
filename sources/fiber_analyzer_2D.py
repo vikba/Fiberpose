@@ -412,12 +412,18 @@ class FiberAnalyzer_2D:
                 pts_xy = window_xy.reshape(-1, 2).astype(np.float32)
                 if pts_xy.size == 0:
                     continue
+                # Store per-point DT radii so strict ridge segmentation can
+                # threshold and dilate centerline runs by local thickness.
+                x_idx = np.clip(np.rint(pts_xy[:, 0]).astype(np.int32), 0, dt.shape[1] - 1)
+                y_idx = np.clip(np.rint(pts_xy[:, 1]).astype(np.int32), 0, dt.shape[0] - 1)
+                radii = np.asarray(dt[y_idx, x_idx], dtype=np.float32)
                 segment_counter += 1
                 fragments.append(
                     FiberFragment(
                         fragment_id=segment_counter,
                         centerline_xy=pts_xy,
-                        parent_fiber_id=source_id,
+                        radii=radii,
+                        parent_fiber_id=source_id + 1,
                     )
                 )
 
