@@ -18,43 +18,95 @@ class ImageBatch:
     def __len__(self) -> int:
         return len(self.frames)
 
+    @property
+    def kind(self) -> str:
+        """Returns the kind of loaded info: 'Image', 'Folder', or 'Stack'."""
+        return self.metadata.get("source_type", "image")
+
+    @property
+    def name(self) -> str:
+        """Returns the base name of the file or folder."""
+        path = self.metadata.get("source_path", "")
+        if not path:
+            return "Unknown"
+        return os.path.basename(os.path.normpath(path))
+
+    @staticmethod
+    def _extract_voxel_sizes(path: str) -> Dict[str, Any]:
+        """Attempts to read pixel width, height, and voxel depth from image metadata."""
+        sizes = {"pixel_width": None, "pixel_height": None, "voxel_depth": None, "unit": None}
+        
+        try:
+            meta = iio.immeta(path)
+            
+            # 1. Look for ImageJ specific metadata (very common for 3D stacks)
+            if "spacing" in meta:
+                sizes["voxel_depth"] = float(meta["spacing"])
+            if "unit" in meta:
+                sizes["unit"] = meta["unit"]
+                
+            # 2. Look for standard TIFF resolution tags
+            # Usually stored as pixels per resolution_unit (e.g., pixels per cm)
+            if "resolution" in meta:
+                res = meta["resolution"]
+                # Sometimes resolution is a tuple (X_res, Y_res)
+                if isinstance(res, tuple) and len(res) >= 2:
+                    rx, ry = float(res[0]), float(res[1])
+                    if rx > 0 and ry > 0:
+                        # Convert from "pixels per unit" to "unit per pixel"
+                        sizes["pixel_width"] = 1.0 / rx
+                        sizes["pixel_height"] = 1.0 / ry
+                        
+            # (You can add specific parsing for OME-TIFF or other formats here if needed)
+            
+        except Exception:
+            # If metadata parsing fails, we gracefully fallback to Nones
+            pass
+            
+        return sizes
+
     @staticmethod
     def _normalize_stack(data: np.ndarray) -> List[np.ndarray]:
         if data.ndim == 2:
             return [data]
         if data.ndim == 3:
-            # Treat HxWxC as a single frame when C looks like color channels.
             if data.shape[2] in (3, 4):
                 return [data]
-            # Otherwise assume ZxHxW grayscale stack.
             return [data[z] for z in range(data.shape[0])]
         if data.ndim == 4:
-            # ZxHxWxC color stack.
             return [data[z] for z in range(data.shape[0])]
         raise ValueError("Unsupported image dimensions for batch loading.")
 
     @classmethod
-    def from_path(cls, path: str) -> ImageBatch:
+    def from_path(cls, path: str) -> "ImageBatch":
         data = iio.imread(path)
         frames = cls._normalize_stack(data)
-        source_type = "single" if len(frames) == 1 else "stack"
+        source_type = "Image" if len(frames) == 1 else "Stack"
         filenames = [os.path.basename(path)] * len(frames)
+        
+        # --- Extract physical sizes ---
+        voxel_sizes = cls._extract_voxel_sizes(path)
+        
         metadata = {
             "source_type": source_type,
             "source_path": path,
             "filenames": filenames,
             "z_indices": list(range(len(frames))),
+            **voxel_sizes  # Merge the extracted sizes into the metadata dictionary
         }
         return cls(frames=frames, metadata=metadata)
 
     @classmethod
     def from_folder(
         cls, folder: str, extensions: Optional[Iterable[str]] = None
-    ) -> ImageBatch:
+    ) -> "ImageBatch":
         entries = sorted(os.listdir(folder))
         ext_set = {ext.lower() for ext in extensions} if extensions else None
         frames: List[np.ndarray] = []
         filenames: List[str] = []
+        
+        first_valid_path = None
+
         for name in entries:
             path = os.path.join(folder, name)
             if not os.path.isfile(path):
@@ -64,8 +116,11 @@ class ImageBatch:
                     continue
             try:
                 data = iio.imread(path)
+                if first_valid_path is None:
+                    first_valid_path = path # Save the first image to extract metadata
             except Exception:
                 continue
+            
             image_frames = cls._normalize_stack(data)
             for idx, frame in enumerate(image_frames):
                 frames.append(frame)
@@ -73,23 +128,63 @@ class ImageBatch:
                     filenames.append(name)
                 else:
                     filenames.append(f"{os.path.splitext(name)[0]}_z{idx:03d}")
+                    
+        # --- Extract physical sizes from the first image in the folder ---
+        voxel_sizes = {}
+        if first_valid_path:
+            voxel_sizes = cls._extract_voxel_sizes(first_valid_path)
+            
         metadata = {
-            "source_type": "folder",
+            "source_type": "Folder",
             "source_path": folder,
             "filenames": filenames,
             "z_indices": list(range(len(frames))),
+            **voxel_sizes
         }
         return cls(frames=frames, metadata=metadata)
 
     @classmethod
     def from_source(
         cls, path: str, extensions: Optional[Iterable[str]] = None
-    ) -> ImageBatch:
+    ) -> "ImageBatch":
         if os.path.isdir(path):
             return cls.from_folder(path, extensions=extensions)
         if os.path.isfile(path):
             return cls.from_path(path)
         raise FileNotFoundError(f"Source path does not exist: {path}")
+    
+@dataclass
+class BatchResult:
+    frame_results: List[Frame]
+    labels_volume: Optional[np.ndarray] = None
+    raw_skeleton_volume: Optional[np.ndarray] = None
+    merged_labels_volume: Optional[np.ndarray] = None
+    merged_skeleton_volume: Optional[np.ndarray] = None
+    skeleton_radius_samples: Optional[np.ndarray] = None
+    merge_meta: Optional[Dict[str, Any]] = None
+
+    def frame_at(self, index: int) -> Frame:
+        return self.frame_results[index]
+
+    @property
+    def has_3d_input(self) -> bool:
+        return len(self.frame_results) > 1
+
+    @property
+    def has_3d_outputs(self) -> bool:
+        return (
+            self.labels_volume is not None
+            or self.raw_skeleton_volume is not None
+            or self.merged_labels_volume is not None
+            or self.merged_skeleton_volume is not None
+            or self.skeleton_radius_samples is not None
+        )
+
+    def save_all(self, output_dir: str, export_config: Dict[str, Any] | None = None) -> Dict[str, Any]:
+        from .exporter import BatchResultExporter
+
+        exporter = BatchResultExporter(export_config=export_config)
+        return exporter.save_all(self, output_dir, export_config=export_config)
 
 
 @dataclass
@@ -302,40 +397,6 @@ class Frame:
         if not include_measurements:
             clone.clear_measurements()
         return clone
-
-
-@dataclass
-class BatchResult:
-    frame_results: List[Frame]
-    labels_volume: Optional[np.ndarray] = None
-    raw_skeleton_volume: Optional[np.ndarray] = None
-    merged_labels_volume: Optional[np.ndarray] = None
-    merged_skeleton_volume: Optional[np.ndarray] = None
-    skeleton_radius_samples: Optional[np.ndarray] = None
-    merge_meta: Optional[Dict[str, Any]] = None
-
-    def frame_at(self, index: int) -> Frame:
-        return self.frame_results[index]
-
-    @property
-    def has_3d_input(self) -> bool:
-        return len(self.frame_results) > 1
-
-    @property
-    def has_3d_outputs(self) -> bool:
-        return (
-            self.labels_volume is not None
-            or self.raw_skeleton_volume is not None
-            or self.merged_labels_volume is not None
-            or self.merged_skeleton_volume is not None
-            or self.skeleton_radius_samples is not None
-        )
-
-    def save_all(self, output_dir: str, export_config: Dict[str, Any] | None = None) -> Dict[str, Any]:
-        from .exporter import BatchResultExporter
-
-        exporter = BatchResultExporter(export_config=export_config)
-        return exporter.save_all(self, output_dir, export_config=export_config)
 
 
 @dataclass

@@ -434,6 +434,11 @@ class MainWindow(QMainWindow):
         if self.current_frame.orig_img is None:
             self._show_info("Load original", "Load an image before using the profile tool.")
             return False
+            
+        # 1. ADD THIS CHECK: If current_frame already has its DT, we are ready.
+        if self.current_frame.dt is not None:
+            return True
+
         if self.analyzer is None:
             self._show_error("Analyzer unavailable", "Fiber analyzer has not been initialized.")
             return False
@@ -443,18 +448,20 @@ class MainWindow(QMainWindow):
         max_angle = float(ridge_cfg.get("max_angle_deg", self._current_max_angle()))
         centerline_kwargs = dict(ridge_cfg.get("centerline_kwargs", {}))
 
-        if not self.analyzer.dt_predicted():
-            try:
-                self.analyzer.predict_dt(
-                    image=self.current_frame.orig_img,
-                    max_angle_deg=max_angle,
-                    centerline_kwargs=centerline_kwargs or None,
-                )
-            except Exception as exc:
-                self.current_frame.fail(str(exc))
-                self._show_error("Prediction failed", str(exc))
-                logger.error("Profile DT ensure failed: %s", exc)
-                return False
+        # 2. REMOVE the `if not self.analyzer.dt_predicted():` condition.
+        # If we reach here, current_frame.dt is None, so we MUST predict 
+        # specifically for this frame's original image.
+        try:
+            self.analyzer.predict_dt(
+                image=self.current_frame.orig_img,
+                max_angle_deg=max_angle,
+                centerline_kwargs=centerline_kwargs or None,
+            )
+        except Exception as exc:
+            self.current_frame.fail(str(exc))
+            self._show_error("Prediction failed", str(exc))
+            logger.error("Profile DT ensure failed: %s", exc)
+            return False
 
         dt = self.analyzer.get_dt()
         if dt is None:
@@ -467,6 +474,7 @@ class MainWindow(QMainWindow):
         dt_norm = self.analyzer.get_dt_norm()
         lapl = self.analyzer.get_laplacian()
         style_vec = self.analyzer.get_style_vector()
+        
         self.current_frame.set_prediction_outputs(
             dt=np.asarray(dt, dtype=np.float32, copy=False),
             gx=np.asarray(gx, dtype=np.float32, copy=False) if gx is not None else None,
@@ -2200,9 +2208,22 @@ class MainWindow(QMainWindow):
         self._update_slice_label()
 
     def _update_slice_label(self):
-        total = len(self._image_batch) if self._image_batch is not None else 1
-        current = self._current_z_index + 1 if total > 0 else 0
-        self._slice_label.setText(f"Slice {current} / {total}")
+        if self._image_batch is not None:
+            total = len(self._image_batch)
+            current = self._current_z_index + 1 if total > 0 else 0
+            kind = self._image_batch.kind
+            name = self._image_batch.name
+        else:
+            total = 1
+            current = 0
+            kind = "Image"
+            name = "Unsaved"
+            
+        # Determine the correct terminology for the counter
+        unit_label = "Slice" if kind == "Stack" else "Image"
+        
+        # Combine the name info (from before) with the dynamic unit label
+        self._slice_label.setText(f"{kind}: {name}  |  {unit_label}: {current}/{total}")
 
     def _frame_base_name(self, frame_id: str, z_index: int) -> str:
         base = os.path.splitext(str(frame_id))[0]
