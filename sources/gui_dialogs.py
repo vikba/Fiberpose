@@ -286,7 +286,12 @@ class RangeSlider(QtWidgets.QWidget):
 
 
 class Stack3DWindow(QtWidgets.QDialog):
-    def __init__(self, batch_result: BatchResult, parent: QtWidgets.QWidget | None = None):
+    def __init__(
+        self,
+        batch_result: BatchResult,
+        parent: QtWidgets.QWidget | None = None,
+        voxel_spacing_zyx: tuple[float, float, float] | None = None,
+    ):
         super().__init__(parent)
         self.setWindowTitle("3D Stack Viewer")
         self.resize(900, 700)
@@ -308,14 +313,15 @@ class Stack3DWindow(QtWidgets.QDialog):
         self._volume_source_u8: np.ndarray | None = None
         self._display_shape_zyx: tuple[int, int, int] | None = None
         self._display_step_zyx: tuple[int, int, int] = (1, 1, 1)
+        self._voxel_spacing_zyx: tuple[float, float, float] = (1.0, 1.0, 1.0)
         self._max_display_voxels = 8_000_000
         self._max_display_edge = 320
 
-        self._imaging_options = ["Original", "Labels", "Centerlines", "DT"]
+        self._imaging_options = ["Original", "Labels", "Semantic", "DT"]
         self._projection_options = ["Nearest Point", "Brightest Point", "Mean Value"]
 
         self._build_ui()
-        self.update_batch_result(batch_result)
+        self.update_batch_result(batch_result, voxel_spacing_zyx=voxel_spacing_zyx)
 
     def _build_ui(self):
         layout = QtWidgets.QVBoxLayout(self)
@@ -332,6 +338,10 @@ class Stack3DWindow(QtWidgets.QDialog):
         self.cb_projection.addItems(self._projection_options)
         self.cb_projection.setCurrentText("Brightest Point")
         controls.addWidget(self.cb_projection)
+        self.cb_semantic_centerlines = QtWidgets.QCheckBox("Overlay centerlines")
+        self.cb_semantic_centerlines.setChecked(False)
+        self.cb_semantic_centerlines.setEnabled(False)
+        controls.addWidget(self.cb_semantic_centerlines)
         controls.addStretch(1)
         layout.addLayout(controls)
 
@@ -369,12 +379,51 @@ class Stack3DWindow(QtWidgets.QDialog):
         intensity_layout.addLayout(levels_row)
         layout.addLayout(intensity_layout)
 
-        self.cb_imaging.currentIndexChanged.connect(self._update_view)
+        self.cb_imaging.currentIndexChanged.connect(self._on_imaging_mode_changed)
         self.cb_projection.currentIndexChanged.connect(self._update_view)
+        self.cb_semantic_centerlines.toggled.connect(self._update_view)
         self.range_slider.rangeChanged.connect(self._on_range_slider_changed)
+        self._on_imaging_mode_changed()
 
-    def update_batch_result(self, batch_result: BatchResult):
+    def _on_imaging_mode_changed(self):
+        semantic_mode = self.cb_imaging.currentText() == "Semantic"
+        self.cb_semantic_centerlines.setEnabled(semantic_mode)
+        if (not semantic_mode) and self.cb_semantic_centerlines.isChecked():
+            self.cb_semantic_centerlines.blockSignals(True)
+            self.cb_semantic_centerlines.setChecked(False)
+            self.cb_semantic_centerlines.blockSignals(False)
+        self._update_view()
+
+    @staticmethod
+    def _parse_voxel_spacing(
+        voxel_spacing_zyx: tuple[float, float, float] | list[float] | np.ndarray,
+    ) -> tuple[float, float, float]:
+        if len(voxel_spacing_zyx) != 3:
+            raise ValueError("voxel_spacing_zyx must contain exactly 3 values.")
+        spacing = tuple(float(v) for v in voxel_spacing_zyx)
+        if any((not np.isfinite(v)) or v <= 0.0 for v in spacing):
+            raise ValueError("voxel_spacing_zyx values must be positive finite numbers.")
+        return spacing
+
+    def update_batch_result(
+        self,
+        batch_result: BatchResult,
+        voxel_spacing_zyx: tuple[float, float, float] | None = None,
+    ):
         self._batch_result = batch_result
+        if voxel_spacing_zyx is not None:
+            try:
+                self._voxel_spacing_zyx = self._parse_voxel_spacing(voxel_spacing_zyx)
+            except Exception:
+                self._voxel_spacing_zyx = (1.0, 1.0, 1.0)
+        elif batch_result is not None:
+            merge_meta = batch_result.merge_meta or {}
+            spacing_meta = merge_meta.get("voxel_spacing_zyx")
+            if spacing_meta is not None:
+                try:
+                    self._voxel_spacing_zyx = self._parse_voxel_spacing(spacing_meta)
+                except Exception:
+                    self._voxel_spacing_zyx = (1.0, 1.0, 1.0)
         self._update_view()
 
     def _collect_stack(self, selector) -> np.ndarray | None:
@@ -409,7 +458,7 @@ class Stack3DWindow(QtWidgets.QDialog):
             if stack is None:
                 return None
             return stack
-        if method == "Labels":
+        if method in {"Labels", "Semantic"}:
             if self._batch_result is not None and self._batch_result.merged_labels_volume is not None:
                 labels_volume = np.asarray(self._batch_result.merged_labels_volume)
                 if labels_volume.ndim == 3:
@@ -422,12 +471,6 @@ class Stack3DWindow(QtWidgets.QDialog):
             if stack is None:
                 return None
             return stack.astype(np.int32, copy=False)
-        if method == "Centerlines":
-            if self._batch_result is not None and self._batch_result.raw_skeleton_volume is not None:
-                skeleton_volume = np.asarray(self._batch_result.raw_skeleton_volume)
-                if skeleton_volume.ndim == 3:
-                    return skeleton_volume.astype(np.int32, copy=False)
-            return None
         if method == "DT":
             return self._collect_stack(lambda fr: fr.dt)
         return None
@@ -438,8 +481,8 @@ class Stack3DWindow(QtWidgets.QDialog):
         method = self.cb_imaging.currentText()
         stack = self._stack_for_method(method)
         if stack is None:
-            if method == "Centerlines":
-                self.lbl_render_info.setText("Centerlines require 3D skeleton. Run Analyze 3D first.")
+            if method == "Semantic":
+                self.lbl_render_info.setText("Semantic view requires labels. Run segmentation first.")
             else:
                 self.lbl_render_info.setText("")
             return
@@ -464,7 +507,7 @@ class Stack3DWindow(QtWidgets.QDialog):
         stack = np.asarray(stack)
         stack = self._downsample_for_display(
             stack,
-            preserve_nonzero=(method == "Centerlines"),
+            preserve_nonzero=(method == "Semantic"),
         )
         self._update_render_info(method)
 
@@ -487,71 +530,84 @@ class Stack3DWindow(QtWidgets.QDialog):
             self.gl_view.setCameraPosition(distance=max_dim * 2.0)
             return
 
-        if method == "Centerlines":
+        if method == "Semantic":
             self._set_intensity_controls_enabled(False, projection_enabled=True)
             self._volume_source_u8 = None
-            skeleton = np.asarray(stack, dtype=np.int32)
-            sz, sy, sx = self._display_step_zyx
+            semantic = np.asarray(stack, dtype=np.int32)
+            semantic_mask = semantic > 0
+            if semantic_mask.size == 0 or not np.any(semantic_mask):
+                return
+
             projection = self.cb_projection.currentText()
             overlay_on_top = projection == "Brightest Point"
+            scale_x, scale_y, scale_z = self._display_scale_xyz()
 
-            semantic_stack = None
-            if self._batch_result is not None and self._batch_result.labels_volume is not None:
-                labels_volume = np.asarray(self._batch_result.labels_volume)
-                if labels_volume.ndim == 3:
-                    semantic_stack = labels_volume
-            if semantic_stack is None:
-                semantic_stack = self._collect_stack(lambda fr: fr.labels_2d)
-            if semantic_stack is not None:
-                semantic = np.asarray(semantic_stack)
-                if semantic.ndim == 3:
-                    semantic_mask = semantic > 0
-                    semantic_ds = self._downsample_with_steps(
-                        semantic_mask,
-                        (int(sz), int(sy), int(sx)),
-                        preserve_nonzero=True,
-                    )
-                    target = skeleton.shape
-                    if semantic_ds.shape != target:
-                        aligned = np.zeros(target, dtype=bool)
-                        z = min(target[0], semantic_ds.shape[0])
-                        y = min(target[1], semantic_ds.shape[1])
-                        x = min(target[2], semantic_ds.shape[2])
-                        aligned[:z, :y, :x] = semantic_ds[:z, :y, :x]
-                        semantic_ds = aligned
-                    if semantic_ds.size > 0 and np.any(semantic_ds):
-                        semantic_u8_xyz = np.transpose(
-                            semantic_ds.astype(np.ubyte, copy=False) * np.ubyte(255),
-                            (2, 1, 0),
-                        )
-                        rgba = self._make_rgba_for_projection(semantic_u8_xyz, projection)
-                        if rgba.size > 0:
-                            self._volume_item = self._gl.GLVolumeItem(rgba)
-                            self._apply_projection_mode(self._volume_item, projection)
-                            # Keep semantic volume in the same positive coordinate frame
-                            # as centerline points/segments (no centering translate).
-                            scale_x, scale_y, scale_z = self._display_scale_xyz()
-                            try:
-                                self._volume_item.scale(scale_x, scale_y, scale_z)
-                            except Exception:
-                                pass
-                            self.gl_view.addItem(self._volume_item)
+            semantic_u8_xyz = np.transpose(
+                semantic_mask.astype(np.ubyte, copy=False) * np.ubyte(255),
+                (2, 1, 0),
+            )
+            rgba = self._make_rgba_for_projection(semantic_u8_xyz, projection)
+            if rgba.size > 0:
+                self._volume_item = self._gl.GLVolumeItem(rgba)
+                self._apply_projection_mode(self._volume_item, projection)
+                # Keep semantic volume in the same positive coordinate frame
+                # as optional centerline points/segments (no centering translate).
+                try:
+                    self._volume_item.scale(scale_x, scale_y, scale_z)
+                except Exception:
+                    pass
+                self.gl_view.addItem(self._volume_item)
+
+            center_default = pg.Vector(
+                (float(semantic.shape[2]) * scale_x) / 2.0,
+                (float(semantic.shape[1]) * scale_y) / 2.0,
+                (float(semantic.shape[0]) * scale_z) / 2.0,
+            )
+            max_dim_default = self._scaled_extent_max(
+                (int(semantic.shape[2]), int(semantic.shape[1]), int(semantic.shape[0]))
+            )
+
+            if not self.cb_semantic_centerlines.isChecked():
+                self.gl_view.opts["center"] = center_default
+                self.gl_view.setCameraPosition(distance=max_dim_default * 2.0)
+                return
+
+            skeleton_stack = None
+            if self._batch_result is not None and self._batch_result.raw_skeleton_volume is not None:
+                skeleton_volume = np.asarray(self._batch_result.raw_skeleton_volume)
+                if skeleton_volume.ndim == 3:
+                    skeleton_stack = skeleton_volume.astype(np.int32, copy=False)
+            if skeleton_stack is None:
+                self.gl_view.opts["center"] = center_default
+                self.gl_view.setCameraPosition(distance=max_dim_default * 2.0)
+                return
+
+            sz, sy, sx = self._display_step_zyx
+            skeleton = self._downsample_with_steps(
+                skeleton_stack,
+                (int(sz), int(sy), int(sx)),
+                preserve_nonzero=True,
+            )
+            if skeleton.shape != semantic.shape:
+                aligned = np.zeros(semantic.shape, dtype=np.int32)
+                z = min(semantic.shape[0], skeleton.shape[0])
+                y = min(semantic.shape[1], skeleton.shape[1])
+                x = min(semantic.shape[2], skeleton.shape[2])
+                aligned[:z, :y, :x] = skeleton[:z, :y, :x]
+                skeleton = aligned
 
             points = np.column_stack(np.nonzero(skeleton > 0))
             if points.size == 0:
-                if self._volume_item is not None:
-                    max_dim = self._scaled_extent_max(
-                        (int(skeleton.shape[2]), int(skeleton.shape[1]), int(skeleton.shape[0]))
-                    )
-                    self.gl_view.opts["center"] = pg.Vector(0.0, 0.0, 0.0)
-                    self.gl_view.setCameraPosition(distance=max_dim * 2.0)
+                self.gl_view.opts["center"] = center_default
+                self.gl_view.setCameraPosition(distance=max_dim_default * 2.0)
                 return
+
             max_points = 200000
             if points.shape[0] > max_points:
                 step = int(np.ceil(points.shape[0] / max_points))
                 points = points[::step]
             pos = np.column_stack([points[:, 2], points[:, 1], points[:, 0]]).astype(np.float32)
-            scale_xyz = np.asarray(self._display_scale_xyz(), dtype=np.float32)
+            scale_xyz = np.asarray((scale_x, scale_y, scale_z), dtype=np.float32)
             pos *= scale_xyz
             color = np.tile(np.array([[1.0, 0.0, 0.0, 1.0]], dtype=np.float32), (pos.shape[0], 1))
 
@@ -896,7 +952,12 @@ class Stack3DWindow(QtWidgets.QDialog):
 
     def _display_scale_xyz(self) -> tuple[float, float, float]:
         sz, sy, sx = self._display_step_zyx
-        return float(max(1, sx)), float(max(1, sy)), float(max(1, sz))
+        vz, vy, vx = self._voxel_spacing_zyx
+        return (
+            float(max(1, sx)) * float(vx),
+            float(max(1, sy)) * float(vy),
+            float(max(1, sz)) * float(vz),
+        )
 
     def _scaled_extent_max(self, shape_xyz: tuple[int, int, int]) -> float:
         scale_x, scale_y, scale_z = self._display_scale_xyz()

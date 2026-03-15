@@ -1325,10 +1325,19 @@ class MainWindow(QMainWindow):
         if len(self._batch_result.frame_results) < 2:
             self._show_info("3D view", "3D view requires more than one slice.")
             return
+        self.sync_ui_to_sample_properties()
+        voxel_spacing_zyx = self.sample_props.spacing_zyx()
         if self._stack3d_window is None:
-            self._stack3d_window = Stack3DWindow(self._batch_result, parent=self)
+            self._stack3d_window = Stack3DWindow(
+                self._batch_result,
+                parent=self,
+                voxel_spacing_zyx=voxel_spacing_zyx,
+            )
         else:
-            self._stack3d_window.update_batch_result(self._batch_result)
+            self._stack3d_window.update_batch_result(
+                self._batch_result,
+                voxel_spacing_zyx=voxel_spacing_zyx,
+            )
         self._stack3d_window.show()
         self._stack3d_window.raise_()
         self._stack3d_window.activateWindow()
@@ -1410,7 +1419,10 @@ class MainWindow(QMainWindow):
         applied_slices = self._apply_merged_labels_to_batch_frames(self._batch_result)
         self._set_current_slice(self._current_z_index, update_view=True)
         if self._stack3d_window is not None:
-            self._stack3d_window.update_batch_result(self._batch_result)
+            self._stack3d_window.update_batch_result(
+                self._batch_result,
+                voxel_spacing_zyx=voxel_spacing_zyx,
+            )
         self.action_save_masks_predictions.setEnabled(True)
 
         if applied_slices <= 0:
