@@ -1,25 +1,15 @@
 {
-  "model": {
-    "checkpoint_path": "checkpoints/fiber_2000_epoch.pt"
-  },
-  "ui": {
-    "checkboxes": {
-      "high_confidence": false,
-      "use_gpu": false
-    },
-    "line_edits": {
-      "min_area": "50",
-      "min_eccentricity": "0.9",
-      "min_skeleton_len": "20",
-      "pixel_size": "",
-      "sample_spacing": "5"
-    },
-    "spin_boxes": {
-      "max_centerline_angle": 45,
-      "segmentation_threshold": 1
-    },
-    "view": {
-      "current": "DT"
-    }
-  }
+    "checkpoint_path": "checkpoints/3D_fluo_512.pt",
+    "use_gpu": true,
+    "scale_string": "1x",
+    "min_area": 50.0,
+    "min_eccentricity": 0.9,
+    "min_skeleton_len": 20.0,
+    "max_angle_deg": 30.0,
+    "strict_centerlines": false,
+    "segmentation_mode": "fastest_ascend",
+    "seg_threshold": 1,
+    "sample_spacing": 5.0,
+    "cluster_enabled": false,
+    "cluster_params": {}
 }

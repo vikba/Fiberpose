@@ -8,6 +8,7 @@ import os
 import imageio.v3 as iio
 import numpy as np
 import logging
+from tifffile import TiffFile
 logger = logging.getLogger(__name__)
 
 @dataclass
@@ -32,8 +33,6 @@ class AppConfig:
     
     # --- Analysis & Physical Units ---
     sample_spacing: float = 5.0
-    pixel_size: float = 1.0
-    units: str = "px"
     
     # --- Clustering ---
     cluster_enabled: bool = False
@@ -54,6 +53,98 @@ class AppConfig:
                 return cls(**filtered_data)
         except Exception:
             return cls()
+
+
+@dataclass
+class SampleProperties:
+    """Per-loaded-sample physical calibration used by analysis and UI."""
+
+    pixel_size_x: float = 1.0
+    pixel_size_y: float = 1.0
+    voxel_size_z: float = 1.0
+    unit: str = "px"
+    source: str = "default"
+    source_path: str = ""
+
+    @staticmethod
+    def _as_positive(value: Any, default: float = 1.0) -> float:
+        if isinstance(value, (tuple, list)) and len(value) == 2:
+            try:
+                value = float(value[0]) / float(value[1])
+            except (TypeError, ValueError, ZeroDivisionError):
+                return float(default)
+        try:
+            out = float(value)
+        except (TypeError, ValueError):
+            return float(default)
+        if out <= 0 or not np.isfinite(out):
+            return float(default)
+        return out
+
+    @classmethod
+    def defaults(cls) -> "SampleProperties":
+        return cls(
+            pixel_size_x=1.0,
+            pixel_size_y=1.0,
+            voxel_size_z=1.0,
+            unit="px",
+            source="default",
+            source_path="",
+        )
+
+    @classmethod
+    def from_image_metadata(
+        cls,
+        metadata: Optional[Dict[str, Any]],
+        *,
+        source_path: str = "",
+    ) -> "SampleProperties":
+        meta = metadata or {}
+        px_raw = meta.get("pixel_width")
+        py_raw = meta.get("pixel_height")
+        pz_raw = meta.get("voxel_depth")
+        unit_raw = meta.get("unit")
+
+        has_px = px_raw is not None and cls._as_positive(px_raw, default=-1.0) > 0
+        has_py = py_raw is not None and cls._as_positive(py_raw, default=-1.0) > 0
+        has_pz = pz_raw is not None and cls._as_positive(pz_raw, default=-1.0) > 0
+
+        px = cls._as_positive(px_raw) if has_px else None
+        py = cls._as_positive(py_raw) if has_py else None
+        pz = cls._as_positive(pz_raw) if has_pz else 1.0
+
+        if px is None and py is None:
+            px = 1.0
+            py = 1.0
+        elif px is None:
+            px = py
+        elif py is None:
+            py = px
+
+        unit_txt = str(unit_raw).strip() if unit_raw is not None else ""
+        unit = unit_txt if unit_txt else "px"
+
+        has_metadata = bool(has_px or has_py or has_pz or unit_txt)
+        return cls(
+            pixel_size_x=float(px),
+            pixel_size_y=float(py),
+            voxel_size_z=float(pz),
+            unit=unit,
+            source="metadata" if has_metadata else "default",
+            source_path=str(source_path or meta.get("source_path") or ""),
+        )
+
+    def effective_pixel_size_xy(self) -> float:
+        x = self._as_positive(self.pixel_size_x)
+        y = self._as_positive(self.pixel_size_y)
+        return 0.5 * (x + y)
+
+    def spacing_zyx(self) -> tuple[float, float, float]:
+        return (
+            self._as_positive(self.voxel_size_z),
+            self._as_positive(self.pixel_size_y),
+            self._as_positive(self.pixel_size_x),
+        )
 
 @dataclass
 class ImageBatch:
@@ -79,36 +170,117 @@ class ImageBatch:
 
     @staticmethod
     def _extract_voxel_sizes(path: str) -> Dict[str, Any]:
-        """Attempts to read pixel width, height, and voxel depth from image metadata."""
+        """Read physical calibration from TIFF tags and common metadata keys."""
         sizes = {"pixel_width": None, "pixel_height": None, "voxel_depth": None, "unit": None}
-        
+
+        def _positive(value: Any) -> Optional[float]:
+            if value is None:
+                return None
+            if isinstance(value, (tuple, list)) and len(value) == 2:
+                try:
+                    value = float(value[0]) / float(value[1])
+                except (TypeError, ValueError, ZeroDivisionError):
+                    return None
+            try:
+                out = float(value)
+            except (TypeError, ValueError):
+                return None
+            if out <= 0 or not np.isfinite(out):
+                return None
+            return out
+
+        def _unit_scale_to_um(unit_value: Any) -> Optional[float]:
+            if unit_value is None:
+                return None
+            token = str(getattr(unit_value, "name", unit_value)).strip().lower()
+            if token in {"inch", "in", "inches"}:
+                return 25400.0
+            if token in {"centimeter", "centimetre", "cm"}:
+                return 10000.0
+            if token in {"millimeter", "millimetre", "mm"}:
+                return 1000.0
+            if token in {"resunit.inch", "resunit.centimeter", "resunit.centimetre"}:
+                if "inch" in token:
+                    return 25400.0
+                return 10000.0
+            try:
+                token_num = int(unit_value)
+            except (TypeError, ValueError):
+                return None
+            if token_num == 2:
+                return 25400.0
+            if token_num == 3:
+                return 10000.0
+            return None
+
         try:
             meta = iio.immeta(path)
-            
-            # 1. Look for ImageJ specific metadata (very common for 3D stacks)
-            if "spacing" in meta:
-                sizes["voxel_depth"] = float(meta["spacing"])
-            if "unit" in meta:
-                sizes["unit"] = meta["unit"]
-                
-            # 2. Look for standard TIFF resolution tags
-            # Usually stored as pixels per resolution_unit (e.g., pixels per cm)
-            if "resolution" in meta:
-                res = meta["resolution"]
-                # Sometimes resolution is a tuple (X_res, Y_res)
-                if isinstance(res, tuple) and len(res) >= 2:
-                    rx, ry = float(res[0]), float(res[1])
-                    if rx > 0 and ry > 0:
-                        # Convert from "pixels per unit" to "unit per pixel"
-                        sizes["pixel_width"] = 1.0 / rx
-                        sizes["pixel_height"] = 1.0 / ry
-                        
-            # (You can add specific parsing for OME-TIFF or other formats here if needed)
-            
         except Exception:
-            # If metadata parsing fails, we gracefully fallback to Nones
-            pass
-            
+            meta = {}
+
+        sizes["voxel_depth"] = (
+            _positive(meta.get("spacing"))
+            or _positive(meta.get("PhysicalSizeZ"))
+        )
+        sizes["unit"] = str(
+            meta.get("unit")
+            or meta.get("PhysicalSizeXUnit")
+            or meta.get("PhysicalSizeYUnit")
+            or meta.get("PhysicalSizeZUnit")
+            or ""
+        ).strip() or None
+
+        sizes["pixel_width"] = (
+            _positive(meta.get("pixel_width"))
+            or _positive(meta.get("PhysicalSizeX"))
+        )
+        sizes["pixel_height"] = (
+            _positive(meta.get("pixel_height"))
+            or _positive(meta.get("PhysicalSizeY"))
+        )
+
+        if (
+            (sizes["pixel_width"] is None or sizes["pixel_height"] is None)
+            and str(path).lower().endswith((".tif", ".tiff"))
+        ):
+            with TiffFile(path) as tif:
+                tags = tif.pages[0].tags
+                x_res = _positive(tags["XResolution"].value if "XResolution" in tags else None)
+                y_res = _positive(tags["YResolution"].value if "YResolution" in tags else None)
+                res_unit = tags["ResolutionUnit"].value if "ResolutionUnit" in tags else None
+                unit_scale = _unit_scale_to_um(res_unit)
+
+                if sizes["pixel_width"] is None and x_res is not None:
+                    sizes["pixel_width"] = (1.0 / x_res) * (unit_scale or 1.0)
+                if sizes["pixel_height"] is None and y_res is not None:
+                    sizes["pixel_height"] = (1.0 / y_res) * (unit_scale or 1.0)
+                if sizes["unit"] is None and unit_scale is not None:
+                    sizes["unit"] = "um"
+
+        # Minimal fallback for non-TIFF metadata formats.
+        if sizes["pixel_width"] is None or sizes["pixel_height"] is None:
+            res = meta.get("resolution")
+            rx = None
+            ry = None
+            if isinstance(res, (tuple, list)) and len(res) >= 2:
+                rx = _positive(res[0])
+                ry = _positive(res[1])
+            elif isinstance(res, dict):
+                rx = _positive(res.get("x") or res.get("X"))
+                ry = _positive(res.get("y") or res.get("Y"))
+
+            unit_scale = _unit_scale_to_um(
+                meta.get("resolution_unit")
+                or meta.get("ResolutionUnit")
+                or meta.get("resolutionunit")
+            )
+            if sizes["pixel_width"] is None and rx is not None:
+                sizes["pixel_width"] = (1.0 / rx) * (unit_scale or 1.0)
+            if sizes["pixel_height"] is None and ry is not None:
+                sizes["pixel_height"] = (1.0 / ry) * (unit_scale or 1.0)
+            if sizes["unit"] is None and unit_scale is not None:
+                sizes["unit"] = "um"
+
         return sizes
 
     @staticmethod

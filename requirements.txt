@@ -6,6 +6,7 @@ scipy
 numba
 scikit-image
 imageio
+tifffile
 matplotlib
 Pillow
 pyqtgraph

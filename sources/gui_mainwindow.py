@@ -30,7 +30,7 @@ logging.basicConfig(level=logging.INFO)
 
 from .gui_dialogs import PlotProfileDialog, BatchSaveOptionsDialog, Stack3DWindow
 from .fiber_analyzer_2D import FiberAnalyzer_2D
-from .datastructures import BatchResult, Frame, ImageBatch, AppConfig
+from .datastructures import BatchResult, Frame, ImageBatch, AppConfig, SampleProperties
 from .batch_pipeline import BatchAnalyzer, StackAnalyzer_3D
 from .utils import ensure_rgb_u8, label_to_rgb, to_uint8_for_view
 
@@ -78,10 +78,13 @@ class MainWindow(QMainWindow):
         super().__init__()
         loadUi(ui_path, self)
         self.setWindowTitle("Fiberpose — fiber segmentation and analysis tool")
+        self.config_filepath = os.path.abspath(config_path)
 
         # Load config and sync to UI
-        self.config = AppConfig.load_from_json(config_path)
+        self.config = AppConfig.load_from_json(self.config_filepath)
+        self.sample_props = SampleProperties.defaults()
         self.sync_config_to_ui()
+        self.sync_sample_properties_to_ui()
 
         # Enable real-time syncing!
         self._connect_config_signals()
@@ -247,7 +250,11 @@ class MainWindow(QMainWindow):
         """Triggered when the user closes the main window."""
         # Grab the latest state from the UI
         self.sync_ui_to_config()
+        self.sync_ui_to_sample_properties()
         # Save it to disk
+        cfg_dir = os.path.dirname(self.config_filepath)
+        if cfg_dir:
+            os.makedirs(cfg_dir, exist_ok=True)
         self.config.save_to_json(self.config_filepath)
         super().closeEvent(event)
 
@@ -257,7 +264,7 @@ class MainWindow(QMainWindow):
         # Combo boxes (Dropdowns)
         self.cb_model.currentIndexChanged.connect(self.sync_ui_to_config)
         self.cb_scale.currentIndexChanged.connect(self.sync_ui_to_config)
-        self.cb_units.currentTextChanged.connect(self.sync_ui_to_config)
+        self.cb_units.currentTextChanged.connect(self.sync_ui_to_sample_properties)
 
         # Checkboxes and Radio Buttons
         self.chb_usegpu.toggled.connect(self.sync_ui_to_config)
@@ -276,10 +283,14 @@ class MainWindow(QMainWindow):
         # Line Edits (Text boxes)
         # Note: We use `editingFinished` instead of `textChanged`. 
         self.le_minarea.editingFinished.connect(self.sync_ui_to_config)
-        self.le_mineccentricity.editingFinished.connect(self.sync_ui_to_config)
-        self.le_minskeletonlen.editingFinished.connect(self.sync_ui_to_config)
+        if hasattr(self, "le_mineccentricity"):
+            self.le_mineccentricity.editingFinished.connect(self.sync_ui_to_config)
+        if hasattr(self, "le_minskeletonlen"):
+            self.le_minskeletonlen.editingFinished.connect(self.sync_ui_to_config)
         self.le_samspacing.editingFinished.connect(self.sync_ui_to_config)
-        self.le_pixelsize.editingFinished.connect(self.sync_ui_to_config)
+        self.le_pixelsize.editingFinished.connect(self.sync_ui_to_sample_properties)
+        if hasattr(self, "le_voxeldepth"):
+            self.le_voxeldepth.editingFinished.connect(self.sync_ui_to_sample_properties)
 
     def _init_checkpoint_selector(self) -> None:
         checkpoints = self._discover_checkpoint_files()
@@ -666,6 +677,34 @@ class MainWindow(QMainWindow):
         self._configure_z_scroll(len(image_batch))
         self._set_current_slice(0, update_view=True)
 
+    def _apply_sample_properties_from_batch(self, image_batch: ImageBatch) -> None:
+        source_path = str(image_batch.metadata.get("source_path", ""))
+        self.sample_props = SampleProperties.from_image_metadata(
+            image_batch.metadata,
+            source_path=source_path,
+        )
+        self.sync_sample_properties_to_ui()
+
+        z, y, x = self.sample_props.spacing_zyx()
+        logger.info(
+            "Sample metadata applied: pixel_width=%s pixel_height=%s voxel_depth=%s unit=%s source=%s",
+            image_batch.metadata.get("pixel_width"),
+            image_batch.metadata.get("pixel_height"),
+            image_batch.metadata.get("voxel_depth"),
+            image_batch.metadata.get("unit"),
+            self.sample_props.source,
+        )
+        if self.sample_props.source == "metadata":
+            self.statusbar.showMessage(
+                f"Loaded sample spacing from metadata: z={z:.6g}, y={y:.6g}, x={x:.6g} {self.sample_props.unit}/px",
+                6000,
+            )
+        else:
+            self.statusbar.showMessage(
+                "No spacing metadata found. Using default sample spacing: z=1, y=1, x=1 px.",
+                6000,
+            )
+
     def open_source(self, path: str | None = None, source_kind: str = "auto") -> ImageBatch | None:
         selected_path = path
 
@@ -716,6 +755,7 @@ class MainWindow(QMainWindow):
         else:
             self.working_dir = os.path.dirname(selected_path)
         self._set_image_batch(image_batch)
+        self._apply_sample_properties_from_batch(image_batch)
         logger.info("Loaded %d frame(s) from %s", len(image_batch), selected_path)
         return image_batch
 
@@ -1013,12 +1053,11 @@ class MainWindow(QMainWindow):
             return
 
         pixel_size = self._scalebar_length_value / pixel_length
-        self.le_pixelsize.setText(f"{pixel_size:.6g}")
-        index = self.cb_units.findText(self._scalebar_unit)
-        if index >= 0:
-            self.cb_units.setCurrentIndex(index)
-        else:
-            self.cb_units.setCurrentText(self._scalebar_unit)
+        self.sample_props.pixel_size_x = float(pixel_size)
+        self.sample_props.pixel_size_y = float(pixel_size)
+        self.sample_props.unit = str(self._scalebar_unit or "px")
+        self.sample_props.source = "manual"
+        self.sync_sample_properties_to_ui()
 
         self._show_info(
             "Scalebar Set",
@@ -1345,9 +1384,12 @@ class MainWindow(QMainWindow):
             self._show_info("Analyze 3D", "3D analysis requires at least two slices.")
             return
 
+        self.sync_ui_to_sample_properties()
+        voxel_spacing_zyx = self.sample_props.spacing_zyx()
+
         QtWidgets.QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
         try:
-            stack_analyzer_3d = StackAnalyzer_3D()
+            stack_analyzer_3d = StackAnalyzer_3D(voxel_spacing_zyx=voxel_spacing_zyx)
             self._batch_result = stack_analyzer_3d.process(
                 self._batch_result,
                 force=True,
@@ -1757,6 +1799,7 @@ class MainWindow(QMainWindow):
             return
         
         self.sync_ui_to_config()
+        self.sync_ui_to_sample_properties()
         fr.error_message = None
         fr.clear_measurements()
         
@@ -1793,9 +1836,8 @@ class MainWindow(QMainWindow):
         current_scale = fr.scale_factor if fr.scale_factor and np.isfinite(fr.scale_factor) else 1.0
         spacing_px_scaled = max(1.0, spacing_px_input * current_scale)
         
-        pixel_size = self.config.pixel_size
-        # Fallback to "px" if no pixel size was effectively set
-        units_label = self.config.units if self.config.units and pixel_size != 1.0 else "px"
+        pixel_size = self.sample_props.effective_pixel_size_xy()
+        units_label = self.sample_props.unit if self.sample_props.unit else "px"
 
         # compute via analyzer
         if self.analyzer is None:
@@ -1854,7 +1896,7 @@ class MainWindow(QMainWindow):
         )
 
         # convenience arrays for hist/units
-        # pixel_size is already loaded from self.config.pixel_size above
+        # pixel_size is loaded from per-sample properties above
         pore_scale = fr.scale_factor if fr.scale_factor and np.isfinite(fr.scale_factor) else 1.0
 
         if pore_scale == 0:
@@ -2510,7 +2552,58 @@ class MainWindow(QMainWindow):
             self.rb_fastest_ascend.setChecked(True)
             return
         self.rb_watershed.setChecked(True)
-    
+
+    def sync_ui_to_sample_properties(self):
+        """Reads sample-specific calibration fields from the UI."""
+        if not hasattr(self, "sample_props") or self.sample_props is None:
+            self.sample_props = SampleProperties.defaults()
+
+        def _parse_positive(text: str, fallback: float) -> float:
+            text = (text or "").strip()
+            if not text:
+                return float(fallback)
+            try:
+                value = float(text)
+            except ValueError:
+                return float(fallback)
+            if value > 0 and np.isfinite(value):
+                return float(value)
+            return float(fallback)
+
+        px = _parse_positive(
+            self.le_pixelsize.text(),
+            self.sample_props.effective_pixel_size_xy(),
+        )
+        z = _parse_positive(
+            self.le_voxeldepth.text(),
+            self.sample_props.voxel_size_z,
+        )
+
+        self.sample_props.pixel_size_x = float(px)
+        self.sample_props.pixel_size_y = float(px)
+        self.sample_props.voxel_size_z = float(z)
+        unit_txt = self.cb_units.currentText().strip()
+        self.sample_props.unit = unit_txt if unit_txt else "px"
+        self.sample_props.source = "manual"
+
+    def sync_sample_properties_to_ui(self):
+        """Updates sample-specific calibration widgets from self.sample_props."""
+        if not hasattr(self, "sample_props") or self.sample_props is None:
+            self.sample_props = SampleProperties.defaults()
+
+        px = self.sample_props.effective_pixel_size_xy()
+        self.le_pixelsize.setText(f"{px:.6g}")
+        self.le_voxeldepth.setText(f"{self.sample_props.voxel_size_z:.6g}")
+
+        unit_txt = self.sample_props.unit if self.sample_props.unit else "px"
+        self.cb_units.blockSignals(True)
+        idx = self.cb_units.findText(unit_txt)
+        if idx >= 0:
+            self.cb_units.setCurrentIndex(idx)
+        else:
+            self.cb_units.setCurrentText(unit_txt)
+        self.cb_units.blockSignals(False)
+
     def sync_ui_to_config(self):
         """Reads the current state of the UI and stores it in self.config."""
         if not hasattr(self, "config"):
@@ -2533,8 +2626,14 @@ class MainWindow(QMainWindow):
 
         # Advanced Limits
         self.config.min_area = parse_float(self.le_minarea, 50.0)
-        self.config.min_eccentricity = parse_float(self.le_mineccentricity, 0.9)
-        self.config.min_skeleton_len = parse_float(self.le_minskeletonlen, 20.0)
+        if hasattr(self, "le_mineccentricity"):
+            self.config.min_eccentricity = parse_float(self.le_mineccentricity, 0.9)
+        else:
+            self.config.min_eccentricity = float(getattr(self.config, "min_eccentricity", 0.9))
+        if hasattr(self, "le_minskeletonlen"):
+            self.config.min_skeleton_len = parse_float(self.le_minskeletonlen, 20.0)
+        else:
+            self.config.min_skeleton_len = float(getattr(self.config, "min_skeleton_len", 20.0))
 
         # Centerline Params
         self.config.max_angle_deg = float(self.sp_max_cent_angle.value())
@@ -2550,10 +2649,8 @@ class MainWindow(QMainWindow):
 
         self.config.seg_threshold = int(self.sp_segm_threshold.value())
 
-        # Analysis & Units
+        # Analysis
         self.config.sample_spacing = parse_float(self.le_samspacing, 5.0)
-        self.config.pixel_size = parse_float(self.le_pixelsize, 1.0)
-        self.config.units = self.cb_units.currentText().strip()
 
         # Clustering
         self.config.cluster_enabled = self.chb_cluster.isChecked()
@@ -2585,8 +2682,10 @@ class MainWindow(QMainWindow):
 
         # --- Advanced Limits ---
         self.le_minarea.setText(str(cfg.min_area))
-        self.le_mineccentricity.setText(str(cfg.min_eccentricity))
-        self.le_minskeletonlen.setText(str(cfg.min_skeleton_len))
+        if hasattr(self, "le_mineccentricity"):
+            self.le_mineccentricity.setText(str(cfg.min_eccentricity))
+        if hasattr(self, "le_minskeletonlen"):
+            self.le_minskeletonlen.setText(str(cfg.min_skeleton_len))
 
         # --- Centerline Params ---
         self.sp_max_cent_angle.blockSignals(True)
@@ -2623,8 +2722,6 @@ class MainWindow(QMainWindow):
 
         # --- Analysis & Units ---
         self.le_samspacing.setText(str(cfg.sample_spacing))
-        self.le_pixelsize.setText(str(cfg.pixel_size))
-        set_combo_text(self.cb_units, cfg.units)
 
         # --- Clustering ---
         self.chb_cluster.blockSignals(True)
