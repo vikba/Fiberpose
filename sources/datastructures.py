@@ -1,13 +1,59 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+import json
+from dataclasses import dataclass, field, asdict
 from copy import copy
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 import os
-
 import imageio.v3 as iio
 import numpy as np
+import logging
+logger = logging.getLogger(__name__)
 
+@dataclass
+class AppConfig:
+    # --- Model & Hardware ---
+    checkpoint_path: str = ""
+    use_gpu: bool = True
+    scale_string: str = "1x"
+    
+    # --- Advanced Limits ---
+    min_area: float = 50.0
+    min_eccentricity: float = 0.9
+    min_skeleton_len: float = 20.0
+    
+    # --- Centerline Params ---
+    max_angle_deg: float = 30.0
+    strict_centerlines: bool = False
+    
+    # --- Segmentation Params ---
+    segmentation_mode: str = "watershed"
+    seg_threshold: int = 1
+    
+    # --- Analysis & Physical Units ---
+    sample_spacing: float = 5.0
+    pixel_size: float = 1.0
+    units: str = "px"
+    
+    # --- Clustering ---
+    cluster_enabled: bool = False
+    # ADD THIS:
+    cluster_params: dict = field(default_factory=dict)
+
+    def save_to_json(self, filepath: str):
+        with open(filepath, 'w') as f:
+            json.dump(asdict(self), f, indent=4)
+
+    @classmethod
+    def load_from_json(cls, filepath: str) -> "AppConfig":
+        try:
+            with open(filepath, 'r') as f:
+                data = json.load(f)
+                valid_keys = {k for k in cls.__dataclass_fields__}
+                filtered_data = {k: v for k, v in data.items() if k in valid_keys}
+                return cls(**filtered_data)
+        except Exception:
+            return cls()
 
 @dataclass
 class ImageBatch:

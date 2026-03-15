@@ -261,6 +261,9 @@
           <pointsize>8</pointsize>
          </font>
         </property>
+        <property name="text">
+         <string>1</string>
+        </property>
        </widget>
        <widget class="QRadioButton" name="rb_show_diam">
         <property name="geometry">
@@ -310,6 +313,11 @@
           <height>22</height>
          </rect>
         </property>
+        <item>
+         <property name="text">
+          <string>px</string>
+         </property>
+        </item>
         <item>
          <property name="text">
           <string>um</string>

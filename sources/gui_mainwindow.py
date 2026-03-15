@@ -30,7 +30,7 @@ logging.basicConfig(level=logging.INFO)
 
 from .gui_dialogs import PlotProfileDialog, BatchSaveOptionsDialog, Stack3DWindow
 from .fiber_analyzer_2D import FiberAnalyzer_2D
-from .datastructures import BatchResult, Frame, ImageBatch
+from .datastructures import BatchResult, Frame, ImageBatch, AppConfig
 from .batch_pipeline import BatchAnalyzer, StackAnalyzer_3D
 from .utils import ensure_rgb_u8, label_to_rgb, to_uint8_for_view
 
@@ -39,6 +39,7 @@ from .utils import ensure_rgb_u8, label_to_rgb, to_uint8_for_view
 HERE = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.dirname(HERE)
 DEFAULT_UI_PATH = os.path.join(PROJECT_ROOT, "resources", "fiber_tool.ui")
+DEFAULT_CONFIG_PATH = os.path.join(PROJECT_ROOT, "resources", "config.json")
 DEFAULT_CKPT_PATH = os.path.join(PROJECT_ROOT, "checkpoints", "fiber_2000_epoch.pt")
 CHECKPOINTS_DIR = os.path.join(PROJECT_ROOT, "checkpoints")
 
@@ -73,12 +74,19 @@ class MainWindow(QMainWindow):
     - Clear state when loading a new image.
     - Tightened UI updates/enabling.
     """
-    def __init__(self, ui_path: str = DEFAULT_UI_PATH):
+    def __init__(self, ui_path: str = DEFAULT_UI_PATH, config_path: str = DEFAULT_CONFIG_PATH):
         super().__init__()
         loadUi(ui_path, self)
         self.setWindowTitle("Fiberpose — fiber segmentation and analysis tool")
+
+        # Load config and sync to UI
+        self.config = AppConfig.load_from_json(config_path)
+        self.sync_config_to_ui()
+
+        # Enable real-time syncing!
+        self._connect_config_signals()
         
-        # Scene and view setup (unchanged)...
+        # Scene and view setup 
         self._scene = QGraphicsScene(self.graphicsView)
         self.graphicsView.setScene(self._scene)
         self._pixitem = QGraphicsPixmapItem()
@@ -192,13 +200,7 @@ class MainWindow(QMainWindow):
         # Remove connection of radiobutton signals and instead hook up the combobox change
         self.cb_view.currentIndexChanged.connect(self.refresh_view)
 
-        # GUI defaults
-        self.le_minarea.setText("50")
-        self.le_mineccentricity.setText("0.9")
-        self.le_minskeletonlen.setText("20")
-        self.le_samspacing.setText("5")
-        self.le_pixelsize.setText("")
-
+        # Set default checkpoint
         self._init_checkpoint_selector()
 
         # Disable saves initially
@@ -221,12 +223,9 @@ class MainWindow(QMainWindow):
         self.analyzer = FiberAnalyzer_2D(
             ckpt_path=self.ckpt_path,
             device=self.device,
-            strict=self._strict_centerline_enabled(),
+            strict=self.config.strict_centerlines, 
         )
-        self.analyzer.set_strict_centerline_filter(self._strict_centerline_enabled())
-
-        self.pipeline_config: Dict[str, Dict[str, Any]] = {}
-        self._init_pipeline_config()
+        self.analyzer.set_strict_centerline_filter(self.config.strict_centerlines)
 
         # react to checkbox changes at runtime
         self.chb_usegpu.toggled.connect(self._on_usegpu_toggled)
@@ -243,6 +242,44 @@ class MainWindow(QMainWindow):
         self.rb_show_diam.toggled.connect(self._render_vector_overlay)
         self.rb_show_direct.toggled.connect(self._render_vector_overlay)
         self.rb_show_pores.toggled.connect(self._render_vector_overlay)
+
+    def closeEvent(self, event: QtGui.QCloseEvent):
+        """Triggered when the user closes the main window."""
+        # Grab the latest state from the UI
+        self.sync_ui_to_config()
+        # Save it to disk
+        self.config.save_to_json(self.config_filepath)
+        super().closeEvent(event)
+
+    def _connect_config_signals(self):
+        """Connects UI widget signals to update the config immediately on change."""
+        
+        # Combo boxes (Dropdowns)
+        self.cb_model.currentIndexChanged.connect(self.sync_ui_to_config)
+        self.cb_scale.currentIndexChanged.connect(self.sync_ui_to_config)
+        self.cb_units.currentTextChanged.connect(self.sync_ui_to_config)
+
+        # Checkboxes and Radio Buttons
+        self.chb_usegpu.toggled.connect(self.sync_ui_to_config)
+        self.chb_strict.toggled.connect(self.sync_ui_to_config)
+        self.chb_cluster.toggled.connect(self.sync_ui_to_config)
+        
+        self.rb_watershed.toggled.connect(self.sync_ui_to_config)
+        self.rb_ridge.toggled.connect(self.sync_ui_to_config)
+        if hasattr(self, "rb_fastest_ascend"):
+            self.rb_fastest_ascend.toggled.connect(self.sync_ui_to_config)
+
+        # Spinboxes
+        self.sp_max_cent_angle.valueChanged.connect(self.sync_ui_to_config)
+        self.sp_segm_threshold.valueChanged.connect(self.sync_ui_to_config)
+
+        # Line Edits (Text boxes)
+        # Note: We use `editingFinished` instead of `textChanged`. 
+        self.le_minarea.editingFinished.connect(self.sync_ui_to_config)
+        self.le_mineccentricity.editingFinished.connect(self.sync_ui_to_config)
+        self.le_minskeletonlen.editingFinished.connect(self.sync_ui_to_config)
+        self.le_samspacing.editingFinished.connect(self.sync_ui_to_config)
+        self.le_pixelsize.editingFinished.connect(self.sync_ui_to_config)
 
     def _init_checkpoint_selector(self) -> None:
         checkpoints = self._discover_checkpoint_files()
@@ -443,12 +480,11 @@ class MainWindow(QMainWindow):
             self._show_error("Analyzer unavailable", "Fiber analyzer has not been initialized.")
             return False
 
-        self._sync_pipeline_config_from_ui()
-        ridge_cfg = self.pipeline_config.get("ridge_detection", {})
-        max_angle = float(ridge_cfg.get("max_angle_deg", self._current_max_angle()))
-        centerline_kwargs = dict(ridge_cfg.get("centerline_kwargs", {}))
+        self.sync_ui_to_config()
+        max_angle = self.config.max_angle_deg
+        centerline_kwargs = getattr(self.analyzer, "_centerline_kwargs", FiberAnalyzer_2D._default_centerline_kwargs())
 
-        # 2. REMOVE the `if not self.analyzer.dt_predicted():` condition.
+    
         # If we reach here, current_frame.dt is None, so we MUST predict 
         # specifically for this frame's original image.
         try:
@@ -1175,8 +1211,11 @@ class MainWindow(QMainWindow):
         if not save_options:
             return
 
-        prev_strict_mode = self._strict_centerline_enabled()
-        prev_seg_mode = self._current_segmentation_mode()
+        # Use self.config instead of deleted helpers
+        prev_strict_mode = self.config.strict_centerlines
+        prev_seg_mode = self.config.segmentation_mode
+
+
         batch_strict_mode = bool(save_options.get("strict", prev_strict_mode))
         self._set_strict_mode(batch_strict_mode)
         if batch_strict_mode and prev_seg_mode != "ridge":
@@ -1195,10 +1234,11 @@ class MainWindow(QMainWindow):
                 error_title="Batch processing failed",
             )
         finally:
+            # Restore previous state using config and UI setters
             self._set_strict_mode(prev_strict_mode)
-            if prev_seg_mode != self._current_segmentation_mode():
+            if prev_seg_mode != self.config.segmentation_mode:
                 self._set_segmentation_mode(prev_seg_mode)
-
+                
         if batch_result is None:
             return
 
@@ -1536,8 +1576,16 @@ class MainWindow(QMainWindow):
         fr.clear_segmentation()
         fr.clear_measurements()
 
+        # Ensure config is up to date first
+        self.sync_ui_to_config()
+        
         previous_scale = float(fr.scale_factor)
-        target_scale = self._current_scale_factor()
+        # Parse the string (e.g., "1x" -> 1.0)
+        try:
+            target_scale = float(self.config.scale_string.lower().replace("x", "").replace("×", ""))
+        except ValueError:
+            target_scale = 1.0
+            
         scale_changed = not (previous_scale == target_scale)
 
         if scale_changed:
@@ -1568,24 +1616,13 @@ class MainWindow(QMainWindow):
         fr.scale_factor = float(target_scale)
         self.analyzer.scale_factor = fr.scale_factor
 
-        self._sync_pipeline_config_from_ui()
-        config = self.pipeline_config
-        ridge_cfg = config.get("ridge_detection", {})
-        seg_cfg = config.get("segmentation", {})
-        watershed_cfg = seg_cfg.get("watershed", {}) if isinstance(seg_cfg, dict) else {}
-        ridge_seg_cfg = seg_cfg.get("ridge", {}) if isinstance(seg_cfg, dict) else {}
-        fastest_cfg = seg_cfg.get("fastest_ascend", {}) if isinstance(seg_cfg, dict) else {}
-
-        max_angle = float(ridge_cfg.get("max_angle_deg", self._current_max_angle()))
-        centerline_params = dict(
-            ridge_cfg.get("centerline_kwargs", FiberAnalyzer_2D._default_centerline_kwargs())
-        )
+        # We already called sync_ui_to_config() above, so self.config is ready.
+        max_angle = self.config.max_angle_deg
+        
+        # Centerline kwargs aren't exposed in the basic UI, so we just use the analyzer's defaults
+        centerline_params = getattr(self.analyzer, "_centerline_kwargs", None)
         if not centerline_params:
-            params = getattr(self.analyzer, "_centerline_kwargs", None)
-            if params:
-                centerline_params = dict(params)
-            else:
-                centerline_params = FiberAnalyzer_2D._default_centerline_kwargs()
+            centerline_params = FiberAnalyzer_2D._default_centerline_kwargs()
 
         self.progress_bar.setValue(0)
 
@@ -1642,31 +1679,35 @@ class MainWindow(QMainWindow):
             invalidate_downstream=True,
         )
 
-        thr_u8 = int(watershed_cfg.get("threshold_u8", self._current_segmentation_threshold()))
-        mode = self._current_segmentation_mode()
-        seg_params: Dict[str, Any]
+        mode = self.config.segmentation_mode
+        thr_u8 = self.config.seg_threshold
+
+        print(mode)
+        print(thr_u8)
+
         if mode == "ridge":
             current_scale = fr.scale_factor if fr.scale_factor and np.isfinite(fr.scale_factor) else 1.0
-            radius_thresh_px_val = ridge_seg_cfg.get("radius_thresh_px")
-            if radius_thresh_px_val is None:
-                radius_thresh_px_val = self._current_radius_threshold()
-            strict_radius_px = float(radius_thresh_px_val) if radius_thresh_px_val is not None else None
-            if strict_radius_px is not None:
-                strict_radius_px *= current_scale
+            # If the user is in Ridge mode, they likely expect a small radius (e.g., 2-10px)
+            # We can map the 0-255 threshold to a 0-25px radius for better UI feel
+            radius_val = (thr_u8 / 255.0) * 25.0 
+            
             seg_params = {
-                "radius_thresh_px": strict_radius_px,
-                "dilate_extra_px": float(ridge_seg_cfg.get("dilate_extra_px", 0.0)) * current_scale,
-                "min_run_points": int(ridge_seg_cfg.get("min_run_points", 1)),
+                "radius_thresh_px": float(radius_val) * current_scale,
+                "dilate_extra_px": 0.0,
+                "min_run_points": 1,
             }
         elif mode == "fastest_ascend":
             seg_params = {
-                "sigma": float(fastest_cfg.get("sigma", 1.0)),
-                "dist_thresh": float(fastest_cfg.get("dist_thresh", 0.2)),
-                "flux_merge_thresh": float(fastest_cfg.get("flux_merge_thresh", 5.0)),
+                "sigma": 1.0,               # Default
+                "dist_thresh": 0.2,         # Default
+                "flux_merge_thresh": 5.0,   # Default
             }
         else:
             seg_params = {"threshold_u8": thr_u8}
+
+
         labels = None
+
         try:
             labels = self.analyzer.segment(mode=mode, params=seg_params)
         except Exception as e:
@@ -1714,11 +1755,17 @@ class MainWindow(QMainWindow):
                 return
             self._run_batch_analysis(compute_measurements=True)
             return
-        self._sync_pipeline_config_from_ui()
+        
+        self.sync_ui_to_config()
         fr.error_message = None
         fr.clear_measurements()
-        seg_cfg = self.pipeline_config.get("segmentation", {})
-        target_scale = self._current_scale_factor()
+        
+        # We need a quick way to convert the config's "1x" string to a float 
+        try:
+            target_scale = float(self.config.scale_string.lower().replace("x", "").replace("×", ""))
+        except ValueError:
+            target_scale = 1.0
+    
         current_scale = float(fr.scale_factor)
         scale_mismatch = (
             self.analyzer is not None
@@ -1726,6 +1773,7 @@ class MainWindow(QMainWindow):
             and self.analyzer.dt_predicted()
             and not math.isclose(current_scale, target_scale, rel_tol=1e-6, abs_tol=1e-6)
         )
+
         if scale_mismatch or not fr.has_segmentation:
             if scale_mismatch:
                 logger.info(
@@ -1741,17 +1789,13 @@ class MainWindow(QMainWindow):
         fr.viz_points = []
 
         # Params
-        def _getf(line, default):
-            txt = line.text().strip()
-            try:
-                return float(txt) if txt else default
-            except Exception:
-                return default
-        spacing_px_input = max(1.0, float(_getf(self.le_samspacing, 5)))
+        spacing_px_input = max(1.0, self.config.sample_spacing)
         current_scale = fr.scale_factor if fr.scale_factor and np.isfinite(fr.scale_factor) else 1.0
         spacing_px_scaled = max(1.0, spacing_px_input * current_scale)
-        pixel_size  = float(_getf(self.le_pixelsize, 1.0))
-        units_label = self.cb_units.currentText() if self.cb_units.currentText().strip() and self.le_pixelsize.text().strip() else "px"
+        
+        pixel_size = self.config.pixel_size
+        # Fallback to "px" if no pixel size was effectively set
+        units_label = self.config.units if self.config.units and pixel_size != 1.0 else "px"
 
         # compute via analyzer
         if self.analyzer is None:
@@ -1785,14 +1829,13 @@ class MainWindow(QMainWindow):
 
         angles_arr = np.array([a for a in angles_deg if np.isfinite(a)], dtype=np.float32)
 
-
         # --- pore splitting + sampling ------------------------------------------
-        watershed_cfg = seg_cfg.get("watershed", {}) if isinstance(seg_cfg, dict) else {}
-        thr_u8 = int(watershed_cfg.get("threshold_u8", self._current_segmentation_threshold()))
+        thr_u8 = self.config.seg_threshold
 
         # Build void mask from your chosen source (DT or grayscale-based threshold).
         if fr.void_mask is None:
             fr.void_mask, fr.pore_dt = self.analyzer.void_mask_and_pore_dt(thr_u8)
+
         porosity = float(fr.void_mask.mean()) if fr.void_mask is not None else float("nan")
 
         # --- NEW: sample pores as inscribed circles from DT peaks ---------------------
@@ -1811,8 +1854,9 @@ class MainWindow(QMainWindow):
         )
 
         # convenience arrays for hist/units
-        pixel_size  = float(_getf(self.le_pixelsize, 1.0))
+        # pixel_size is already loaded from self.config.pixel_size above
         pore_scale = fr.scale_factor if fr.scale_factor and np.isfinite(fr.scale_factor) else 1.0
+
         if pore_scale == 0:
             pore_scale = 1.0
         pore_diams_units = np.array(
@@ -2381,52 +2425,42 @@ class MainWindow(QMainWindow):
                 )
 
     def _on_usegpu_toggled(self, checked: bool):
-        """When user toggles the GPU checkbox, validate and set device; notify if not available."""
         cuda_ok = torch.cuda.is_available()
         if checked and not cuda_ok:
-            self._show_warning(
-                "CUDA not available",
-                "CUDA GPU not detected on this system. Using CPU instead."
-            )
-            # force UI to reflect reality
+            QMessageBox.warning(self, "CUDA not available", "No CUDA GPU detected. Using CPU.")
             self.chb_usegpu.setChecked(False)
-            self.device = torch.device('cpu')
+            self.config.use_gpu = False
         else:
-            self.device = torch.device('cuda' if checked else 'cpu')
-
+            self.config.use_gpu = checked
+            
         if self.analyzer is not None:
-            self.analyzer.set_device(self.device)
+            device = torch.device('cuda' if self.config.use_gpu else 'cpu')
+            self.analyzer.set_device(device)
 
     def _on_segmentation_mode_changed(self, checked: bool | None = None):
-        new_mode = "watershed"
-        if hasattr(self, "rb_fastest_ascend") and self.rb_fastest_ascend.isChecked():
-            new_mode = "fastest_ascend"
-        elif self.rb_ridge.isChecked():
-            new_mode = "ridge"
-        elif self.rb_watershed.isChecked():
-            new_mode = "watershed"
-
-        prev_mode = getattr(self, "segmentation_mode", "watershed")
-        if new_mode == prev_mode:
-            return
-
-        self.segmentation_mode = new_mode
+        if not checked: return # Ignore signals from the button being unchecked
+        
+        # Sync the radio button state to config
+        self.sync_ui_to_config() 
+        
+        # Update UI states that depend on the mode
         self._update_strict_checkbox_state()
+        
         if self.analyzer is not None:
-            self.analyzer.set_strict_centerline_filter(self._strict_centerline_enabled())
-        self._sync_pipeline_config_from_ui()
+            self.analyzer.set_strict_centerline_filter(self.config.strict_centerlines)
 
     def _on_strict_checkbox_toggled(self, checked: bool):
         self._set_strict_mode(bool(checked))
-        self._sync_pipeline_config_from_ui()
 
     def _on_cluster_toggled(self, checked: bool):
-        self.cluster_enabled = bool(checked)
-        self._sync_pipeline_config_from_ui()
-        cluster_cfg = self.pipeline_config.get("clustering", {})
-        cluster_params = dict(cluster_cfg.get("params", {}))
+        # Update the config flag immediately
+        self.config.cluster_enabled = bool(checked)
         if self.analyzer is not None:
-            self.analyzer.enable_fiber_clustering(self.cluster_enabled, **cluster_params)
+            # Safely pass cluster_params (now defined in AppConfig)
+            self.analyzer.enable_fiber_clustering(
+                self.config.cluster_enabled, 
+                **self.config.cluster_params
+            )
 
     # ------------------- New default image loading -------------------
 
@@ -2438,110 +2472,24 @@ class MainWindow(QMainWindow):
             logger.info("Default image not found: resources/test.png")
 
     # ------------------- Processing configuration -------------------
-
-    def _init_pipeline_config(self):
-        ridge_defaults = FiberAnalyzer_2D._default_centerline_kwargs()
-        cluster_defaults: Dict[str, Any] = {}
-        if self.analyzer is not None:
-            cluster_defaults = self.analyzer.get_cluster_config()
-        self.pipeline_config = {
-            "ridge_detection": {
-                "max_angle_deg": self._current_max_angle(),
-                "centerline_kwargs": dict(ridge_defaults),
-                "strict_centerlines": self._strict_centerline_enabled(),
-            },
-            "segmentation": {
-                "mode": self._current_segmentation_mode(),
-                "watershed": {
-                    "threshold_u8": self._current_segmentation_threshold(),
-                },
-                "ridge": {
-                    "radius_thresh_px": self._current_radius_threshold(),
-                    "dilate_extra_px": 0.0,
-                    "min_run_points": 1,
-                },
-                "fastest_ascend": {
-                    "sigma": 1.0,
-                    "dist_thresh": 0.2,
-                    "flux_merge_thresh": 5.0,
-                },
-            },
-            "clustering": {
-                "enabled": bool(self.cluster_enabled),
-                "params": dict(cluster_defaults),
-            },
-        }
-
-    def _sync_pipeline_config_from_ui(self):
-        if not self.pipeline_config:
-            self._init_pipeline_config()
-            return
-
-        ridge_cfg = self.pipeline_config.setdefault("ridge_detection", {})
-        ridge_cfg["max_angle_deg"] = self._current_max_angle()
-        ridge_cfg.setdefault("centerline_kwargs", dict(FiberAnalyzer_2D._default_centerline_kwargs()))
-        ridge_cfg["strict_centerlines"] = self._strict_centerline_enabled()
-
-        seg_cfg = self.pipeline_config.setdefault("segmentation", {})
-        seg_cfg["mode"] = self._current_segmentation_mode()
-        watershed_cfg = seg_cfg.setdefault("watershed", {})
-        watershed_cfg["threshold_u8"] = self._current_segmentation_threshold()
-
-        legacy_high_conf = seg_cfg.pop("high_confidence", None)
-        ridge_seg_cfg = seg_cfg.setdefault("ridge", {})
-        if isinstance(legacy_high_conf, dict):
-            ridge_seg_cfg.setdefault("radius_thresh_px", legacy_high_conf.get("radius_thresh_px"))
-            ridge_seg_cfg.setdefault("dilate_extra_px", legacy_high_conf.get("dilate_extra_px", 0.0))
-            ridge_seg_cfg.setdefault("min_run_points", legacy_high_conf.get("min_run_points", 1))
-        ridge_seg_cfg["radius_thresh_px"] = self._current_radius_threshold()
-        ridge_seg_cfg.setdefault("dilate_extra_px", 0.0)
-        ridge_seg_cfg.setdefault("min_run_points", 1)
-
-        fastest_cfg = seg_cfg.setdefault("fastest_ascend", {})
-        fastest_cfg.setdefault("sigma", 1.0)
-        fastest_cfg.setdefault("dist_thresh", 0.2)
-        fastest_cfg.setdefault("flux_merge_thresh", 5.0)
-
-        cluster_cfg = self.pipeline_config.setdefault("clustering", {})
-        cluster_cfg["enabled"] = bool(self.cluster_enabled)
-        if "params" not in cluster_cfg or not cluster_cfg["params"]:
-            if self.analyzer is not None:
-                cluster_cfg["params"] = self.analyzer.get_cluster_config()
-            else:
-                cluster_cfg["params"] = {}
-
-    def _current_scale_factor(self) -> float:
-        scale_text = self.cb_scale.currentText().strip().lower()
-        scale_text = scale_text.replace("×", "x")
-        if scale_text.endswith("x"):
-            scale_text = scale_text[:-1]
-        try:
-            target_scale = float(scale_text)
-        except ValueError:
-            target_scale = 1.0
-        if not np.isfinite(target_scale) or target_scale <= 0:
-            target_scale = 1.0
-        return float(target_scale)
-
-    def _current_max_angle(self) -> float:
-        return float(self.sp_max_cent_angle.value())
-
-    def _strict_centerline_enabled(self) -> bool:
-        return self.chb_strict.isChecked()
-
     def _set_strict_mode(self, enabled: bool) -> None:
         """Set strict centerline mode across UI, analyzer, and config."""
         self.chb_strict.blockSignals(True)
         self.chb_strict.setChecked(bool(enabled))
         self.chb_strict.blockSignals(False)
+        
+        self.config.strict_centerlines = bool(enabled)
         if self.analyzer is not None:
             self.analyzer.set_strict_centerline_filter(bool(enabled))
-        if self.pipeline_config is not None:
-            ridge_cfg = self.pipeline_config.setdefault("ridge_detection", {})
-            ridge_cfg["strict_centerlines"] = bool(enabled)
 
     def _update_strict_checkbox_state(self) -> None:
-        enable = self._current_segmentation_mode() == "ridge"
+        """Enables the strict centerline checkbox only in Ridge segmentation mode."""
+        if not hasattr(self, "config"):
+            return
+
+        # Clean check using the config object
+        enable = self.config.segmentation_mode == "ridge"
+        
         if enable:
             if not self.chb_strict.isEnabled():
                 self.chb_strict.setEnabled(True)
@@ -2562,17 +2510,127 @@ class MainWindow(QMainWindow):
             self.rb_fastest_ascend.setChecked(True)
             return
         self.rb_watershed.setChecked(True)
+    
+    def sync_ui_to_config(self):
+        """Reads the current state of the UI and stores it in self.config."""
+        if not hasattr(self, "config"):
+            self.config = AppConfig()
 
-    def _current_segmentation_mode(self) -> str:
-        mode = self.segmentation_mode
-        if mode not in ("watershed", "ridge", "fastest_ascend"):
-            mode = "watershed"
-        return mode
+        # Model & Hardware
+        self.config.checkpoint_path = self.cb_model.currentText().strip()
+        self.config.use_gpu = self.chb_usegpu.isChecked()
+        self.config.scale_string = self.cb_scale.currentText().strip()
 
-    def _current_segmentation_threshold(self) -> int:
-        return int(self.sp_segm_threshold.value())
+        # Helper to safely parse floats from QLineEdit
+        def parse_float(le, default):
+            txt = le.text().strip()
+            if not txt:
+                return default
+            try:
+                return float(txt)
+            except ValueError:
+                return default
 
-    def _current_radius_threshold(self) -> float | None:
-        if self._current_segmentation_mode() != "ridge":
-            return None
-        return float(self._current_segmentation_threshold())
+        # Advanced Limits
+        self.config.min_area = parse_float(self.le_minarea, 50.0)
+        self.config.min_eccentricity = parse_float(self.le_mineccentricity, 0.9)
+        self.config.min_skeleton_len = parse_float(self.le_minskeletonlen, 20.0)
+
+        # Centerline Params
+        self.config.max_angle_deg = float(self.sp_max_cent_angle.value())
+        self.config.strict_centerlines = self.chb_strict.isChecked()
+
+        # Segmentation Mode
+        if self.rb_ridge.isChecked():
+            self.config.segmentation_mode = "ridge"
+        elif hasattr(self, "rb_fastest_ascend") and self.rb_fastest_ascend.isChecked():
+            self.config.segmentation_mode = "fastest_ascend"
+        else:
+            self.config.segmentation_mode = "watershed"
+
+        self.config.seg_threshold = int(self.sp_segm_threshold.value())
+
+        # Analysis & Units
+        self.config.sample_spacing = parse_float(self.le_samspacing, 5.0)
+        self.config.pixel_size = parse_float(self.le_pixelsize, 1.0)
+        self.config.units = self.cb_units.currentText().strip()
+
+        # Clustering
+        self.config.cluster_enabled = self.chb_cluster.isChecked()
+
+    def sync_config_to_ui(self):
+        """Updates the UI widgets to reflect the values in self.config."""
+        if not hasattr(self, "config"):
+            return
+
+        cfg = self.config
+
+        def set_combo_text(cb, text):
+            cb.blockSignals(True)
+            idx = cb.findText(text)
+            if idx >= 0:
+                cb.setCurrentIndex(idx)
+            else:
+                cb.setCurrentText(text)
+            cb.blockSignals(False)
+
+        # --- Model & Hardware ---
+        set_combo_text(self.cb_model, cfg.checkpoint_path)
+        
+        self.chb_usegpu.blockSignals(True)
+        self.chb_usegpu.setChecked(bool(cfg.use_gpu))
+        self.chb_usegpu.blockSignals(False)
+        
+        set_combo_text(self.cb_scale, cfg.scale_string)
+
+        # --- Advanced Limits ---
+        self.le_minarea.setText(str(cfg.min_area))
+        self.le_mineccentricity.setText(str(cfg.min_eccentricity))
+        self.le_minskeletonlen.setText(str(cfg.min_skeleton_len))
+
+        # --- Centerline Params ---
+        self.sp_max_cent_angle.blockSignals(True)
+        # PyQt6 QSpinBox strictly requires an integer. Cast the float to int.
+        self.sp_max_cent_angle.setValue(int(cfg.max_angle_deg))
+        self.sp_max_cent_angle.blockSignals(False)
+
+        self.chb_strict.blockSignals(True)
+        self.chb_strict.setChecked(bool(cfg.strict_centerlines))
+        self.chb_strict.blockSignals(False)
+
+        # --- Segmentation Mode ---
+        self.rb_watershed.blockSignals(True)
+        self.rb_ridge.blockSignals(True)
+        if hasattr(self, "rb_fastest_ascend"):
+            self.rb_fastest_ascend.blockSignals(True)
+
+        if cfg.segmentation_mode == "ridge":
+            self.rb_ridge.setChecked(True)
+        elif cfg.segmentation_mode == "fastest_ascend" and hasattr(self, "rb_fastest_ascend"):
+            self.rb_fastest_ascend.setChecked(True)
+        else:
+            self.rb_watershed.setChecked(True)
+
+        self.rb_watershed.blockSignals(False)
+        self.rb_ridge.blockSignals(False)
+        if hasattr(self, "rb_fastest_ascend"):
+            self.rb_fastest_ascend.blockSignals(False)
+
+        self.sp_segm_threshold.blockSignals(True)
+        # Cast to int to guarantee PyQt6 won't complain
+        self.sp_segm_threshold.setValue(int(cfg.seg_threshold))
+        self.sp_segm_threshold.blockSignals(False)
+
+        # --- Analysis & Units ---
+        self.le_samspacing.setText(str(cfg.sample_spacing))
+        self.le_pixelsize.setText(str(cfg.pixel_size))
+        set_combo_text(self.cb_units, cfg.units)
+
+        # --- Clustering ---
+        self.chb_cluster.blockSignals(True)
+        self.chb_cluster.setChecked(bool(cfg.cluster_enabled))
+        self.chb_cluster.blockSignals(False)
+        
+        # Trigger UI state updates that depend on these flags
+        if hasattr(self, "_update_strict_checkbox_state"):
+            self._update_strict_checkbox_state()

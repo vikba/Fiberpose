@@ -16,7 +16,7 @@
     },
     "spin_boxes": {
       "max_centerline_angle": 45,
-      "segmentation_threshold": 128
+      "segmentation_threshold": 1
     },
     "view": {
       "current": "DT"
