@@ -10,6 +10,7 @@ from scipy.ndimage import (
     convolve,
     distance_transform_edt,
     label as ndi_label,
+    zoom,
 )
 
 from .datastructures import BatchResult, Frame, ImageBatch
@@ -50,6 +51,7 @@ class StackAnalyzer_3D:
         junction_dilation_iters: int = 1,
         opening_kernel_zyx: Sequence[int] = (1, 3, 3),
         junction_cut_max_radius: Optional[float] = None,
+        skeleton_anisotropy_threshold: float = 1.3,
     ):
         self.voxel_spacing_zyx = self._parse_voxel_spacing(voxel_spacing_zyx)
         self.histogram_bins = max(int(histogram_bins), 1)
@@ -69,6 +71,7 @@ class StackAnalyzer_3D:
         )
         if self.junction_cut_max_radius is not None and self.junction_cut_max_radius <= 0.0:
             raise ValueError("junction_cut_max_radius must be positive when provided.")
+        self.skeleton_anisotropy_threshold = max(1.0, float(skeleton_anisotropy_threshold))
 
     def process(
         self,
@@ -94,6 +97,7 @@ class StackAnalyzer_3D:
                 if self.junction_cut_max_radius is not None
                 else None
             ),
+            "skeleton_anisotropy_threshold": float(self.skeleton_anisotropy_threshold),
         }
 
         try:
@@ -134,11 +138,18 @@ class StackAnalyzer_3D:
                 return batch_result
 
             skeletonize_3d, skeleton_method = self._resolve_3d_skeletonizer()
+            anisotropy_ratio = float(max(self.voxel_spacing_zyx) / min(self.voxel_spacing_zyx))
+            meta["voxel_anisotropy_ratio"] = anisotropy_ratio
             dt3d = np.asarray(
                 distance_transform_edt(binary_mask, sampling=self.voxel_spacing_zyx),
                 dtype=np.float32,
             )
-            skeleton_raw = np.asarray(skeletonize_3d(binary_mask), dtype=bool)
+            skeleton_raw, spacing_mode, zoom_factors_zyx = self._skeletonize_with_spacing(
+                binary_mask,
+                skeletonize_3d,
+                self.voxel_spacing_zyx,
+                self.skeleton_anisotropy_threshold,
+            )
             raw_skeleton = skeleton_raw.astype(np.int32, copy=False)
             batch_result.raw_skeleton_volume = raw_skeleton
             junction_mask = self._detect_junctions(
@@ -165,7 +176,12 @@ class StackAnalyzer_3D:
                 structure=np.ones((3, 3, 3), dtype=np.uint8),
             )
             fragment_labels = np.asarray(fragment_labels, dtype=np.int32)
-            skeleton_frag = np.asarray(skeletonize_3d(cut_mask), dtype=bool)
+            skeleton_frag, _, _ = self._skeletonize_with_spacing(
+                cut_mask,
+                skeletonize_3d,
+                self.voxel_spacing_zyx,
+                self.skeleton_anisotropy_threshold,
+            )
             fragment_skeleton = np.zeros_like(fragment_labels, dtype=np.int32)
             fragment_skeleton[skeleton_frag] = fragment_labels[skeleton_frag]
 
@@ -178,6 +194,8 @@ class StackAnalyzer_3D:
             )
 
             meta["skeleton_method"] = skeleton_method
+            meta["skeleton_spacing_mode"] = spacing_mode
+            meta["skeleton_zoom_factors_zyx"] = [float(v) for v in zoom_factors_zyx]
             meta["num_skeleton_voxels_raw"] = int(np.count_nonzero(skeleton_raw))
             meta["num_junction_voxels"] = int(np.count_nonzero(junction_mask))
             meta["num_foreground_voxels_cut"] = int(np.count_nonzero(cut_mask))
@@ -295,6 +313,75 @@ class StackAnalyzer_3D:
             )
 
         return _skeletonize_lee, method
+
+    @staticmethod
+    def _skeletonize_with_spacing(
+        mask: np.ndarray,
+        skeletonize_3d: Callable[[np.ndarray], np.ndarray],
+        voxel_spacing_zyx: Sequence[float],
+        anisotropy_threshold: float,
+    ) -> tuple[np.ndarray, str, tuple[float, float, float]]:
+        mask_bool = np.asarray(mask, dtype=bool)
+        if mask_bool.ndim != 3:
+            raise ValueError(f"Expected a 3D mask, got shape {mask_bool.shape}.")
+        if mask_bool.size == 0 or not np.any(mask_bool):
+            return (
+                np.zeros_like(mask_bool, dtype=bool),
+                "native",
+                (1.0, 1.0, 1.0),
+            )
+
+        spacing = StackAnalyzer_3D._parse_voxel_spacing(voxel_spacing_zyx)
+        ratio = float(max(spacing) / min(spacing))
+        if ratio <= float(anisotropy_threshold) or min(mask_bool.shape) < 2:
+            return (
+                np.asarray(skeletonize_3d(mask_bool), dtype=bool),
+                "native",
+                (1.0, 1.0, 1.0),
+            )
+
+        target_spacing = float(min(spacing))
+        zoom_factors = (
+            float(spacing[0] / target_spacing),
+            float(spacing[1] / target_spacing),
+            float(spacing[2] / target_spacing),
+        )
+        mask_iso = np.asarray(
+            zoom(
+                mask_bool.astype(np.uint8, copy=False),
+                zoom_factors,
+                order=0,
+                mode="nearest",
+                prefilter=False,
+            ),
+            dtype=bool,
+        )
+        if mask_iso.size == 0 or not np.any(mask_iso):
+            return (
+                np.zeros_like(mask_bool, dtype=bool),
+                "isotropic_resample",
+                zoom_factors,
+            )
+
+        skeleton_iso = np.asarray(skeletonize_3d(mask_iso), dtype=bool)
+        if not np.any(skeleton_iso):
+            return (
+                np.zeros_like(mask_bool, dtype=bool),
+                "isotropic_resample",
+                zoom_factors,
+            )
+
+        coords_iso = np.argwhere(skeleton_iso).astype(np.float64, copy=False)
+        inv_factors = np.asarray([1.0 / zf for zf in zoom_factors], dtype=np.float64)
+        coords_orig = np.rint(coords_iso * inv_factors).astype(np.int64, copy=False)
+        coords_orig[:, 0] = np.clip(coords_orig[:, 0], 0, mask_bool.shape[0] - 1)
+        coords_orig[:, 1] = np.clip(coords_orig[:, 1], 0, mask_bool.shape[1] - 1)
+        coords_orig[:, 2] = np.clip(coords_orig[:, 2], 0, mask_bool.shape[2] - 1)
+
+        skeleton_native = np.zeros_like(mask_bool, dtype=bool)
+        skeleton_native[coords_orig[:, 0], coords_orig[:, 1], coords_orig[:, 2]] = True
+        skeleton_native &= mask_bool
+        return skeleton_native, "isotropic_resample", zoom_factors
 
     @staticmethod
     def _detect_junctions(skeleton_mask: np.ndarray, dilation_iters: int = 0) -> np.ndarray:

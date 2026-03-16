@@ -1,5 +1,7 @@
-
-from typing import Dict, Tuple
+import json
+import os
+from dataclasses import fields
+from typing import Any, Dict, Tuple
 import numpy as np
 
 from PyQt6 import QtGui, QtWidgets
@@ -10,7 +12,7 @@ from PyQt6.QtWidgets import QDialogButtonBox
 import pyqtgraph as pg
 from scipy.ndimage import convolve
 
-from .datastructures import BatchResult
+from .datastructures import AppConfig, BatchResult
 from .utils import label_to_rgb
 
 
@@ -123,6 +125,323 @@ class BatchSaveOptionsDialog(QtWidgets.QDialog):
 
     def options(self) -> Dict[str, bool]:
         return {key: checkbox.isChecked() for key, checkbox in self._checkboxes.items()}
+
+
+class ConfigEditorDialog(QtWidgets.QDialog):
+    """Schema-driven editor for AppConfig with load/save-as support."""
+
+    _FIELD_SPEC: Dict[str, Dict[str, Any]] = {
+        "checkpoint_path": {
+            "label": "Checkpoint path",
+            "kind": "str",
+            "tooltip": "Relative or absolute path to the model checkpoint (.pt).",
+        },
+        "use_gpu": {"label": "Use GPU", "kind": "bool"},
+        "scale_string": {
+            "label": "Scale",
+            "kind": "enum",
+            "options": ["0.5x", "1x", "2x", "4x"],
+            "editable": True,
+        },
+        "min_area": {"label": "Min area (px)", "kind": "float", "min": 0.0, "max": 1e9, "step": 1.0},
+        "min_eccentricity": {"label": "Min eccentricity", "kind": "float", "min": 0.0, "max": 1.0, "step": 0.01},
+        "min_skeleton_len": {"label": "Min skeleton length (px)", "kind": "float", "min": 0.0, "max": 1e9, "step": 1.0},
+        "max_angle_deg": {"label": "Max angle (deg)", "kind": "float", "min": 0.0, "max": 180.0, "step": 1.0},
+        "strict_centerlines": {"label": "Strict centerlines", "kind": "bool"},
+        "segmentation_mode": {
+            "label": "Segmentation mode",
+            "kind": "enum",
+            "options": ["watershed", "ridge", "fastest_ascend"],
+            "editable": False,
+        },
+        "seg_threshold": {"label": "Segmentation threshold", "kind": "int", "min": 0, "max": 255, "step": 1},
+        "sample_spacing": {"label": "Sample spacing (px)", "kind": "float", "min": 0.1, "max": 1e9, "step": 1.0},
+        "render3d_max_display_voxels": {
+            "label": "3D max display voxels",
+            "kind": "int",
+            "min": 1,
+            "max": 2_000_000_000,
+            "step": 1000,
+        },
+        "render3d_max_display_edge": {
+            "label": "3D max display edge",
+            "kind": "int",
+            "min": 1,
+            "max": 10000,
+            "step": 1,
+        },
+        "cluster_enabled": {"label": "Cluster enabled", "kind": "bool"},
+        "cluster_params": {
+            "label": "Cluster params (JSON object)",
+            "kind": "json",
+            "tooltip": "JSON dictionary with advanced clustering parameters.",
+        },
+    }
+
+    def __init__(
+        self,
+        config: AppConfig,
+        config_path: str,
+        parent: QtWidgets.QWidget | None = None,
+    ):
+        super().__init__(parent)
+        self.setWindowTitle("Edit configuration")
+        self.setModal(True)
+        self.resize(640, 620)
+
+        self._config_path = os.path.abspath(config_path) if config_path else ""
+        self._initial_config = AppConfig(**vars(config))
+        self._result_config = AppConfig(**vars(config))
+        self._widgets: Dict[str, QtWidgets.QWidget] = {}
+        self._field_order = [f.name for f in fields(AppConfig)]
+
+        layout = QtWidgets.QVBoxLayout(self)
+
+        path_row = QtWidgets.QHBoxLayout()
+        path_row.addWidget(QtWidgets.QLabel("Config file:"))
+        self.lbl_path = QtWidgets.QLabel("")
+        self.lbl_path.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.lbl_path.setWordWrap(True)
+        path_row.addWidget(self.lbl_path, 1)
+        self.btn_load = QtWidgets.QPushButton("Load...")
+        self.btn_save_as = QtWidgets.QPushButton("Save As...")
+        path_row.addWidget(self.btn_load)
+        path_row.addWidget(self.btn_save_as)
+        layout.addLayout(path_row)
+
+        self.scroll = QtWidgets.QScrollArea()
+        self.scroll.setWidgetResizable(True)
+        form_host = QtWidgets.QWidget()
+        self.form = QtWidgets.QFormLayout(form_host)
+        self.form.setFieldGrowthPolicy(QtWidgets.QFormLayout.FieldGrowthPolicy.ExpandingFieldsGrow)
+        self.form.setLabelAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        self.scroll.setWidget(form_host)
+        layout.addWidget(self.scroll, 1)
+
+        self._build_form()
+        self._set_config_path(self._config_path)
+        self._set_widgets_from_config(config)
+
+        button_box = QtWidgets.QDialogButtonBox(
+            QtWidgets.QDialogButtonBox.StandardButton.Ok
+            | QtWidgets.QDialogButtonBox.StandardButton.Cancel
+        )
+        self.btn_apply = button_box.button(QtWidgets.QDialogButtonBox.StandardButton.Ok)
+        if self.btn_apply is not None:
+            self.btn_apply.setText("Apply && Save")
+        button_box.accepted.connect(self._on_accept)
+        button_box.rejected.connect(self.reject)
+        layout.addWidget(button_box)
+
+        self.btn_load.clicked.connect(self._on_load_clicked)
+        self.btn_save_as.clicked.connect(self._on_save_as_clicked)
+
+    def result_config(self) -> AppConfig:
+        return AppConfig(**vars(self._result_config))
+
+    def result_config_path(self) -> str:
+        return str(self._config_path)
+
+    def _build_form(self) -> None:
+        for key in self._field_order:
+            spec = self._FIELD_SPEC.get(key, {})
+            template_value = getattr(self._initial_config, key, None)
+            widget = self._create_widget_for_field(key, spec, template_value)
+            if widget is None:
+                continue
+            label = spec.get("label") or key.replace("_", " ").capitalize()
+            tooltip = spec.get("tooltip")
+            if tooltip:
+                widget.setToolTip(str(tooltip))
+            self.form.addRow(label, widget)
+            self._widgets[key] = widget
+
+    def _create_widget_for_field(
+        self,
+        key: str,
+        spec: Dict[str, Any],
+        template_value: Any,
+    ) -> QtWidgets.QWidget | None:
+        kind = spec.get("kind")
+        if not kind:
+            if isinstance(template_value, bool):
+                kind = "bool"
+            elif isinstance(template_value, int):
+                kind = "int"
+            elif isinstance(template_value, float):
+                kind = "float"
+            elif isinstance(template_value, dict):
+                kind = "json"
+            else:
+                kind = "str"
+        if kind == "bool":
+            return QtWidgets.QCheckBox()
+        if kind == "int":
+            spin = QtWidgets.QSpinBox()
+            spin.setMinimum(int(spec.get("min", -2_000_000_000)))
+            spin.setMaximum(int(spec.get("max", 2_000_000_000)))
+            spin.setSingleStep(int(spec.get("step", 1)))
+            return spin
+        if kind == "float":
+            spin = QtWidgets.QDoubleSpinBox()
+            spin.setDecimals(6)
+            spin.setMinimum(float(spec.get("min", -1e12)))
+            spin.setMaximum(float(spec.get("max", 1e12)))
+            spin.setSingleStep(float(spec.get("step", 0.1)))
+            return spin
+        if kind == "enum":
+            combo = QtWidgets.QComboBox()
+            options = [str(v) for v in spec.get("options", [])]
+            combo.addItems(options)
+            combo.setEditable(bool(spec.get("editable", False)))
+            return combo
+        if kind == "json":
+            text = QtWidgets.QPlainTextEdit()
+            text.setTabChangesFocus(True)
+            text.setMinimumHeight(120)
+            return text
+        return QtWidgets.QLineEdit()
+
+    def _set_widgets_from_config(self, cfg: AppConfig) -> None:
+        for key, widget in self._widgets.items():
+            value = getattr(cfg, key, None)
+            if isinstance(widget, QtWidgets.QCheckBox):
+                widget.setChecked(bool(value))
+            elif isinstance(widget, QtWidgets.QSpinBox):
+                try:
+                    widget.setValue(int(value))
+                except Exception:
+                    widget.setValue(0)
+            elif isinstance(widget, QtWidgets.QDoubleSpinBox):
+                try:
+                    widget.setValue(float(value))
+                except Exception:
+                    widget.setValue(0.0)
+            elif isinstance(widget, QtWidgets.QComboBox):
+                txt = str(value) if value is not None else ""
+                idx = widget.findText(txt)
+                if idx >= 0:
+                    widget.setCurrentIndex(idx)
+                else:
+                    widget.setCurrentText(txt)
+            elif isinstance(widget, QtWidgets.QPlainTextEdit):
+                payload = value if isinstance(value, dict) else {}
+                widget.setPlainText(json.dumps(payload, indent=2, sort_keys=True))
+            elif isinstance(widget, QtWidgets.QLineEdit):
+                widget.setText("" if value is None else str(value))
+
+    def _read_config_from_widgets(self) -> AppConfig:
+        data: Dict[str, Any] = {}
+        for key in self._field_order:
+            widget = self._widgets.get(key)
+            if widget is None:
+                continue
+            if isinstance(widget, QtWidgets.QCheckBox):
+                data[key] = bool(widget.isChecked())
+            elif isinstance(widget, QtWidgets.QSpinBox):
+                data[key] = int(widget.value())
+            elif isinstance(widget, QtWidgets.QDoubleSpinBox):
+                data[key] = float(widget.value())
+            elif isinstance(widget, QtWidgets.QComboBox):
+                data[key] = widget.currentText().strip()
+            elif isinstance(widget, QtWidgets.QPlainTextEdit):
+                raw = widget.toPlainText().strip()
+                if not raw:
+                    data[key] = {}
+                else:
+                    parsed = json.loads(raw)
+                    if not isinstance(parsed, dict):
+                        raise ValueError(f"Field '{key}' must be a JSON object.")
+                    data[key] = parsed
+            elif isinstance(widget, QtWidgets.QLineEdit):
+                data[key] = widget.text().strip()
+        return AppConfig(**data)
+
+    def _set_config_path(self, path: str) -> None:
+        self._config_path = os.path.abspath(path) if path else ""
+        self.lbl_path.setText(self._config_path or "(not set)")
+
+    def _on_load_clicked(self) -> None:
+        start_dir = os.path.dirname(self._config_path) if self._config_path else os.getcwd()
+        selected_path, _ = QtWidgets.QFileDialog.getOpenFileName(
+            self,
+            "Select config file",
+            start_dir,
+            "JSON Files (*.json);;All Files (*)",
+        )
+        if not selected_path:
+            return
+        selected_path = os.path.abspath(selected_path)
+        try:
+            with open(selected_path, "r", encoding="utf-8") as f:
+                raw = json.load(f)
+            if not isinstance(raw, dict):
+                raise ValueError("Config JSON root must be an object.")
+            valid_keys = {f.name for f in fields(AppConfig)}
+            filtered = {k: v for k, v in raw.items() if k in valid_keys}
+            cfg = AppConfig(**filtered)
+        except Exception as exc:
+            QtWidgets.QMessageBox.critical(self, "Load failed", str(exc))
+            return
+        self._set_widgets_from_config(cfg)
+        self._set_config_path(selected_path)
+
+    def _on_save_as_clicked(self) -> None:
+        try:
+            cfg = self._read_config_from_widgets()
+        except Exception as exc:
+            QtWidgets.QMessageBox.warning(self, "Invalid config", str(exc))
+            return
+
+        start_path = self._config_path or os.path.join(os.getcwd(), "config.json")
+        selected_path, _ = QtWidgets.QFileDialog.getSaveFileName(
+            self,
+            "Save config as",
+            start_path,
+            "JSON Files (*.json);;All Files (*)",
+        )
+        if not selected_path:
+            return
+        selected_path = os.path.abspath(selected_path)
+        try:
+            parent_dir = os.path.dirname(selected_path)
+            if parent_dir:
+                os.makedirs(parent_dir, exist_ok=True)
+            cfg.save_to_json(selected_path)
+        except Exception as exc:
+            QtWidgets.QMessageBox.critical(self, "Save failed", str(exc))
+            return
+
+        self._set_config_path(selected_path)
+        self._result_config = cfg
+        QtWidgets.QMessageBox.information(self, "Saved", f"Config saved to:\n{selected_path}")
+
+    def _on_accept(self) -> None:
+        try:
+            cfg = self._read_config_from_widgets()
+        except Exception as exc:
+            QtWidgets.QMessageBox.warning(self, "Invalid config", str(exc))
+            return
+
+        if not self._config_path:
+            QtWidgets.QMessageBox.warning(
+                self,
+                "Config path missing",
+                "Use 'Save As...' to select a config file path.",
+            )
+            return
+
+        try:
+            parent_dir = os.path.dirname(self._config_path)
+            if parent_dir:
+                os.makedirs(parent_dir, exist_ok=True)
+            cfg.save_to_json(self._config_path)
+        except Exception as exc:
+            QtWidgets.QMessageBox.critical(self, "Save failed", str(exc))
+            return
+
+        self._result_config = cfg
+        self.accept()
 
 
 class RangeSlider(QtWidgets.QWidget):
@@ -291,6 +610,8 @@ class Stack3DWindow(QtWidgets.QDialog):
         batch_result: BatchResult,
         parent: QtWidgets.QWidget | None = None,
         voxel_spacing_zyx: tuple[float, float, float] | None = None,
+        max_display_voxels: int = 8_000_000,
+        max_display_edge: int = 320,
     ):
         super().__init__(parent)
         self.setWindowTitle("3D Stack Viewer")
@@ -314,14 +635,18 @@ class Stack3DWindow(QtWidgets.QDialog):
         self._display_shape_zyx: tuple[int, int, int] | None = None
         self._display_step_zyx: tuple[int, int, int] = (1, 1, 1)
         self._voxel_spacing_zyx: tuple[float, float, float] = (1.0, 1.0, 1.0)
-        self._max_display_voxels = 8_000_000
-        self._max_display_edge = 320
+        self._max_display_voxels = max(1, int(max_display_voxels))
+        self._max_display_edge = max(1, int(max_display_edge))
 
         self._imaging_options = ["Original", "Labels", "Semantic", "DT"]
         self._projection_options = ["Nearest Point", "Brightest Point", "Mean Value"]
 
         self._build_ui()
         self.update_batch_result(batch_result, voxel_spacing_zyx=voxel_spacing_zyx)
+
+    def set_display_limits(self, max_display_voxels: int, max_display_edge: int) -> None:
+        self._max_display_voxels = max(1, int(max_display_voxels))
+        self._max_display_edge = max(1, int(max_display_edge))
 
     def _build_ui(self):
         layout = QtWidgets.QVBoxLayout(self)
@@ -577,24 +902,18 @@ class Stack3DWindow(QtWidgets.QDialog):
                 skeleton_volume = np.asarray(self._batch_result.raw_skeleton_volume)
                 if skeleton_volume.ndim == 3:
                     skeleton_stack = skeleton_volume.astype(np.int32, copy=False)
+            if skeleton_stack is None and self._batch_result is not None and self._batch_result.merged_skeleton_volume is not None:
+                skeleton_volume = np.asarray(self._batch_result.merged_skeleton_volume)
+                if skeleton_volume.ndim == 3:
+                    skeleton_stack = skeleton_volume.astype(np.int32, copy=False)
             if skeleton_stack is None:
                 self.gl_view.opts["center"] = center_default
                 self.gl_view.setCameraPosition(distance=max_dim_default * 2.0)
                 return
 
-            sz, sy, sx = self._display_step_zyx
-            skeleton = self._downsample_with_steps(
-                skeleton_stack,
-                (int(sz), int(sy), int(sx)),
-                preserve_nonzero=True,
-            )
-            if skeleton.shape != semantic.shape:
-                aligned = np.zeros(semantic.shape, dtype=np.int32)
-                z = min(semantic.shape[0], skeleton.shape[0])
-                y = min(semantic.shape[1], skeleton.shape[1])
-                x = min(semantic.shape[2], skeleton.shape[2])
-                aligned[:z, :y, :x] = skeleton[:z, :y, :x]
-                skeleton = aligned
+            # Keep centerline topology in native voxel grid and decimate only
+            # final rendered points/segments to avoid block-max bridge artifacts.
+            skeleton = skeleton_stack
 
             points = np.column_stack(np.nonzero(skeleton > 0))
             if points.size == 0:
@@ -607,18 +926,26 @@ class Stack3DWindow(QtWidgets.QDialog):
                 step = int(np.ceil(points.shape[0] / max_points))
                 points = points[::step]
             pos = np.column_stack([points[:, 2], points[:, 1], points[:, 0]]).astype(np.float32)
-            scale_xyz = np.asarray((scale_x, scale_y, scale_z), dtype=np.float32)
+            vz, vy, vx = self._voxel_spacing_zyx
+            scale_xyz = np.asarray((vx, vy, vz), dtype=np.float32)
             pos *= scale_xyz
             color = np.tile(np.array([[1.0, 0.0, 0.0, 1.0]], dtype=np.float32), (pos.shape[0], 1))
 
             skel_mask = skeleton > 0
             if np.any(skel_mask):
+                n6_kernel = np.zeros((3, 3, 3), dtype=np.uint8)
+                n6_kernel[1, 1, 0] = 1
+                n6_kernel[1, 1, 2] = 1
+                n6_kernel[1, 0, 1] = 1
+                n6_kernel[1, 2, 1] = 1
+                n6_kernel[0, 1, 1] = 1
+                n6_kernel[2, 1, 1] = 1
                 neighbor_count = convolve(
                     skel_mask.astype(np.uint8),
-                    np.ones((3, 3, 3), dtype=np.uint8),
+                    n6_kernel,
                     mode="constant",
                     cval=0,
-                ) - skel_mask.astype(np.uint8)
+                )
                 junctions = np.column_stack(np.nonzero(skel_mask & (neighbor_count >= 3)))
                 if junctions.size > 0:
                     max_junctions = 40000
@@ -653,7 +980,11 @@ class Stack3DWindow(QtWidgets.QDialog):
                             pass
                     self.gl_view.addItem(self._junction_scatter_item)
 
-            line_pos, line_color = self._build_centerline_segments_xyz(skeleton, max_segments=350000)
+            line_pos, line_color = self._build_centerline_segments_xyz(
+                skeleton,
+                max_segments=350000,
+                connectivity=26,
+            )
             if line_pos.size > 0:
                 line_pos = line_pos * scale_xyz
                 line_color = np.tile(
@@ -1004,27 +1335,50 @@ class Stack3DWindow(QtWidgets.QDialog):
     def _build_centerline_segments_xyz(
         skeleton: np.ndarray,
         max_segments: int = 350000,
+        connectivity: int = 6,
     ) -> Tuple[np.ndarray, np.ndarray]:
         skel = np.asarray(skeleton, dtype=np.int32)
         if skel.ndim != 3 or skel.size == 0:
             return np.zeros((0, 3), dtype=np.float32), np.zeros((0, 4), dtype=np.float32)
 
-        # Use forward 26-neighborhood directions to avoid duplicate segments.
-        directions = (
-            (1, 0, 0),
-            (0, 1, 0),
-            (0, 0, 1),
-            (1, 1, 0),
-            (1, -1, 0),
-            (1, 0, 1),
-            (1, 0, -1),
-            (0, 1, 1),
-            (0, 1, -1),
-            (1, 1, 1),
-            (1, 1, -1),
-            (1, -1, 1),
-            (1, -1, -1),
-        )
+        if connectivity not in (6, 18, 26):
+            raise ValueError(f"Unsupported connectivity={connectivity}. Expected one of: 6, 18, 26.")
+
+        # Forward half-neighborhood directions to avoid duplicate segments.
+        if connectivity == 6:
+            directions = (
+                (1, 0, 0),
+                (0, 1, 0),
+                (0, 0, 1),
+            )
+        elif connectivity == 18:
+            directions = (
+                (1, 0, 0),
+                (0, 1, 0),
+                (0, 0, 1),
+                (1, 1, 0),
+                (1, -1, 0),
+                (1, 0, 1),
+                (1, 0, -1),
+                (0, 1, 1),
+                (0, 1, -1),
+            )
+        else:
+            directions = (
+                (1, 0, 0),
+                (0, 1, 0),
+                (0, 0, 1),
+                (1, 1, 0),
+                (1, -1, 0),
+                (1, 0, 1),
+                (1, 0, -1),
+                (0, 1, 1),
+                (0, 1, -1),
+                (1, 1, 1),
+                (1, 1, -1),
+                (1, -1, 1),
+                (1, -1, -1),
+            )
 
         by_label = bool(np.any(skel > 1))
         src_chunks = []

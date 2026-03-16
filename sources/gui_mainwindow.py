@@ -1,5 +1,6 @@
 import os
 import math
+import json
 from datetime import datetime
 from typing import Any, Dict
 import numpy as np
@@ -28,7 +29,12 @@ import logging
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
 
-from .gui_dialogs import PlotProfileDialog, BatchSaveOptionsDialog, Stack3DWindow
+from .gui_dialogs import (
+    PlotProfileDialog,
+    BatchSaveOptionsDialog,
+    Stack3DWindow,
+    ConfigEditorDialog,
+)
 from .fiber_analyzer_2D import FiberAnalyzer_2D
 from .datastructures import BatchResult, Frame, ImageBatch, AppConfig, SampleProperties
 from .batch_pipeline import BatchAnalyzer, StackAnalyzer_3D
@@ -190,6 +196,16 @@ class MainWindow(QMainWindow):
         self.action_load_image.triggered.connect(self.load_original)
         self.action_save_masks_predictions.triggered.connect(self.save_predictions)
         self.action_save_measurements.triggered.connect(self.save_measurements)
+        if hasattr(self, "action_edit"):
+            self.action_edit.setText("Edit config...")
+            self.action_edit.triggered.connect(self._on_edit_config)
+        if hasattr(self, "menuEdit"):
+            self.action_load_config = QtGui.QAction("Load config...", self)
+            self.action_load_config.triggered.connect(self._on_load_config)
+            if hasattr(self, "action_edit"):
+                self.menuEdit.insertAction(self.action_edit, self.action_load_config)
+            else:
+                self.menuEdit.addAction(self.action_load_config)
 
         self.btn_segment.clicked.connect(self.segment)
         self.btn_analyze_fibers.clicked.connect(self.analyze_fibers)
@@ -553,6 +569,61 @@ class MainWindow(QMainWindow):
             logger.error("[Batch] %s: %s", title, message)
         else:
             QtWidgets.QMessageBox.critical(self, title, message)
+
+    def _apply_runtime_after_config_change(self) -> None:
+        checkpoint_entry = str(getattr(self.config, "checkpoint_path", "") or "").strip()
+        if checkpoint_entry and self.cb_model.findText(checkpoint_entry) < 0:
+            self.cb_model.addItem(checkpoint_entry)
+
+        self.sync_config_to_ui()
+        self.sync_ui_to_config()
+
+        if self.analyzer is not None:
+            self._on_checkpoint_selection_changed(self.cb_model.currentIndex())
+            self._on_usegpu_toggled(self.chb_usegpu.isChecked())
+            self._on_cluster_toggled(self.chb_cluster.isChecked())
+            self.analyzer.set_strict_centerline_filter(self.config.strict_centerlines)
+
+    def _load_config_from_path(self, path: str) -> bool:
+        selected_path = os.path.abspath(path)
+        try:
+            with open(selected_path, "r", encoding="utf-8") as f:
+                raw = json.load(f)
+            if not isinstance(raw, dict):
+                raise ValueError("Config JSON root must be an object.")
+            valid_keys = set(AppConfig.__dataclass_fields__.keys())
+            filtered = {k: v for k, v in raw.items() if k in valid_keys}
+            self.config = AppConfig(**filtered)
+        except Exception as exc:
+            self._show_error("Load config failed", str(exc))
+            return False
+
+        self.config_filepath = selected_path
+        self._apply_runtime_after_config_change()
+        return True
+
+    def _on_load_config(self):
+        start_dir = os.path.dirname(self.config_filepath) if self.config_filepath else PROJECT_ROOT
+        selected_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Select config file",
+            start_dir,
+            "JSON Files (*.json);;All Files (*)",
+        )
+        if not selected_path:
+            return
+        if self._load_config_from_path(selected_path):
+            self.statusbar.showMessage(f"Config loaded: {self.config_filepath}", 5000)
+
+    def _on_edit_config(self):
+        dialog = ConfigEditorDialog(self.config, self.config_filepath, self)
+        if dialog.exec() != QtWidgets.QDialog.DialogCode.Accepted:
+            return
+
+        self.config = dialog.result_config()
+        self.config_filepath = dialog.result_config_path()
+        self._apply_runtime_after_config_change()
+        self.statusbar.showMessage(f"Config updated: {self.config_filepath}", 5000)
 
 
     # ------------------- Drag & drop -------------------
@@ -1327,13 +1398,21 @@ class MainWindow(QMainWindow):
             return
         self.sync_ui_to_sample_properties()
         voxel_spacing_zyx = self.sample_props.spacing_zyx()
+        max_display_voxels = max(1, int(self.config.render3d_max_display_voxels))
+        max_display_edge = max(1, int(self.config.render3d_max_display_edge))
         if self._stack3d_window is None:
             self._stack3d_window = Stack3DWindow(
                 self._batch_result,
                 parent=self,
                 voxel_spacing_zyx=voxel_spacing_zyx,
+                max_display_voxels=max_display_voxels,
+                max_display_edge=max_display_edge,
             )
         else:
+            self._stack3d_window.set_display_limits(
+                max_display_voxels=max_display_voxels,
+                max_display_edge=max_display_edge,
+            )
             self._stack3d_window.update_batch_result(
                 self._batch_result,
                 voxel_spacing_zyx=voxel_spacing_zyx,
@@ -1398,7 +1477,10 @@ class MainWindow(QMainWindow):
 
         QtWidgets.QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
         try:
-            stack_analyzer_3d = StackAnalyzer_3D(voxel_spacing_zyx=voxel_spacing_zyx)
+            stack_analyzer_3d = StackAnalyzer_3D(
+                voxel_spacing_zyx=voxel_spacing_zyx,
+                skeleton_anisotropy_threshold=1.3,
+            )
             self._batch_result = stack_analyzer_3d.process(
                 self._batch_result,
                 force=True,

@@ -33,10 +33,13 @@ class AppConfig:
     
     # --- Analysis & Physical Units ---
     sample_spacing: float = 5.0
+
+    # --- 3D View Rendering ---
+    render3d_max_display_voxels: int = 8_000_000
+    render3d_max_display_edge: int = 320
     
     # --- Clustering ---
     cluster_enabled: bool = False
-    # ADD THIS:
     cluster_params: dict = field(default_factory=dict)
 
     def save_to_json(self, filepath: str):
