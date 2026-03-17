@@ -101,35 +101,39 @@ class StackAnalyzer_3D:
         }
 
         try:
-            labels_volume = batch_result.labels_volume
-            if labels_volume is None or force:
-                labels_volume = self._build_labels_volume(batch_result.frame_results)
-            batch_result.labels_volume = labels_volume
+            semantic_volume = batch_result.semantic_volume
+            if semantic_volume is None or force:
+                semantic_volume = self._build_semantic_volume(batch_result.frame_results)
+            batch_result.semantic_volume = semantic_volume
 
-            if labels_volume is None:
-                batch_result.raw_skeleton_volume = None
-                batch_result.merged_labels_volume = None
-                batch_result.merged_skeleton_volume = None
-                batch_result.skeleton_radius_samples = None
-                meta["error"] = "No per-slice labels available to build a 3D labels volume."
+            if semantic_volume is None:
+                batch_result.semantic_skeleton_volume = None
+                batch_result.instance_volume = None
+                batch_result.instance_skeleton_volume = None
+                batch_result.instance_radius_samples = None
+                meta["error"] = "No per-slice labels available to build a 3D semantic volume."
                 batch_result.merge_meta = meta
                 return batch_result
 
-            labels_volume = np.asarray(labels_volume, dtype=np.int32)
-            batch_result.labels_volume = labels_volume
-            meta["volume_shape"] = [int(v) for v in labels_volume.shape]
-            meta["num_labels_raw"] = int(np.max(labels_volume)) if labels_volume.size else 0
-            binary_mask = labels_volume > 0
+            semantic_volume = np.asarray(semantic_volume, dtype=np.int32)
+            batch_result.semantic_volume = semantic_volume
+            meta["volume_shape"] = [int(v) for v in semantic_volume.shape]
+            meta["num_labels_raw"] = int(np.max(semantic_volume)) if semantic_volume.size else 0
+            meta["semantic_num_labels"] = int(np.max(semantic_volume)) if semantic_volume.size else 0
+            binary_mask = semantic_volume > 0
             meta["num_foreground_voxels"] = int(np.count_nonzero(binary_mask))
+            meta["semantic_num_voxels"] = int(np.count_nonzero(binary_mask))
             if not np.any(binary_mask):
-                zero_labels = np.zeros_like(labels_volume, dtype=np.int32)
-                batch_result.raw_skeleton_volume = zero_labels
-                batch_result.merged_labels_volume = zero_labels
-                batch_result.merged_skeleton_volume = zero_labels
-                batch_result.skeleton_radius_samples = np.zeros((0, 5), dtype=np.float32)
+                zero_labels = np.zeros_like(semantic_volume, dtype=np.int32)
+                batch_result.semantic_skeleton_volume = zero_labels
+                batch_result.instance_volume = zero_labels
+                batch_result.instance_skeleton_volume = zero_labels
+                batch_result.instance_radius_samples = np.zeros((0, 5), dtype=np.float32)
                 meta["num_labels_merged"] = 0
+                meta["instance_num_labels"] = 0
                 meta["num_skeleton_voxels"] = 0
                 meta["num_junction_voxels"] = 0
+                meta["instance_num_voxels"] = 0
                 meta["num_radius_samples"] = 0
                 meta["radius_hist_counts"] = []
                 meta["radius_hist_edges"] = []
@@ -151,7 +155,7 @@ class StackAnalyzer_3D:
                 self.skeleton_anisotropy_threshold,
             )
             raw_skeleton = skeleton_raw.astype(np.int32, copy=False)
-            batch_result.raw_skeleton_volume = raw_skeleton
+            batch_result.semantic_skeleton_volume = raw_skeleton
             junction_mask = self._detect_junctions(
                 skeleton_raw,
                 dilation_iters=self.junction_dilation_iters,
@@ -185,9 +189,9 @@ class StackAnalyzer_3D:
             fragment_skeleton = np.zeros_like(fragment_labels, dtype=np.int32)
             fragment_skeleton[skeleton_frag] = fragment_labels[skeleton_frag]
 
-            batch_result.merged_labels_volume = fragment_labels
-            batch_result.merged_skeleton_volume = fragment_skeleton
-            batch_result.skeleton_radius_samples = self._recover_radius_samples(
+            batch_result.instance_volume = fragment_labels
+            batch_result.instance_skeleton_volume = fragment_skeleton
+            batch_result.instance_radius_samples = self._recover_radius_samples(
                 fragment_labels,
                 fragment_skeleton,
                 self.voxel_spacing_zyx,
@@ -200,8 +204,10 @@ class StackAnalyzer_3D:
             meta["num_junction_voxels"] = int(np.count_nonzero(junction_mask))
             meta["num_foreground_voxels_cut"] = int(np.count_nonzero(cut_mask))
             meta["num_labels_merged"] = int(n_fragments)
+            meta["instance_num_labels"] = int(n_fragments)
+            meta["instance_num_voxels"] = int(np.count_nonzero(cut_mask))
             meta["num_skeleton_voxels"] = int(np.count_nonzero(fragment_skeleton))
-            samples = batch_result.skeleton_radius_samples
+            samples = batch_result.instance_radius_samples
             num_samples = int(samples.shape[0]) if samples is not None else 0
             meta["num_radius_samples"] = num_samples
             if num_samples > 0:
@@ -218,12 +224,12 @@ class StackAnalyzer_3D:
                 meta["radius_hist_edges"] = []
                 meta["radius_hist_kind"] = "radius"
 
-            if labels_volume.shape[0] < 2:
+            if semantic_volume.shape[0] < 2:
                 meta["warning"] = "Single-slice batch: semantic 3D flow ran on one slice."
         except Exception as exc:
-            batch_result.raw_skeleton_volume = None
-            batch_result.merged_skeleton_volume = None
-            batch_result.skeleton_radius_samples = None
+            batch_result.semantic_skeleton_volume = None
+            batch_result.instance_skeleton_volume = None
+            batch_result.instance_radius_samples = None
             meta["error"] = str(exc)
         finally:
             meta["elapsed_ms"] = round((perf_counter() - t0) * 1000.0, 3)
@@ -241,7 +247,7 @@ class StackAnalyzer_3D:
         return spacing
 
     @staticmethod
-    def _build_labels_volume(frame_results: List[Frame]) -> Optional[np.ndarray]:
+    def _build_semantic_volume(frame_results: List[Frame]) -> Optional[np.ndarray]:
         if not frame_results:
             return None
 
@@ -465,16 +471,16 @@ class StackAnalyzer_3D:
 
     @staticmethod
     def _recover_radius_samples(
-        labels_volume: np.ndarray,
+        label_volume: np.ndarray,
         skeleton_volume: np.ndarray,
         voxel_spacing_zyx: Sequence[float],
     ) -> np.ndarray:
-        labels_volume = np.asarray(labels_volume, dtype=np.int32)
+        label_volume = np.asarray(label_volume, dtype=np.int32)
         skeleton_volume = np.asarray(skeleton_volume, dtype=np.int32)
-        if labels_volume.shape != skeleton_volume.shape:
-            raise ValueError("labels_volume and skeleton_volume must share the same shape.")
-        if labels_volume.ndim != 3:
-            raise ValueError(f"Expected a 3D volume, got shape {labels_volume.shape}.")
+        if label_volume.shape != skeleton_volume.shape:
+            raise ValueError("label_volume and skeleton_volume must share the same shape.")
+        if label_volume.ndim != 3:
+            raise ValueError(f"Expected a 3D volume, got shape {label_volume.shape}.")
 
         spacing = StackAnalyzer_3D._parse_voxel_spacing(voxel_spacing_zyx)
         rows: List[np.ndarray] = []
@@ -485,7 +491,7 @@ class StackAnalyzer_3D:
                 continue
 
             object_id_int = int(object_id)
-            mask = labels_volume == object_id_int
+            mask = label_volume == object_id_int
             skel = skeleton_volume == object_id_int
             if not np.any(mask) or not np.any(skel):
                 continue

@@ -1421,49 +1421,6 @@ class MainWindow(QMainWindow):
         self._stack3d_window.raise_()
         self._stack3d_window.activateWindow()
 
-    def _apply_merged_labels_to_batch_frames(self, batch_result: BatchResult) -> int:
-        merged_volume = batch_result.merged_labels_volume
-        if merged_volume is None:
-            return 0
-
-        volume = np.asarray(merged_volume, dtype=np.int32)
-        if volume.ndim != 3:
-            return 0
-
-        frame_count = len(batch_result.frame_results)
-        z_count = min(frame_count, int(volume.shape[0]))
-        if z_count <= 0:
-            return 0
-
-        for z in range(z_count):
-            frame = batch_result.frame_results[z]
-            merged_slice = np.asarray(volume[z], dtype=np.int32, copy=False)
-
-            if frame.labels_2d is not None:
-                target_shape = np.asarray(frame.labels_2d).shape[:2]
-            elif frame.orig_img is not None:
-                target_shape = np.asarray(frame.orig_img).shape[:2]
-            else:
-                target_shape = merged_slice.shape
-
-            if merged_slice.shape != target_shape:
-                aligned = np.zeros(target_shape, dtype=np.int32)
-                h = min(target_shape[0], merged_slice.shape[0])
-                w = min(target_shape[1], merged_slice.shape[1])
-                aligned[:h, :w] = merged_slice[:h, :w]
-                labels_2d = aligned
-            else:
-                labels_2d = merged_slice.copy()
-
-            labels_rgb = labels_to_color(labels_2d)
-            base_img = frame.orig_img if frame.scale_factor == 1.0 or frame.orig_img_scaled is None else frame.orig_img_scaled
-            frame.labels_2d = labels_2d
-            frame.overlay_img = self._create_overlay(base_img, labels_2d, alpha=0.5, labels_rgb=labels_rgb)
-            frame.labels_rgb_cache = (id(frame.labels_2d), labels_rgb)
-            frame.has_segmentation = True
-
-        return z_count
-
     def _on_analyze_3d_clicked(self):
         if self._batch_result is None:
             self._show_info("Analyze 3D", "Run segmentation or analysis on a stack first.")
@@ -1498,7 +1455,29 @@ class MainWindow(QMainWindow):
             self._show_warning("Analyze 3D", f"3D processing failed: {merge_error}")
             return
 
-        applied_slices = self._apply_merged_labels_to_batch_frames(self._batch_result)
+        semantic_volume = self._batch_result.semantic_volume
+        instance_volume = self._batch_result.instance_volume
+        if semantic_volume is None or instance_volume is None:
+            self._show_warning(
+                "Analyze 3D",
+                "3D processing finished, but semantic/instance datasets were not both produced.",
+            )
+            return
+        semantic_arr = np.asarray(semantic_volume)
+        instance_arr = np.asarray(instance_volume)
+        if semantic_arr.ndim != 3 or instance_arr.ndim != 3:
+            self._show_warning(
+                "Analyze 3D",
+                "3D processing produced invalid dataset dimensionality; expected 3D volumes.",
+            )
+            return
+        if semantic_arr.shape != instance_arr.shape:
+            self._show_warning(
+                "Analyze 3D",
+                "Semantic and instance 3D volume shapes do not match.",
+            )
+            return
+
         self._set_current_slice(self._current_z_index, update_view=True)
         if self._stack3d_window is not None:
             self._stack3d_window.update_batch_result(
@@ -1507,18 +1486,22 @@ class MainWindow(QMainWindow):
             )
         self.action_save_masks_predictions.setEnabled(True)
 
-        if applied_slices <= 0:
-            self._show_warning("Analyze 3D", "3D processing finished, but no merged label volume was produced.")
-            return
-
         method = merge_meta.get("skeleton_method")
+        semantic_labels = int(merge_meta.get("semantic_num_labels", int(np.max(semantic_arr)) if semantic_arr.size else 0))
+        instance_labels = int(merge_meta.get("instance_num_labels", int(np.max(instance_arr)) if instance_arr.size else 0))
         if method:
             self.statusbar.showMessage(
-                f"3D analysis complete ({method}). Applied merged labels to {applied_slices} slice(s).",
+                (
+                    f"3D analysis complete ({method}). "
+                    f"semantic labels={semantic_labels}, instance labels={instance_labels}."
+                ),
                 5000,
             )
         else:
-            self.statusbar.showMessage(f"3D analysis complete. Applied merged labels to {applied_slices} slice(s).", 5000)
+            self.statusbar.showMessage(
+                f"3D analysis complete. semantic labels={semantic_labels}, instance labels={instance_labels}.",
+                5000,
+            )
 
         self._persist_3d_radius_histogram = self._render_3d_radius_summary(merge_meta)
 

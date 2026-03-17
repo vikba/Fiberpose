@@ -1,5 +1,5 @@
 {
-    "checkpoint_path": "checkpoints/fiber_2000_epoch.pt",
+    "checkpoint_path": "checkpoints/weights_3D_2_test.pt",
     "use_gpu": true,
     "scale_string": "1x",
     "min_area": 50.0,
@@ -7,11 +7,11 @@
     "min_skeleton_len": 20.0,
     "max_angle_deg": 30.0,
     "strict_centerlines": false,
-    "segmentation_mode": "watershed",
+    "segmentation_mode": "fastest_ascend",
     "seg_threshold": 1,
     "sample_spacing": 6.0,
-    "render3d_max_display_voxels": 8000000,
-    "render3d_max_display_edge": 500,
+    "render3d_max_display_voxels": 800000000,
+    "render3d_max_display_edge": 1500,
     "cluster_enabled": false,
     "cluster_params": {}
 }

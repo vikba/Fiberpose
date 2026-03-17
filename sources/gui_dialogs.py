@@ -640,6 +640,10 @@ class Stack3DWindow(QtWidgets.QDialog):
 
         self._imaging_options = ["Original", "Labels", "Semantic", "DT"]
         self._projection_options = ["Nearest Point", "Brightest Point", "Mean Value"]
+        self._dataset_options = [
+            ("Instance (post-cut)", "instance"),
+            ("Semantic (pre-cut)", "semantic"),
+        ]
 
         self._build_ui()
         self.update_batch_result(batch_result, voxel_spacing_zyx=voxel_spacing_zyx)
@@ -657,6 +661,13 @@ class Stack3DWindow(QtWidgets.QDialog):
         self.cb_imaging.addItems(self._imaging_options)
         self.cb_imaging.setCurrentText("Labels")
         controls.addWidget(self.cb_imaging)
+
+        controls.addWidget(QtWidgets.QLabel("Dataset:"))
+        self.cb_dataset = QtWidgets.QComboBox()
+        for label, key in self._dataset_options:
+            self.cb_dataset.addItem(label, userData=key)
+        self.cb_dataset.setCurrentIndex(0)
+        controls.addWidget(self.cb_dataset)
 
         controls.addWidget(QtWidgets.QLabel("Projection Mode:"))
         self.cb_projection = QtWidgets.QComboBox()
@@ -705,6 +716,7 @@ class Stack3DWindow(QtWidgets.QDialog):
         layout.addLayout(intensity_layout)
 
         self.cb_imaging.currentIndexChanged.connect(self._on_imaging_mode_changed)
+        self.cb_dataset.currentIndexChanged.connect(self._update_view)
         self.cb_projection.currentIndexChanged.connect(self._update_view)
         self.cb_semantic_centerlines.toggled.connect(self._update_view)
         self.range_slider.rangeChanged.connect(self._on_range_slider_changed)
@@ -712,12 +724,70 @@ class Stack3DWindow(QtWidgets.QDialog):
 
     def _on_imaging_mode_changed(self):
         semantic_mode = self.cb_imaging.currentText() == "Semantic"
+        dataset_mode = self.cb_imaging.currentText() in {"Labels", "Semantic"}
+        self.cb_dataset.setEnabled(dataset_mode)
         self.cb_semantic_centerlines.setEnabled(semantic_mode)
         if (not semantic_mode) and self.cb_semantic_centerlines.isChecked():
             self.cb_semantic_centerlines.blockSignals(True)
             self.cb_semantic_centerlines.setChecked(False)
             self.cb_semantic_centerlines.blockSignals(False)
         self._update_view()
+
+    @staticmethod
+    def _dataset_caption(dataset_key: str | None) -> str:
+        if dataset_key == "semantic":
+            return "Semantic"
+        return "Instance"
+
+    def _selected_dataset(self) -> str:
+        key = self.cb_dataset.currentData()
+        return str(key) if key in {"semantic", "instance"} else "instance"
+
+    def _resolve_dataset_volume(
+        self, preferred_dataset: str
+    ) -> tuple[np.ndarray | None, str | None, bool]:
+        if self._batch_result is None:
+            return None, None, False
+        candidates = [preferred_dataset]
+        if preferred_dataset != "instance":
+            candidates.append("instance")
+        if preferred_dataset != "semantic":
+            candidates.append("semantic")
+
+        for idx, key in enumerate(candidates):
+            if key == "instance":
+                volume = self._batch_result.instance_volume
+            else:
+                volume = self._batch_result.semantic_volume
+            if volume is None:
+                continue
+            arr = np.asarray(volume)
+            if arr.ndim == 3:
+                return arr.astype(np.int32, copy=False), key, idx > 0
+        return None, None, False
+
+    def _resolve_dataset_skeleton(
+        self, preferred_dataset: str
+    ) -> tuple[np.ndarray | None, str | None, bool]:
+        if self._batch_result is None:
+            return None, None, False
+        candidates = [preferred_dataset]
+        if preferred_dataset != "instance":
+            candidates.append("instance")
+        if preferred_dataset != "semantic":
+            candidates.append("semantic")
+
+        for idx, key in enumerate(candidates):
+            if key == "instance":
+                skeleton_volume = self._batch_result.instance_skeleton_volume
+            else:
+                skeleton_volume = self._batch_result.semantic_skeleton_volume
+            if skeleton_volume is None:
+                continue
+            arr = np.asarray(skeleton_volume)
+            if arr.ndim == 3:
+                return arr.astype(np.int32, copy=False), key, idx > 0
+        return None, None, False
 
     @staticmethod
     def _parse_voxel_spacing(
@@ -777,37 +847,43 @@ class Stack3DWindow(QtWidgets.QDialog):
                 stack.append(arr[:min_h, :min_w].astype(np.float32, copy=False))
         return np.stack(stack, axis=0)
 
-    def _stack_for_method(self, method: str) -> np.ndarray | None:
+    def _stack_for_method(
+        self,
+        method: str,
+        dataset_key: str,
+    ) -> tuple[np.ndarray | None, str | None, bool]:
         if method == "Original":
             stack = self._collect_stack(lambda fr: fr.orig_img)
             if stack is None:
-                return None
-            return stack
+                return None, None, False
+            return stack, None, False
         if method in {"Labels", "Semantic"}:
-            if self._batch_result is not None and self._batch_result.merged_labels_volume is not None:
-                labels_volume = np.asarray(self._batch_result.merged_labels_volume)
-                if labels_volume.ndim == 3:
-                    return labels_volume.astype(np.int32, copy=False)
-            if self._batch_result is not None and self._batch_result.labels_volume is not None:
-                labels_volume = np.asarray(self._batch_result.labels_volume)
-                if labels_volume.ndim == 3:
-                    return labels_volume.astype(np.int32, copy=False)
+            stack, used_dataset, used_fallback = self._resolve_dataset_volume(dataset_key)
+            if stack is not None:
+                return stack, used_dataset, used_fallback
             stack = self._collect_stack(lambda fr: fr.labels_2d)
             if stack is None:
-                return None
-            return stack.astype(np.int32, copy=False)
+                return None, None, False
+            return stack.astype(np.int32, copy=False), None, False
         if method == "DT":
-            return self._collect_stack(lambda fr: fr.dt)
-        return None
+            return self._collect_stack(lambda fr: fr.dt), None, False
+        return None, None, False
 
     def _update_view(self):
         if self._batch_result is None:
             return
         method = self.cb_imaging.currentText()
-        stack = self._stack_for_method(method)
+        selected_dataset = self._selected_dataset()
+        stack, used_dataset, used_dataset_fallback = self._stack_for_method(
+            method,
+            dataset_key=selected_dataset,
+        )
         if stack is None:
-            if method == "Semantic":
-                self.lbl_render_info.setText("Semantic view requires labels. Run segmentation first.")
+            if method in {"Labels", "Semantic"}:
+                selected_caption = self._dataset_caption(selected_dataset)
+                self.lbl_render_info.setText(
+                    f"{selected_caption} dataset unavailable. Run segmentation/Analyze 3D first."
+                )
             else:
                 self.lbl_render_info.setText("")
             return
@@ -830,20 +906,37 @@ class Stack3DWindow(QtWidgets.QDialog):
             self._line_items = []
 
         stack = np.asarray(stack)
+        dataset_info: str | None = None
+        if method in {"Labels", "Semantic"}:
+            nonzero_voxels = int(np.count_nonzero(stack > 0)) if stack.size else 0
+            num_labels = int(np.max(stack)) if stack.size else 0
+            if used_dataset is None:
+                dataset_info = (
+                    f"dataset=frame_labels_2d (fallback), labels={num_labels}, voxels={nonzero_voxels}"
+                )
+            else:
+                selected_caption = self._dataset_caption(selected_dataset)
+                used_caption = self._dataset_caption(used_dataset)
+                dataset_info = (
+                    f"dataset={used_caption.lower()}, labels={num_labels}, voxels={nonzero_voxels}"
+                )
+                if used_dataset_fallback:
+                    dataset_info += f" (fallback from {selected_caption.lower()})"
+
         stack = self._downsample_for_display(
             stack,
             preserve_nonzero=(method == "Semantic"),
         )
-        self._update_render_info(method)
+        self._update_render_info(method, dataset_info=dataset_info)
 
         if method == "Labels":
             self._set_intensity_controls_enabled(False, projection_enabled=True)
             self._volume_source_u8 = None
-            labels_volume = np.asarray(stack, dtype=np.int32)
-            if labels_volume.size == 0 or not np.any(labels_volume > 0):
+            label_volume = np.asarray(stack, dtype=np.int32)
+            if label_volume.size == 0 or not np.any(label_volume > 0):
                 return
             projection = self.cb_projection.currentText()
-            rgba = self._make_rgba_for_labels(labels_volume, projection=projection)
+            rgba = self._make_rgba_for_labels(label_volume, projection=projection)
             if rgba.size == 0:
                 return
             self._volume_item = self._gl.GLVolumeItem(rgba)
@@ -897,19 +990,20 @@ class Stack3DWindow(QtWidgets.QDialog):
                 self.gl_view.setCameraPosition(distance=max_dim_default * 2.0)
                 return
 
-            skeleton_stack = None
-            if self._batch_result is not None and self._batch_result.raw_skeleton_volume is not None:
-                skeleton_volume = np.asarray(self._batch_result.raw_skeleton_volume)
-                if skeleton_volume.ndim == 3:
-                    skeleton_stack = skeleton_volume.astype(np.int32, copy=False)
-            if skeleton_stack is None and self._batch_result is not None and self._batch_result.merged_skeleton_volume is not None:
-                skeleton_volume = np.asarray(self._batch_result.merged_skeleton_volume)
-                if skeleton_volume.ndim == 3:
-                    skeleton_stack = skeleton_volume.astype(np.int32, copy=False)
+            skeleton_stack, skeleton_dataset, skeleton_fallback = self._resolve_dataset_skeleton(
+                used_dataset or selected_dataset
+            )
             if skeleton_stack is None:
                 self.gl_view.opts["center"] = center_default
                 self.gl_view.setCameraPosition(distance=max_dim_default * 2.0)
                 return
+            if skeleton_fallback and skeleton_dataset is not None:
+                current_info = self.lbl_render_info.text().strip()
+                skel_caption = self._dataset_caption(skeleton_dataset).lower()
+                if current_info:
+                    self.lbl_render_info.setText(f"{current_info} | skeleton={skel_caption} (fallback)")
+                else:
+                    self.lbl_render_info.setText(f"skeleton={skel_caption} (fallback)")
 
             # Keep centerline topology in native voxel grid and decimate only
             # final rendered points/segments to avoid block-max bridge artifacts.
@@ -930,55 +1024,29 @@ class Stack3DWindow(QtWidgets.QDialog):
             scale_xyz = np.asarray((vx, vy, vz), dtype=np.float32)
             pos *= scale_xyz
             color = np.tile(np.array([[1.0, 0.0, 0.0, 1.0]], dtype=np.float32), (pos.shape[0], 1))
+            world_unit = float(max(1e-6, min(abs(vx), abs(vy), abs(vz))))
 
             skel_mask = skeleton > 0
+            junction_pos = None
             if np.any(skel_mask):
-                n6_kernel = np.zeros((3, 3, 3), dtype=np.uint8)
-                n6_kernel[1, 1, 0] = 1
-                n6_kernel[1, 1, 2] = 1
-                n6_kernel[1, 0, 1] = 1
-                n6_kernel[1, 2, 1] = 1
-                n6_kernel[0, 1, 1] = 1
-                n6_kernel[2, 1, 1] = 1
+                # Match analyzer logic: detect junctions with 26-neighborhood.
+                kernel = np.ones((3, 3, 3), dtype=np.uint8)
                 neighbor_count = convolve(
                     skel_mask.astype(np.uint8),
-                    n6_kernel,
+                    kernel,
                     mode="constant",
                     cval=0,
-                )
+                ) - skel_mask.astype(np.uint8)
                 junctions = np.column_stack(np.nonzero(skel_mask & (neighbor_count >= 3)))
                 if junctions.size > 0:
                     max_junctions = 40000
                     if junctions.shape[0] > max_junctions:
                         j_step = int(np.ceil(junctions.shape[0] / max_junctions))
                         junctions = junctions[::j_step]
-                    j_pos = np.column_stack(
+                    junction_pos = np.column_stack(
                         [junctions[:, 2], junctions[:, 1], junctions[:, 0]]
                     ).astype(np.float32)
-                    j_pos *= scale_xyz
-                    j_color = np.tile(
-                        np.array([[1.0, 0.25, 0.2, 1.0]], dtype=np.float32),
-                        (j_pos.shape[0], 1),
-                    )
-                    self._junction_scatter_item = self._gl.GLScatterPlotItem(
-                        pos=j_pos,
-                        color=j_color,
-                        size=9.0 if overlay_on_top else 7.0,
-                    )
-                    if overlay_on_top:
-                        try:
-                            self._junction_scatter_item.setGLOptions("additive")
-                            from OpenGL import GL
-
-                            self._junction_scatter_item.updateGLOptions(
-                                {
-                                    "glBlendEquation": (GL.GL_FUNC_ADD,),
-                                    "glBlendFunc": (GL.GL_SRC_ALPHA, GL.GL_ONE_MINUS_SRC_ALPHA),
-                                }
-                            )
-                        except Exception:
-                            pass
-                    self.gl_view.addItem(self._junction_scatter_item)
+                    junction_pos *= scale_xyz
 
             line_pos, line_color = self._build_centerline_segments_xyz(
                 skeleton,
@@ -1018,17 +1086,43 @@ class Stack3DWindow(QtWidgets.QDialog):
                 except Exception:
                     pass
 
-            self._scatter_item = self._gl.GLScatterPlotItem(
-                pos=pos,
-                color=color,
-                size=4.5 if overlay_on_top else 3.0,
-            )
-            if overlay_on_top:
+                self._scatter_item = self._gl.GLScatterPlotItem(
+                    pos=pos,
+                    color=color,
+                    size=(1.6 if overlay_on_top else 1.2) * world_unit,
+                    pxMode=False,
+                )
+                if overlay_on_top:
+                    try:
+                        self._scatter_item.setGLOptions("additive")
+                        from OpenGL import GL
+
+                        self._scatter_item.updateGLOptions(
+                            {
+                                "glBlendEquation": (GL.GL_FUNC_ADD,),
+                                "glBlendFunc": (GL.GL_SRC_ALPHA, GL.GL_ONE_MINUS_SRC_ALPHA),
+                            }
+                        )
+                    except Exception:
+                        pass
+            self.gl_view.addItem(self._scatter_item)
+
+            if junction_pos is not None and junction_pos.size > 0:
+                junction_color = np.tile(
+                    np.array([[0.0, 1.0, 0.0, 1.0]], dtype=np.float32),
+                    (junction_pos.shape[0], 1),
+                )
+                self._junction_scatter_item = self._gl.GLScatterPlotItem(
+                    pos=junction_pos,
+                    color=junction_color,
+                    size=(3.8 if overlay_on_top else 3.0) * world_unit,
+                    pxMode=False,
+                )
                 try:
-                    self._scatter_item.setGLOptions("additive")
+                    self._junction_scatter_item.setGLOptions("additive")
                     from OpenGL import GL
 
-                    self._scatter_item.updateGLOptions(
+                    self._junction_scatter_item.updateGLOptions(
                         {
                             "glBlendEquation": (GL.GL_FUNC_ADD,),
                             "glBlendFunc": (GL.GL_SRC_ALPHA, GL.GL_ONE_MINUS_SRC_ALPHA),
@@ -1036,7 +1130,8 @@ class Stack3DWindow(QtWidgets.QDialog):
                     )
                 except Exception:
                     pass
-            self.gl_view.addItem(self._scatter_item)
+                self.gl_view.addItem(self._junction_scatter_item)
+
             center = np.mean(pos, axis=0)
             max_dim = float(np.max(np.ptp(pos, axis=0))) if pos.shape[0] > 1 else 1.0
             self.gl_view.opts["center"] = pg.Vector(center[0], center[1], center[2])
@@ -1143,11 +1238,11 @@ class Stack3DWindow(QtWidgets.QDialog):
 
     def _make_rgba_for_labels(
         self,
-        labels_volume: np.ndarray,
+        label_volume: np.ndarray,
         alpha_u8: int = 220,
         projection: str = "Brightest Point",
     ) -> np.ndarray:
-        labels = np.asarray(labels_volume, dtype=np.int32)
+        labels = np.asarray(label_volume, dtype=np.int32)
         if labels.ndim != 3:
             return np.zeros((0, 0, 0, 4), dtype=np.ubyte)
 
@@ -1268,18 +1363,22 @@ class Stack3DWindow(QtWidgets.QDialog):
         reduced = arr_blocks.max(axis=(1, 3, 5))
         return reduced.astype(arr.dtype, copy=False)
 
-    def _update_render_info(self, method: str):
+    def _update_render_info(self, method: str, dataset_info: str | None = None):
         if self._display_shape_zyx is None:
-            self.lbl_render_info.setText("")
-            return
-        rz, ry, rx = self._display_shape_zyx
-        sz, sy, sx = self._display_step_zyx
-        if (sz, sy, sx) == (1, 1, 1):
-            self.lbl_render_info.setText(f"Render grid (z,y,x): {rz} x {ry} x {rx}")
-            return
-        self.lbl_render_info.setText(
-            f"Render grid (z,y,x): {rz} x {ry} x {rx} (downsample {method}, step {sz}/{sy}/{sx})"
-        )
+            text = ""
+        else:
+            rz, ry, rx = self._display_shape_zyx
+            sz, sy, sx = self._display_step_zyx
+            if (sz, sy, sx) == (1, 1, 1):
+                text = f"Render grid (z,y,x): {rz} x {ry} x {rx}"
+            else:
+                text = (
+                    f"Render grid (z,y,x): {rz} x {ry} x {rx} "
+                    f"(downsample {method}, step {sz}/{sy}/{sx})"
+                )
+        if dataset_info:
+            text = f"{text} | {dataset_info}" if text else dataset_info
+        self.lbl_render_info.setText(text)
 
     def _display_scale_xyz(self) -> tuple[float, float, float]:
         sz, sy, sx = self._display_step_zyx
