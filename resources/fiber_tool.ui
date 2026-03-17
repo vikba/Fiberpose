@@ -97,47 +97,11 @@
        <property name="title">
         <string>Measurement</string>
        </property>
-       <widget class="QLabel" name="label_7">
-        <property name="geometry">
-         <rect>
-          <x>20</x>
-          <y>30</y>
-          <width>121</width>
-          <height>16</height>
-         </rect>
-        </property>
-        <property name="font">
-         <font>
-          <pointsize>8</pointsize>
-         </font>
-        </property>
-        <property name="text">
-         <string>Min Area (px):</string>
-        </property>
-       </widget>
-       <widget class="QLabel" name="label_17">
-        <property name="geometry">
-         <rect>
-          <x>20</x>
-          <y>50</y>
-          <width>121</width>
-          <height>16</height>
-         </rect>
-        </property>
-        <property name="font">
-         <font>
-          <pointsize>8</pointsize>
-         </font>
-        </property>
-        <property name="text">
-         <string>Sample spacing (px):</string>
-        </property>
-       </widget>
        <widget class="QLabel" name="label_18">
         <property name="geometry">
          <rect>
           <x>20</x>
-          <y>70</y>
+          <y>40</y>
           <width>101</width>
           <height>16</height>
          </rect>
@@ -151,26 +115,11 @@
          <string>Pixel size:</string>
         </property>
        </widget>
-       <widget class="QLineEdit" name="le_minarea">
-        <property name="geometry">
-         <rect>
-          <x>160</x>
-          <y>30</y>
-          <width>61</width>
-          <height>20</height>
-         </rect>
-        </property>
-        <property name="font">
-         <font>
-          <pointsize>8</pointsize>
-         </font>
-        </property>
-       </widget>
        <widget class="QLineEdit" name="le_voxeldepth">
         <property name="geometry">
          <rect>
           <x>160</x>
-          <y>90</y>
+          <y>70</y>
           <width>61</width>
           <height>20</height>
          </rect>
@@ -184,26 +133,11 @@
          <string>1</string>
         </property>
        </widget>
-       <widget class="QLineEdit" name="le_samspacing">
-        <property name="geometry">
-         <rect>
-          <x>160</x>
-          <y>50</y>
-          <width>61</width>
-          <height>20</height>
-         </rect>
-        </property>
-        <property name="font">
-         <font>
-          <pointsize>8</pointsize>
-         </font>
-        </property>
-       </widget>
        <widget class="QLineEdit" name="le_pixelsize">
         <property name="geometry">
          <rect>
           <x>160</x>
-          <y>70</y>
+          <y>40</y>
           <width>61</width>
           <height>20</height>
          </rect>
@@ -220,8 +154,8 @@
        <widget class="QRadioButton" name="rb_show_diam">
         <property name="geometry">
          <rect>
-          <x>0</x>
-          <y>150</y>
+          <x>20</x>
+          <y>120</y>
           <width>71</width>
           <height>17</height>
          </rect>
@@ -241,7 +175,7 @@
        <widget class="QRadioButton" name="rb_show_direct">
         <property name="geometry">
          <rect>
-          <x>80</x>
+          <x>20</x>
           <y>150</y>
           <width>71</width>
           <height>17</height>
@@ -260,7 +194,7 @@
         <property name="geometry">
          <rect>
           <x>160</x>
-          <y>110</y>
+          <y>100</y>
           <width>51</width>
           <height>22</height>
          </rect>
@@ -294,7 +228,7 @@
        <widget class="QRadioButton" name="rb_show_pores">
         <property name="geometry">
          <rect>
-          <x>160</x>
+          <x>130</x>
           <y>150</y>
           <width>71</width>
           <height>17</height>
@@ -313,7 +247,7 @@
         <property name="geometry">
          <rect>
           <x>20</x>
-          <y>90</y>
+          <y>70</y>
           <width>101</width>
           <height>16</height>
          </rect>
@@ -331,7 +265,7 @@
         <property name="geometry">
          <rect>
           <x>20</x>
-          <y>110</y>
+          <y>100</y>
           <width>101</width>
           <height>16</height>
          </rect>
@@ -417,29 +351,11 @@
          <string>3D</string>
         </property>
        </widget>
-       <widget class="QLabel" name="label_5">
-        <property name="geometry">
-         <rect>
-          <x>20</x>
-          <y>70</y>
-          <width>121</width>
-          <height>16</height>
-         </rect>
-        </property>
-        <property name="font">
-         <font>
-          <pointsize>8</pointsize>
-         </font>
-        </property>
-        <property name="text">
-         <string>Max centerline angle:</string>
-        </property>
-       </widget>
        <widget class="QLabel" name="label_6">
         <property name="geometry">
          <rect>
           <x>20</x>
-          <y>100</y>
+          <y>70</y>
           <width>131</width>
           <height>16</height>
          </rect>
@@ -453,32 +369,11 @@
          <string>Segmentation threshold:</string>
         </property>
        </widget>
-       <widget class="QSpinBox" name="sp_max_cent_angle">
-        <property name="geometry">
-         <rect>
-          <x>171</x>
-          <y>70</y>
-          <width>51</width>
-          <height>22</height>
-         </rect>
-        </property>
-        <property name="font">
-         <font>
-          <pointsize>8</pointsize>
-         </font>
-        </property>
-        <property name="maximum">
-         <number>255</number>
-        </property>
-        <property name="value">
-         <number>5</number>
-        </property>
-       </widget>
        <widget class="QSpinBox" name="sp_segm_threshold">
         <property name="geometry">
          <rect>
           <x>171</x>
-          <y>100</y>
+          <y>70</y>
           <width>51</width>
           <height>22</height>
          </rect>
@@ -499,7 +394,7 @@
         <property name="geometry">
          <rect>
           <x>70</x>
-          <y>130</y>
+          <y>100</y>
           <width>151</width>
           <height>22</height>
          </rect>
@@ -514,7 +409,7 @@
         <property name="geometry">
          <rect>
           <x>20</x>
-          <y>130</y>
+          <y>100</y>
           <width>47</width>
           <height>13</height>
          </rect>
@@ -531,7 +426,7 @@
        <widget class="QCheckBox" name="chb_cluster">
         <property name="geometry">
          <rect>
-          <x>20</x>
+          <x>70</x>
           <y>190</y>
           <width>91</width>
           <height>17</height>
@@ -552,8 +447,8 @@
         </property>
         <property name="geometry">
          <rect>
-          <x>0</x>
-          <y>160</y>
+          <x>10</x>
+          <y>130</y>
           <width>81</width>
           <height>25</height>
          </rect>
@@ -573,7 +468,7 @@
        <widget class="QRadioButton" name="rb_ridge">
         <property name="geometry">
          <rect>
-          <x>80</x>
+          <x>10</x>
           <y>160</y>
           <width>81</width>
           <height>25</height>
@@ -591,8 +486,8 @@
        <widget class="QRadioButton" name="rb_fastest_ascend">
         <property name="geometry">
          <rect>
-          <x>130</x>
-          <y>160</y>
+          <x>100</x>
+          <y>130</y>
           <width>131</width>
           <height>25</height>
          </rect>
@@ -612,8 +507,8 @@
         </property>
         <property name="geometry">
          <rect>
-          <x>160</x>
-          <y>194</y>
+          <x>110</x>
+          <y>160</y>
           <width>51</width>
           <height>17</height>
          </rect>

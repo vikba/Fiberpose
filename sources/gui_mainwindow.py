@@ -296,17 +296,16 @@ class MainWindow(QMainWindow):
             self.rb_fastest_ascend.toggled.connect(self.sync_ui_to_config)
 
         # Spinboxes
-        self.sp_max_cent_angle.valueChanged.connect(self.sync_ui_to_config)
+        # `sp_max_cent_angle` is config-only (not read from main panel).
         self.sp_segm_threshold.valueChanged.connect(self.sync_ui_to_config)
 
         # Line Edits (Text boxes)
-        # Note: We use `editingFinished` instead of `textChanged`. 
-        self.le_minarea.editingFinished.connect(self.sync_ui_to_config)
+        # Note: We use `editingFinished` instead of `textChanged`.
+        # `le_minarea` and `le_samspacing` are config-only (not read from main panel).
         if hasattr(self, "le_mineccentricity"):
             self.le_mineccentricity.editingFinished.connect(self.sync_ui_to_config)
         if hasattr(self, "le_minskeletonlen"):
             self.le_minskeletonlen.editingFinished.connect(self.sync_ui_to_config)
-        self.le_samspacing.editingFinished.connect(self.sync_ui_to_config)
         self.le_pixelsize.editingFinished.connect(self.sync_ui_to_sample_properties)
         if hasattr(self, "le_voxeldepth"):
             self.le_voxeldepth.editingFinished.connect(self.sync_ui_to_sample_properties)
@@ -2726,7 +2725,8 @@ class MainWindow(QMainWindow):
                 return default
 
         # Advanced Limits
-        self.config.min_area = parse_float(self.le_minarea, 50.0)
+        # Config-only: preserve value loaded from config file / config editor dialog.
+        self.config.min_area = float(getattr(self.config, "min_area", 50.0))
         if hasattr(self, "le_mineccentricity"):
             self.config.min_eccentricity = parse_float(self.le_mineccentricity, 0.9)
         else:
@@ -2737,7 +2737,8 @@ class MainWindow(QMainWindow):
             self.config.min_skeleton_len = float(getattr(self.config, "min_skeleton_len", 20.0))
 
         # Centerline Params
-        self.config.max_angle_deg = float(self.sp_max_cent_angle.value())
+        # Config-only: preserve value loaded from config file / config editor dialog.
+        self.config.max_angle_deg = float(getattr(self.config, "max_angle_deg", 30.0))
         self.config.strict_centerlines = self.chb_strict.isChecked()
 
         # Segmentation Mode
@@ -2751,7 +2752,8 @@ class MainWindow(QMainWindow):
         self.config.seg_threshold = int(self.sp_segm_threshold.value())
 
         # Analysis
-        self.config.sample_spacing = parse_float(self.le_samspacing, 5.0)
+        # Config-only: preserve value loaded from config file / config editor dialog.
+        self.config.sample_spacing = float(getattr(self.config, "sample_spacing", 5.0))
 
         # Clustering
         self.config.cluster_enabled = self.chb_cluster.isChecked()
@@ -2782,17 +2784,19 @@ class MainWindow(QMainWindow):
         set_combo_text(self.cb_scale, cfg.scale_string)
 
         # --- Advanced Limits ---
-        self.le_minarea.setText(str(cfg.min_area))
+        if hasattr(self, "le_minarea"):
+            self.le_minarea.setText(str(cfg.min_area))
         if hasattr(self, "le_mineccentricity"):
             self.le_mineccentricity.setText(str(cfg.min_eccentricity))
         if hasattr(self, "le_minskeletonlen"):
             self.le_minskeletonlen.setText(str(cfg.min_skeleton_len))
 
         # --- Centerline Params ---
-        self.sp_max_cent_angle.blockSignals(True)
-        # PyQt6 QSpinBox strictly requires an integer. Cast the float to int.
-        self.sp_max_cent_angle.setValue(int(cfg.max_angle_deg))
-        self.sp_max_cent_angle.blockSignals(False)
+        if hasattr(self, "sp_max_cent_angle"):
+            self.sp_max_cent_angle.blockSignals(True)
+            # PyQt6 QSpinBox strictly requires an integer. Cast the float to int.
+            self.sp_max_cent_angle.setValue(int(cfg.max_angle_deg))
+            self.sp_max_cent_angle.blockSignals(False)
 
         self.chb_strict.blockSignals(True)
         self.chb_strict.setChecked(bool(cfg.strict_centerlines))
@@ -2822,7 +2826,8 @@ class MainWindow(QMainWindow):
         self.sp_segm_threshold.blockSignals(False)
 
         # --- Analysis & Units ---
-        self.le_samspacing.setText(str(cfg.sample_spacing))
+        if hasattr(self, "le_samspacing"):
+            self.le_samspacing.setText(str(cfg.sample_spacing))
 
         # --- Clustering ---
         self.chb_cluster.blockSignals(True)
