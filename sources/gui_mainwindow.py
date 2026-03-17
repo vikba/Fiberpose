@@ -146,6 +146,9 @@ class MainWindow(QMainWindow):
         self._image_batch: ImageBatch | None = None
         self._batch_result: BatchResult | None = None
         self._batch_has_measurements: bool = False
+        self._batch_total_samples: int = 0
+        self._batch_processed_samples: int = 0
+        self._batch_compute_measurements: bool = False
         self._persist_3d_radius_histogram: bool = False
         self._current_z_index: int = 0
         self._stack3d_window: Stack3DWindow | None = None
@@ -1191,6 +1194,19 @@ class MainWindow(QMainWindow):
     def _supported_image_extensions() -> set[str]:
         return {".tif", ".tiff", ".png", ".jpg", ".jpeg", ".bmp", ".webp"}
 
+    def _set_progress_bar(self, sample_progress_percent: float) -> None:
+        progress = float(max(0.0, min(100.0, sample_progress_percent)))
+        if self._batch_processing_active and self._batch_total_samples > 0:
+            current_sample_progress = progress / 100.0
+            processed = min(max(int(self._batch_processed_samples), 0), self._batch_total_samples)
+            total = float(self._batch_total_samples)
+            # Global batch progress: (processed samples + current sample progress) / total samples.
+            overall = ((processed + current_sample_progress) * 100.0) / total
+            overall = max(0.0, min(100.0, overall))
+            self.progress_bar.setValue(int(round(overall)))
+            return
+        self.progress_bar.setValue(int(round(progress)))
+
     def _run_batch_analysis(
         self,
         compute_measurements: bool,
@@ -1212,6 +1228,10 @@ class MainWindow(QMainWindow):
         try:
             total_images = len(active_batch)
             self.statusbar.showMessage(f"Processing 0/{total_images} images")
+            self._batch_total_samples = total_images
+            self._batch_processed_samples = 0
+            self._batch_compute_measurements = bool(compute_measurements)
+            self._set_progress_bar(0.0)
             if self.analyzer is None:
                 raise RuntimeError("Fiber analyzer has not been initialized.")
 
@@ -1227,8 +1247,8 @@ class MainWindow(QMainWindow):
 
             def _process_frame(frame: np.ndarray, frame_id: str, z_index: int) -> Frame:
                 nonlocal processed_images
-                processed_images += 1
-                self.statusbar.showMessage(f"Processing {processed_images}/{total_images} images")
+                self.statusbar.showMessage(f"Processing {processed_images + 1}/{total_images} images")
+                self._set_progress_bar(0.0)
                 QtWidgets.QApplication.processEvents()
                 # Per-frame routine: hydrate original image, run processing, capture outputs.
                 self._reset_internal_state(preserve_original=False)
@@ -1243,6 +1263,9 @@ class MainWindow(QMainWindow):
                     frame_id=str(frame_id),
                     z_index=int(z_index),
                 )
+                processed_images += 1
+                self._batch_processed_samples = processed_images
+                self._set_progress_bar(0.0)
                 return result
 
             try:
@@ -1260,6 +1283,9 @@ class MainWindow(QMainWindow):
         finally:
             QtWidgets.QApplication.restoreOverrideCursor()
             self.statusbar.clearMessage()
+            self._batch_total_samples = 0
+            self._batch_processed_samples = 0
+            self._batch_compute_measurements = False
 
         # Publish batch outputs back into the GUI and refresh the active slice.
         self._batch_result = batch_result
@@ -1678,9 +1704,7 @@ class MainWindow(QMainWindow):
         self._persist_3d_radius_histogram = False
 
         if self._image_batch is not None and not self._batch_processing_active:
-            batch_result = self._run_batch_analysis(compute_measurements=False)
-            if batch_result is not None:
-                self.progress_bar.setValue(70)
+            self._run_batch_analysis(compute_measurements=False)
             return
         if fr.orig_img is None:
             self._show_info("Load original", "Please load an original image first.")
@@ -1743,7 +1767,7 @@ class MainWindow(QMainWindow):
         if not centerline_params:
             centerline_params = FiberAnalyzer_2D._default_centerline_kwargs()
 
-        self.progress_bar.setValue(0)
+        self._set_progress_bar(0.0)
 
         if not self.analyzer.dt_predicted():
             logger.info("Starting Distance transform prediction.")
@@ -1759,7 +1783,7 @@ class MainWindow(QMainWindow):
                 logger.error("Segmentation failed: %s", e)
                 return
 
-        self.progress_bar.setValue(40)
+        self._set_progress_bar(40.0)
 
         try:
             self.analyzer.process_centerlines(
@@ -1772,7 +1796,7 @@ class MainWindow(QMainWindow):
             logger.error("Centerline computation failed: %s", e)
             return
 
-        self.progress_bar.setValue(50)
+        self._set_progress_bar(50.0)
 
         dt = self.analyzer.get_dt()
         gx, gy = self.analyzer.get_gradients()
@@ -1800,9 +1824,6 @@ class MainWindow(QMainWindow):
 
         mode = self.config.segmentation_mode
         thr_u8 = self.config.seg_threshold
-
-        print(mode)
-        print(thr_u8)
 
         if mode == "ridge":
             current_scale = fr.scale_factor if fr.scale_factor and np.isfinite(fr.scale_factor) else 1.0
@@ -1859,7 +1880,10 @@ class MainWindow(QMainWindow):
         self.action_save_masks_predictions.setEnabled(True)
 
         self.refresh_view()
-        self.progress_bar.setValue(70)
+        if self._batch_processing_active and not self._batch_compute_measurements:
+            self._set_progress_bar(100.0)
+        else:
+            self._set_progress_bar(70.0)
         logger.info("Segmentation completed successfully.")
 
     def analyze_fibers(self):
@@ -1932,7 +1956,7 @@ class MainWindow(QMainWindow):
         )
         fr.viz_points = viz_points
 
-        self.progress_bar.setValue(80)
+        self._set_progress_bar(80.0)
 
         # Build sample table and stats (keep in GUI)
         if hist_centers:
@@ -2032,7 +2056,7 @@ class MainWindow(QMainWindow):
         # Overlay + plots
         self._render_vector_overlay()
         self._update_distributions_pyqtgraph(units_label)
-        self.progress_bar.setValue(100)
+        self._set_progress_bar(100.0)
 
         self._show_info(
             "Analysis complete",
