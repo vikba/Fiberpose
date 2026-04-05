@@ -380,8 +380,8 @@ class TrainCfg:
     dist_bg: float = 5.0
     w_flow: float = 1.0
     w_dt: float = 1
-    w_eik_flow: float = 0.5
-    w_eik_dt: float = 0.5
+    w_eik_flow: float = 10
+    w_eik_dt: float = 10
     fg_weight: float = 5.0
     bg_weight: float = 1.0
     ignore_bg: bool = False
@@ -397,7 +397,7 @@ def main():
     ap.add_argument("--start-epoch", type=int, default=1, help="starting epoch index (1-based)")
     ap.add_argument("--epochs", type=int, default=50)
     ap.add_argument("--batch", type=int, default=9)
-    ap.add_argument("--lr", type=float, default=5e-5)
+    ap.add_argument("--lr", type=float, default=1e-3)
     ap.add_argument("--crop", type=int, default=512)
     ap.add_argument("--workers", type=int, default=2)
     ap.add_argument("--seed", type=int, default=0)
@@ -411,7 +411,7 @@ def main():
     ap.add_argument(
         "--target-template",
         type=str,
-        default="{stem}_{kind}.tif",
+        default="{stem}_masks_{kind}.tif",
         help="target filename template with {stem} and {kind} (kind=flow_y|flow_x|dt)",
     )
     ap.add_argument("--targets-dir", type=str, default=None, help="folder with precomputed targets (default: data/targets)")
