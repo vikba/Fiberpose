@@ -149,7 +149,6 @@ class MainWindow(QMainWindow):
         self._batch_total_samples: int = 0
         self._batch_processed_samples: int = 0
         self._batch_compute_measurements: bool = False
-        self._persist_3d_radius_histogram: bool = False
         self._current_z_index: int = 0
         self._stack3d_window: Stack3DWindow | None = None
         self._slice_label = QtWidgets.QLabel("")
@@ -745,7 +744,6 @@ class MainWindow(QMainWindow):
         self._image_batch = image_batch
         self._batch_result = None
         self._batch_has_measurements = False
-        self._persist_3d_radius_histogram = False
         self._current_z_index = 0
         self._configure_z_scroll(len(image_batch))
         self._set_current_slice(0, update_view=True)
@@ -1459,10 +1457,7 @@ class MainWindow(QMainWindow):
 
         QtWidgets.QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
         try:
-            stack_analyzer_3d = StackAnalyzer_3D(
-                voxel_spacing_zyx=voxel_spacing_zyx,
-                skeleton_anisotropy_threshold=1.3,
-            )
+            stack_analyzer_3d = StackAnalyzer_3D(voxel_spacing_zyx=voxel_spacing_zyx)
             self._batch_result = stack_analyzer_3d.process(
                 self._batch_result,
                 force=True,
@@ -1475,31 +1470,30 @@ class MainWindow(QMainWindow):
             QtWidgets.QApplication.restoreOverrideCursor()
 
         merge_meta = self._batch_result.merge_meta or {}
-        merge_error = merge_meta.get("error")
-        if merge_error:
-            self._show_warning("Analyze 3D", f"3D processing failed: {merge_error}")
+        if merge_meta.get("error"):
+            self._show_warning("Analyze 3D", f"3D processing failed: {merge_meta.get('error')}")
             return
 
         semantic_volume = self._batch_result.semantic_volume
-        instance_volume = self._batch_result.instance_volume
-        if semantic_volume is None or instance_volume is None:
+        semantic_skeleton_volume = self._batch_result.semantic_skeleton_volume
+        if semantic_volume is None or semantic_skeleton_volume is None:
             self._show_warning(
                 "Analyze 3D",
-                "3D processing finished, but semantic/instance datasets were not both produced.",
+                "3D processing finished, but semantic volume or semantic skeleton is missing.",
             )
             return
         semantic_arr = np.asarray(semantic_volume)
-        instance_arr = np.asarray(instance_volume)
-        if semantic_arr.ndim != 3 or instance_arr.ndim != 3:
+        skeleton_arr = np.asarray(semantic_skeleton_volume)
+        if semantic_arr.ndim != 3 or skeleton_arr.ndim != 3:
             self._show_warning(
                 "Analyze 3D",
                 "3D processing produced invalid dataset dimensionality; expected 3D volumes.",
             )
             return
-        if semantic_arr.shape != instance_arr.shape:
+        if semantic_arr.shape != skeleton_arr.shape:
             self._show_warning(
                 "Analyze 3D",
-                "Semantic and instance 3D volume shapes do not match.",
+                "Semantic volume and semantic skeleton volume shapes do not match.",
             )
             return
 
@@ -1513,22 +1507,20 @@ class MainWindow(QMainWindow):
 
         method = merge_meta.get("skeleton_method")
         semantic_labels = int(merge_meta.get("semantic_num_labels", int(np.max(semantic_arr)) if semantic_arr.size else 0))
-        instance_labels = int(merge_meta.get("instance_num_labels", int(np.max(instance_arr)) if instance_arr.size else 0))
+        skeleton_voxels = int(merge_meta.get("num_skeleton_voxels", int(np.count_nonzero(skeleton_arr)) if skeleton_arr.size else 0))
         if method:
             self.statusbar.showMessage(
                 (
                     f"3D analysis complete ({method}). "
-                    f"semantic labels={semantic_labels}, instance labels={instance_labels}."
+                    f"semantic labels={semantic_labels}, skeleton voxels={skeleton_voxels}."
                 ),
                 5000,
             )
         else:
             self.statusbar.showMessage(
-                f"3D analysis complete. semantic labels={semantic_labels}, instance labels={instance_labels}.",
+                f"3D analysis complete. semantic labels={semantic_labels}, skeleton voxels={skeleton_voxels}.",
                 5000,
             )
-
-        self._persist_3d_radius_histogram = self._render_3d_radius_summary(merge_meta)
 
     # ------------------- Profile plot tool -------------------
 
@@ -1700,7 +1692,6 @@ class MainWindow(QMainWindow):
 
     def segment(self):
         fr = self.current_frame
-        self._persist_3d_radius_histogram = False
 
         if self._image_batch is not None and not self._batch_processing_active:
             self._run_batch_analysis(compute_measurements=False)
@@ -1890,7 +1881,6 @@ class MainWindow(QMainWindow):
         Computes thickness samples via analyzer and renders overlays/plots.
         """
         fr = self.current_frame
-        self._persist_3d_radius_histogram = False
         if self._image_batch is not None and not self._batch_processing_active:
             if self._batch_result is not None and self._batch_has_measurements:
                 self._set_current_slice(self._current_z_index, update_view=True)
@@ -2306,51 +2296,6 @@ class MainWindow(QMainWindow):
                                     pen=pg.mkPen(color="#507E2D", width=1))
                 self.graph_angles.addItem(bg)
 
-    def _update_3d_radius_histogram(self, merge_meta: dict) -> bool:
-        counts = np.asarray(merge_meta.get("radius_hist_counts", []), dtype=np.float32)
-        edges = np.asarray(merge_meta.get("radius_hist_edges", []), dtype=np.float32)
-        if counts.size == 0 or edges.size != counts.size + 1:
-            return False
-
-        self._style_plotwidget(self.graph_diameters, "3D Skeleton Radius", "Radius", "Count")
-        centers = 0.5 * (edges[:-1] + edges[1:])
-        widths = edges[1:] - edges[:-1]
-        bg = pg.BarGraphItem(
-            x=centers,
-            height=counts,
-            width=widths,
-            brush=pg.mkBrush("#4472C4"),
-            pen=pg.mkPen(color="#2F5597", width=1),
-        )
-        self.graph_diameters.addItem(bg)
-        self._style_plotwidget(self.graph_angles, "3D Analysis", "", "")
-        return True
-
-    def _render_3d_radius_summary(self, merge_meta: dict) -> bool:
-        if not self._update_3d_radius_histogram(merge_meta):
-            return False
-
-        method = merge_meta.get("skeleton_method")
-        num_samples = int(merge_meta.get("num_radius_samples", 0) or 0)
-        radius_min = merge_meta.get("radius_min")
-        radius_max = merge_meta.get("radius_max")
-        radius_mean = merge_meta.get("radius_mean")
-        lines = [
-            "3D radius analysis",
-            f"Skeleton method: {method or 'unknown'}",
-            f"Samples: {num_samples}",
-        ]
-        if radius_min is not None and radius_max is not None and radius_mean is not None:
-            lines.extend(
-                [
-                    f"Radius min: {float(radius_min):.3f}",
-                    f"Radius max: {float(radius_max):.3f}",
-                    f"Radius mean: {float(radius_mean):.3f}",
-                ]
-            )
-        self.text_edit2.setPlainText("\n".join(lines))
-        return True
-
     # ------------------- View & reset -------------------
 
     def refresh_view(self):
@@ -2462,11 +2407,6 @@ class MainWindow(QMainWindow):
             self.current_frame.labels_rgb_cache = (id(self.current_frame.labels_2d), labels_rgb)
         else:
             self.current_frame.labels_rgb_cache = (None, None)
-
-        if self._persist_3d_radius_histogram and self._batch_result is not None:
-            self._persist_3d_radius_histogram = self._render_3d_radius_summary(
-                self._batch_result.merge_meta or {}
-            )
 
     def _set_current_slice(self, index: int, update_view: bool = True):
         if self._image_batch is None:

@@ -638,12 +638,8 @@ class Stack3DWindow(QtWidgets.QDialog):
         self._max_display_voxels = max(1, int(max_display_voxels))
         self._max_display_edge = max(1, int(max_display_edge))
 
-        self._imaging_options = ["Original", "Labels", "Semantic", "DT"]
+        self._imaging_options = ["Original", "DT", "Semantic segmentation"]
         self._projection_options = ["Nearest Point", "Brightest Point", "Mean Value"]
-        self._dataset_options = [
-            ("Instance (post-cut)", "instance"),
-            ("Semantic (pre-cut)", "semantic"),
-        ]
 
         self._build_ui()
         self.update_batch_result(batch_result, voxel_spacing_zyx=voxel_spacing_zyx)
@@ -659,15 +655,8 @@ class Stack3DWindow(QtWidgets.QDialog):
         controls.addWidget(QtWidgets.QLabel("Imaging:"))
         self.cb_imaging = QtWidgets.QComboBox()
         self.cb_imaging.addItems(self._imaging_options)
-        self.cb_imaging.setCurrentText("Labels")
+        self.cb_imaging.setCurrentText("Semantic segmentation")
         controls.addWidget(self.cb_imaging)
-
-        controls.addWidget(QtWidgets.QLabel("Dataset:"))
-        self.cb_dataset = QtWidgets.QComboBox()
-        for label, key in self._dataset_options:
-            self.cb_dataset.addItem(label, userData=key)
-        self.cb_dataset.setCurrentIndex(0)
-        controls.addWidget(self.cb_dataset)
 
         controls.addWidget(QtWidgets.QLabel("Projection Mode:"))
         self.cb_projection = QtWidgets.QComboBox()
@@ -678,6 +667,10 @@ class Stack3DWindow(QtWidgets.QDialog):
         self.cb_semantic_centerlines.setChecked(False)
         self.cb_semantic_centerlines.setEnabled(False)
         controls.addWidget(self.cb_semantic_centerlines)
+        self.cb_semantic_junctions = QtWidgets.QCheckBox("Overlay junctions")
+        self.cb_semantic_junctions.setChecked(False)
+        self.cb_semantic_junctions.setEnabled(False)
+        controls.addWidget(self.cb_semantic_junctions)
         controls.addStretch(1)
         layout.addLayout(controls)
 
@@ -716,78 +709,25 @@ class Stack3DWindow(QtWidgets.QDialog):
         layout.addLayout(intensity_layout)
 
         self.cb_imaging.currentIndexChanged.connect(self._on_imaging_mode_changed)
-        self.cb_dataset.currentIndexChanged.connect(self._update_view)
         self.cb_projection.currentIndexChanged.connect(self._update_view)
         self.cb_semantic_centerlines.toggled.connect(self._update_view)
+        self.cb_semantic_junctions.toggled.connect(self._update_view)
         self.range_slider.rangeChanged.connect(self._on_range_slider_changed)
         self._on_imaging_mode_changed()
 
     def _on_imaging_mode_changed(self):
-        semantic_mode = self.cb_imaging.currentText() == "Semantic"
-        dataset_mode = self.cb_imaging.currentText() in {"Labels", "Semantic"}
-        self.cb_dataset.setEnabled(dataset_mode)
+        semantic_mode = self.cb_imaging.currentText() == "Semantic segmentation"
         self.cb_semantic_centerlines.setEnabled(semantic_mode)
+        self.cb_semantic_junctions.setEnabled(semantic_mode)
         if (not semantic_mode) and self.cb_semantic_centerlines.isChecked():
             self.cb_semantic_centerlines.blockSignals(True)
             self.cb_semantic_centerlines.setChecked(False)
             self.cb_semantic_centerlines.blockSignals(False)
+        if (not semantic_mode) and self.cb_semantic_junctions.isChecked():
+            self.cb_semantic_junctions.blockSignals(True)
+            self.cb_semantic_junctions.setChecked(False)
+            self.cb_semantic_junctions.blockSignals(False)
         self._update_view()
-
-    @staticmethod
-    def _dataset_caption(dataset_key: str | None) -> str:
-        if dataset_key == "semantic":
-            return "Semantic"
-        return "Instance"
-
-    def _selected_dataset(self) -> str:
-        key = self.cb_dataset.currentData()
-        return str(key) if key in {"semantic", "instance"} else "instance"
-
-    def _resolve_dataset_volume(
-        self, preferred_dataset: str
-    ) -> tuple[np.ndarray | None, str | None, bool]:
-        if self._batch_result is None:
-            return None, None, False
-        candidates = [preferred_dataset]
-        if preferred_dataset != "instance":
-            candidates.append("instance")
-        if preferred_dataset != "semantic":
-            candidates.append("semantic")
-
-        for idx, key in enumerate(candidates):
-            if key == "instance":
-                volume = self._batch_result.instance_volume
-            else:
-                volume = self._batch_result.semantic_volume
-            if volume is None:
-                continue
-            arr = np.asarray(volume)
-            if arr.ndim == 3:
-                return arr.astype(np.int32, copy=False), key, idx > 0
-        return None, None, False
-
-    def _resolve_dataset_skeleton(
-        self, preferred_dataset: str
-    ) -> tuple[np.ndarray | None, str | None, bool]:
-        if self._batch_result is None:
-            return None, None, False
-        candidates = [preferred_dataset]
-        if preferred_dataset != "instance":
-            candidates.append("instance")
-        if preferred_dataset != "semantic":
-            candidates.append("semantic")
-
-        for idx, key in enumerate(candidates):
-            if key == "instance":
-                skeleton_volume = self._batch_result.instance_skeleton_volume
-            else:
-                skeleton_volume = self._batch_result.semantic_skeleton_volume
-            if skeleton_volume is None:
-                continue
-            arr = np.asarray(skeleton_volume)
-            if arr.ndim == 3:
-                return arr.astype(np.int32, copy=False), key, idx > 0
-        return None, None, False
 
     @staticmethod
     def _parse_voxel_spacing(
@@ -850,39 +790,31 @@ class Stack3DWindow(QtWidgets.QDialog):
     def _stack_for_method(
         self,
         method: str,
-        dataset_key: str,
-    ) -> tuple[np.ndarray | None, str | None, bool]:
+    ) -> np.ndarray | None:
         if method == "Original":
-            stack = self._collect_stack(lambda fr: fr.orig_img)
-            if stack is None:
-                return None, None, False
-            return stack, None, False
-        if method in {"Labels", "Semantic"}:
-            stack, used_dataset, used_fallback = self._resolve_dataset_volume(dataset_key)
-            if stack is not None:
-                return stack, used_dataset, used_fallback
+            return self._collect_stack(lambda fr: fr.orig_img)
+        if method == "DT":
+            return self._collect_stack(lambda fr: fr.dt)
+        if method == "Semantic segmentation":
+            if self._batch_result is not None and self._batch_result.semantic_volume is not None:
+                volume = np.asarray(self._batch_result.semantic_volume)
+                if volume.ndim == 3:
+                    return volume.astype(np.int32, copy=False)
             stack = self._collect_stack(lambda fr: fr.labels_2d)
             if stack is None:
-                return None, None, False
-            return stack.astype(np.int32, copy=False), None, False
-        if method == "DT":
-            return self._collect_stack(lambda fr: fr.dt), None, False
-        return None, None, False
+                return None
+            return stack.astype(np.int32, copy=False)
+        return None
 
     def _update_view(self):
         if self._batch_result is None:
             return
         method = self.cb_imaging.currentText()
-        selected_dataset = self._selected_dataset()
-        stack, used_dataset, used_dataset_fallback = self._stack_for_method(
-            method,
-            dataset_key=selected_dataset,
-        )
+        stack = self._stack_for_method(method)
         if stack is None:
-            if method in {"Labels", "Semantic"}:
-                selected_caption = self._dataset_caption(selected_dataset)
+            if method == "Semantic segmentation":
                 self.lbl_render_info.setText(
-                    f"{selected_caption} dataset unavailable. Run segmentation/Analyze 3D first."
+                    "Semantic segmentation unavailable. Run segmentation or Analyze 3D first."
                 )
             else:
                 self.lbl_render_info.setText("")
@@ -907,48 +839,21 @@ class Stack3DWindow(QtWidgets.QDialog):
 
         stack = np.asarray(stack)
         dataset_info: str | None = None
-        if method in {"Labels", "Semantic"}:
+        if method == "Semantic segmentation":
             nonzero_voxels = int(np.count_nonzero(stack > 0)) if stack.size else 0
             num_labels = int(np.max(stack)) if stack.size else 0
-            if used_dataset is None:
-                dataset_info = (
-                    f"dataset=frame_labels_2d (fallback), labels={num_labels}, voxels={nonzero_voxels}"
-                )
-            else:
-                selected_caption = self._dataset_caption(selected_dataset)
-                used_caption = self._dataset_caption(used_dataset)
-                dataset_info = (
-                    f"dataset={used_caption.lower()}, labels={num_labels}, voxels={nonzero_voxels}"
-                )
-                if used_dataset_fallback:
-                    dataset_info += f" (fallback from {selected_caption.lower()})"
+            source = "semantic_volume"
+            if self._batch_result is None or self._batch_result.semantic_volume is None:
+                source = "frame_labels_2d (fallback)"
+            dataset_info = f"source={source}, labels={num_labels}, voxels={nonzero_voxels}"
 
         stack = self._downsample_for_display(
             stack,
-            preserve_nonzero=(method == "Semantic"),
+            preserve_nonzero=(method == "Semantic segmentation"),
         )
         self._update_render_info(method, dataset_info=dataset_info)
 
-        if method == "Labels":
-            self._set_intensity_controls_enabled(False, projection_enabled=True)
-            self._volume_source_u8 = None
-            label_volume = np.asarray(stack, dtype=np.int32)
-            if label_volume.size == 0 or not np.any(label_volume > 0):
-                return
-            projection = self.cb_projection.currentText()
-            rgba = self._make_rgba_for_labels(label_volume, projection=projection)
-            if rgba.size == 0:
-                return
-            self._volume_item = self._gl.GLVolumeItem(rgba)
-            self._apply_projection_mode(self._volume_item, projection)
-            self._center_and_scale_volume_item(self._volume_item, rgba.shape[:3])
-            self.gl_view.addItem(self._volume_item)
-            max_dim = self._scaled_extent_max(rgba.shape[:3]) if rgba.size else 1.0
-            self.gl_view.opts["center"] = pg.Vector(0.0, 0.0, 0.0)
-            self.gl_view.setCameraPosition(distance=max_dim * 2.0)
-            return
-
-        if method == "Semantic":
+        if method == "Semantic segmentation":
             self._set_intensity_controls_enabled(False, projection_enabled=True)
             self._volume_source_u8 = None
             semantic = np.asarray(stack, dtype=np.int32)
@@ -985,51 +890,109 @@ class Stack3DWindow(QtWidgets.QDialog):
                 (int(semantic.shape[2]), int(semantic.shape[1]), int(semantic.shape[0]))
             )
 
-            if not self.cb_semantic_centerlines.isChecked():
+            show_centerlines = self.cb_semantic_centerlines.isChecked()
+            show_junctions = self.cb_semantic_junctions.isChecked()
+            if not show_centerlines and not show_junctions:
                 self.gl_view.opts["center"] = center_default
                 self.gl_view.setCameraPosition(distance=max_dim_default * 2.0)
                 return
 
-            skeleton_stack, skeleton_dataset, skeleton_fallback = self._resolve_dataset_skeleton(
-                used_dataset or selected_dataset
-            )
+            skeleton_stack = self._batch_result.semantic_skeleton_volume
             if skeleton_stack is None:
                 self.gl_view.opts["center"] = center_default
                 self.gl_view.setCameraPosition(distance=max_dim_default * 2.0)
                 return
-            if skeleton_fallback and skeleton_dataset is not None:
-                current_info = self.lbl_render_info.text().strip()
-                skel_caption = self._dataset_caption(skeleton_dataset).lower()
-                if current_info:
-                    self.lbl_render_info.setText(f"{current_info} | skeleton={skel_caption} (fallback)")
-                else:
-                    self.lbl_render_info.setText(f"skeleton={skel_caption} (fallback)")
-
-            # Keep centerline topology in native voxel grid and decimate only
-            # final rendered points/segments to avoid block-max bridge artifacts.
-            skeleton = skeleton_stack
-
-            points = np.column_stack(np.nonzero(skeleton > 0))
-            if points.size == 0:
+            skeleton = np.asarray(skeleton_stack, dtype=np.int32)
+            if skeleton.shape != semantic.shape:
                 self.gl_view.opts["center"] = center_default
                 self.gl_view.setCameraPosition(distance=max_dim_default * 2.0)
                 return
 
-            max_points = 200000
-            if points.shape[0] > max_points:
-                step = int(np.ceil(points.shape[0] / max_points))
-                points = points[::step]
-            pos = np.column_stack([points[:, 2], points[:, 1], points[:, 0]]).astype(np.float32)
+            skel_mask = skeleton > 0
+            if not np.any(skel_mask):
+                self.gl_view.opts["center"] = center_default
+                self.gl_view.setCameraPosition(distance=max_dim_default * 2.0)
+                return
+
             vz, vy, vx = self._voxel_spacing_zyx
             scale_xyz = np.asarray((vx, vy, vz), dtype=np.float32)
-            pos *= scale_xyz
-            color = np.tile(np.array([[1.0, 0.0, 0.0, 1.0]], dtype=np.float32), (pos.shape[0], 1))
             world_unit = float(max(1e-6, min(abs(vx), abs(vy), abs(vz))))
+            overlay_positions: list[np.ndarray] = []
 
-            skel_mask = skeleton > 0
-            junction_pos = None
-            if np.any(skel_mask):
-                # Match analyzer logic: detect junctions with 26-neighborhood.
+            if show_centerlines:
+                points = np.column_stack(np.nonzero(skel_mask))
+                if points.size > 0:
+                    max_points = 200000
+                    if points.shape[0] > max_points:
+                        step = int(np.ceil(points.shape[0] / max_points))
+                        points = points[::step]
+                    pos = np.column_stack([points[:, 2], points[:, 1], points[:, 0]]).astype(np.float32)
+                    pos *= scale_xyz
+                    overlay_positions.append(pos)
+
+                    line_pos, line_color = self._build_centerline_segments_xyz(
+                        skeleton,
+                        max_segments=350000,
+                        connectivity=26,
+                    )
+                    if line_pos.size > 0:
+                        line_pos = line_pos * scale_xyz
+                        line_color = np.tile(
+                            np.array([[1.0, 0.0, 0.0, 1.0]], dtype=np.float32),
+                            (line_pos.shape[0], 1),
+                        )
+                        try:
+                            line_item = self._gl.GLLinePlotItem(
+                                pos=line_pos,
+                                color=line_color,
+                                width=2.5 if overlay_on_top else 1.5,
+                                mode="lines",
+                                antialias=True,
+                            )
+                            if overlay_on_top:
+                                try:
+                                    line_item.setGLOptions("additive")
+                                    from OpenGL import GL
+
+                                    line_item.updateGLOptions(
+                                        {
+                                            "glBlendEquation": (GL.GL_FUNC_ADD,),
+                                            "glBlendFunc": (GL.GL_SRC_ALPHA, GL.GL_ONE_MINUS_SRC_ALPHA),
+                                        }
+                                    )
+                                except Exception:
+                                    pass
+                            self.gl_view.addItem(line_item)
+                            self._line_items.append(line_item)
+                        except Exception:
+                            pass
+
+                    centerline_color = np.tile(
+                        np.array([[1.0, 0.0, 0.0, 1.0]], dtype=np.float32),
+                        (pos.shape[0], 1),
+                    )
+                    self._scatter_item = self._gl.GLScatterPlotItem(
+                        pos=pos,
+                        color=centerline_color,
+                        size=(1.6 if overlay_on_top else 1.2) * world_unit,
+                        pxMode=False,
+                    )
+                    if overlay_on_top:
+                        try:
+                            self._scatter_item.setGLOptions("additive")
+                            from OpenGL import GL
+
+                            self._scatter_item.updateGLOptions(
+                                {
+                                    "glBlendEquation": (GL.GL_FUNC_ADD,),
+                                    "glBlendFunc": (GL.GL_SRC_ALPHA, GL.GL_ONE_MINUS_SRC_ALPHA),
+                                }
+                            )
+                        except Exception:
+                            pass
+                    self.gl_view.addItem(self._scatter_item)
+
+            if show_junctions:
                 kernel = np.ones((3, 3, 3), dtype=np.uint8)
                 neighbor_count = convolve(
                     skel_mask.astype(np.uint8),
@@ -1047,57 +1010,22 @@ class Stack3DWindow(QtWidgets.QDialog):
                         [junctions[:, 2], junctions[:, 1], junctions[:, 0]]
                     ).astype(np.float32)
                     junction_pos *= scale_xyz
-
-            line_pos, line_color = self._build_centerline_segments_xyz(
-                skeleton,
-                max_segments=350000,
-                connectivity=26,
-            )
-            if line_pos.size > 0:
-                line_pos = line_pos * scale_xyz
-                line_color = np.tile(
-                    np.array([[1.0, 0.0, 0.0, 1.0]], dtype=np.float32),
-                    (line_pos.shape[0], 1),
-                )
-            if line_pos.size > 0:
-                try:
-                    line_item = self._gl.GLLinePlotItem(
-                        pos=line_pos,
-                        color=line_color,
-                        width=2.5 if overlay_on_top else 1.5,
-                        mode="lines",
-                        antialias=True,
+                    overlay_positions.append(junction_pos)
+                    junction_color = np.tile(
+                        np.array([[0.0, 1.0, 0.0, 1.0]], dtype=np.float32),
+                        (junction_pos.shape[0], 1),
                     )
-                    if overlay_on_top:
-                        try:
-                            line_item.setGLOptions("additive")
-                            from OpenGL import GL
-
-                            line_item.updateGLOptions(
-                                {
-                                    "glBlendEquation": (GL.GL_FUNC_ADD,),
-                                    "glBlendFunc": (GL.GL_SRC_ALPHA, GL.GL_ONE_MINUS_SRC_ALPHA),
-                                }
-                            )
-                        except Exception:
-                            pass
-                    self.gl_view.addItem(line_item)
-                    self._line_items.append(line_item)
-                except Exception:
-                    pass
-
-                self._scatter_item = self._gl.GLScatterPlotItem(
-                    pos=pos,
-                    color=color,
-                    size=(1.6 if overlay_on_top else 1.2) * world_unit,
-                    pxMode=False,
-                )
-                if overlay_on_top:
+                    self._junction_scatter_item = self._gl.GLScatterPlotItem(
+                        pos=junction_pos,
+                        color=junction_color,
+                        size=(3.8 if overlay_on_top else 3.0) * world_unit,
+                        pxMode=False,
+                    )
                     try:
-                        self._scatter_item.setGLOptions("additive")
+                        self._junction_scatter_item.setGLOptions("additive")
                         from OpenGL import GL
 
-                        self._scatter_item.updateGLOptions(
+                        self._junction_scatter_item.updateGLOptions(
                             {
                                 "glBlendEquation": (GL.GL_FUNC_ADD,),
                                 "glBlendFunc": (GL.GL_SRC_ALPHA, GL.GL_ONE_MINUS_SRC_ALPHA),
@@ -1105,37 +1033,17 @@ class Stack3DWindow(QtWidgets.QDialog):
                         )
                     except Exception:
                         pass
-            self.gl_view.addItem(self._scatter_item)
+                    self.gl_view.addItem(self._junction_scatter_item)
 
-            if junction_pos is not None and junction_pos.size > 0:
-                junction_color = np.tile(
-                    np.array([[0.0, 1.0, 0.0, 1.0]], dtype=np.float32),
-                    (junction_pos.shape[0], 1),
-                )
-                self._junction_scatter_item = self._gl.GLScatterPlotItem(
-                    pos=junction_pos,
-                    color=junction_color,
-                    size=(3.8 if overlay_on_top else 3.0) * world_unit,
-                    pxMode=False,
-                )
-                try:
-                    self._junction_scatter_item.setGLOptions("additive")
-                    from OpenGL import GL
-
-                    self._junction_scatter_item.updateGLOptions(
-                        {
-                            "glBlendEquation": (GL.GL_FUNC_ADD,),
-                            "glBlendFunc": (GL.GL_SRC_ALPHA, GL.GL_ONE_MINUS_SRC_ALPHA),
-                        }
-                    )
-                except Exception:
-                    pass
-                self.gl_view.addItem(self._junction_scatter_item)
-
-            center = np.mean(pos, axis=0)
-            max_dim = float(np.max(np.ptp(pos, axis=0))) if pos.shape[0] > 1 else 1.0
-            self.gl_view.opts["center"] = pg.Vector(center[0], center[1], center[2])
-            self.gl_view.setCameraPosition(distance=max_dim * 2.0)
+            if overlay_positions:
+                all_pos = np.concatenate(overlay_positions, axis=0)
+                center = np.mean(all_pos, axis=0)
+                max_dim = float(np.max(np.ptp(all_pos, axis=0))) if all_pos.shape[0] > 1 else 1.0
+                self.gl_view.opts["center"] = pg.Vector(center[0], center[1], center[2])
+                self.gl_view.setCameraPosition(distance=max_dim * 2.0)
+            else:
+                self.gl_view.opts["center"] = center_default
+                self.gl_view.setCameraPosition(distance=max_dim_default * 2.0)
             return
 
         self._set_intensity_controls_enabled(True)
@@ -1235,44 +1143,6 @@ class Stack3DWindow(QtWidgets.QDialog):
 
         rgba[..., 3] = vol_u8
         return rgba
-
-    def _make_rgba_for_labels(
-        self,
-        label_volume: np.ndarray,
-        alpha_u8: int = 220,
-        projection: str = "Brightest Point",
-    ) -> np.ndarray:
-        labels = np.asarray(label_volume, dtype=np.int32)
-        if labels.ndim != 3:
-            return np.zeros((0, 0, 0, 4), dtype=np.ubyte)
-
-        labels_xyz = np.transpose(labels, (2, 1, 0))
-        label_mask = labels_xyz > 0
-        if projection == "Mean Value":
-            axis = self._dominant_view_axis()
-            counts = np.count_nonzero(label_mask, axis=axis)
-            nz_counts = counts[counts > 0]
-            if nz_counts.size > 0:
-                effective_depth = float(np.percentile(nz_counts, 90))
-            else:
-                effective_depth = float(labels_xyz.shape[axis])
-            effective_depth = max(1.0, min(effective_depth, float(labels_xyz.shape[axis])))
-            alpha_u8 = int(np.clip(np.rint(255.0 / effective_depth), 1.0, 255.0))
-        elif projection == "Nearest Point":
-            alpha_u8 = 255
-
-        flat = labels_xyz.reshape(-1)
-        unique_labels, inverse = np.unique(flat, return_inverse=True)
-        palette = np.zeros((unique_labels.size, 4), dtype=np.ubyte)
-        for idx, label in enumerate(unique_labels):
-            if int(label) <= 0:
-                continue
-            r, g, b = label_to_rgb(int(label))
-            palette[idx, 0] = np.ubyte(r)
-            palette[idx, 1] = np.ubyte(g)
-            palette[idx, 2] = np.ubyte(b)
-            palette[idx, 3] = np.ubyte(max(0, min(255, int(alpha_u8))))
-        return palette[inverse].reshape(labels_xyz.shape + (4,))
 
     @staticmethod
     def _downsample_with_steps(

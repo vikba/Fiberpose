@@ -91,17 +91,18 @@
 - `ZxHxW` -> grayscale stack
 - `ZxHxWxC` -> color stack
 2. `Stack3DWindow` reads `BatchResult.frame_results`.
-3. Chooses imaging stack from `Original | Labels | Centerlines | DT`.
+3. Chooses imaging stack from `Original | DT | Semantic segmentation`.
 4. Shows 2D projection (`Max | Mean | Sum`).
 5. Shows 3D view:
-- centerlines as sparse scatter
-- other modes as volume render
+- semantic segmentation as volume render
+- optional semantic centerline overlay
+- optional semantic junction overlay
 
 ## Class Roles
 - `MainWindow` (`gui_mainwindow.py`): orchestration, UI state, view updates, CSV/image export.
 - `FiberAnalyzer`: prediction, centerline extraction, segmentation, pore and measurement math.
 - `BatchAnalyzer` (`batch_pipeline.py`): frame iteration orchestration.
-- `StackAnalyzer_3D` (`batch_pipeline.py`): 3D label volume build, cross-slice label merge, and skeletonization.
+- `StackAnalyzer_3D` (`batch_pipeline.py`): semantic 3D volume merge from per-slice labels + native-grid 3D skeletonization.
 - `ImageBatch` / `Frame` / `BatchResult` (`datastructures.py`): runtime data transport/state.
 - `RidgeDetector`: ridge/junction extraction backend.
 - `Stack3DWindow` (`gui_dialogs.py`): stack projection + 3D visualization.
