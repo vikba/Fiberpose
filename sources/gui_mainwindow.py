@@ -146,6 +146,10 @@ class MainWindow(QMainWindow):
         self._image_batch: ImageBatch | None = None
         self._batch_result: BatchResult | None = None
         self._batch_results_have_measurements: bool = False
+        self._last_batch_measurements_signature: str | None = None
+        self._stack_diameter_histogram_data: np.ndarray | None = None
+        self._stack_angle_histogram_data: np.ndarray | None = None
+        self._stack_diameter_histogram_enabled: bool = False
         self._batch_total_samples: int = 0
         self._batch_processed_samples: int = 0
         self._batch_collects_measurements: bool = False
@@ -732,12 +736,108 @@ class MainWindow(QMainWindow):
         porosity = float(self.current_frame.porosity) if self.current_frame.porosity is not None else float("nan")
         return mean_val, std_val, orientation_index, mean_angle_deg, std_angle_deg, porosity, sample_count
 
+    def _current_batch_measurement_signature(self) -> str | None:
+        if self._image_batch is None:
+            return None
+
+        metadata = self._image_batch.metadata or {}
+        filenames = [str(v) for v in metadata.get("filenames", [])]
+        z_indices = [int(v) for v in metadata.get("z_indices", [])]
+        spacing_zyx = tuple(float(v) for v in self.sample_props.spacing_zyx())
+        cluster_params = getattr(self.config, "cluster_params", {}) or {}
+
+        payload = {
+            "batch": {
+                "source_type": str(metadata.get("source_type", "")),
+                "source_path": str(metadata.get("source_path", "")),
+                "frame_count": int(len(self._image_batch)),
+                "filenames_head": filenames[:5],
+                "filenames_tail": filenames[-5:] if len(filenames) > 5 else [],
+                "z_head": z_indices[:5],
+                "z_tail": z_indices[-5:] if len(z_indices) > 5 else [],
+            },
+            "config": {
+                "checkpoint_path": str(self.config.checkpoint_path),
+                "scale_label": str(self.config.scale_label),
+                "max_angle_deg": float(self.config.max_angle_deg),
+                "strict_centerlines": bool(self.config.strict_centerlines),
+                "segmentation_mode": str(self.config.segmentation_mode),
+                "seg_threshold": int(self.config.seg_threshold),
+                "sample_spacing": float(self.config.sample_spacing),
+                "cluster_enabled": bool(self.config.cluster_enabled),
+                "cluster_params": cluster_params,
+            },
+            "sample_properties": {
+                "spacing_zyx": spacing_zyx,
+                "unit": str(self.sample_props.unit),
+            },
+        }
+        return json.dumps(payload, sort_keys=True, default=str)
+
+    def _batch_measurements_match_current_settings(self) -> bool:
+        if self._batch_result is None or self._image_batch is None:
+            return False
+        if not self._batch_results_have_measurements:
+            return False
+        if len(self._batch_result.frame_results) != len(self._image_batch):
+            return False
+        if self._last_batch_measurements_signature != self._current_batch_measurement_signature():
+            return False
+        return True
+
+    @staticmethod
+    def _collect_stack_diameter_samples(batch_result: BatchResult | None) -> np.ndarray:
+        if batch_result is None:
+            return np.array([], dtype=np.float32)
+
+        chunks: list[np.ndarray] = []
+        for frame in batch_result.frame_results:
+            values = frame.thickness_units
+            if values is None:
+                continue
+            arr = np.asarray(values, dtype=np.float32).reshape(-1)
+            if arr.size == 0:
+                continue
+            arr = arr[np.isfinite(arr)]
+            arr = arr[arr > 0]
+            if arr.size:
+                chunks.append(arr)
+
+        if not chunks:
+            return np.array([], dtype=np.float32)
+        return np.concatenate(chunks).astype(np.float32, copy=False)
+
+    @staticmethod
+    def _collect_stack_angle_samples(batch_result: BatchResult | None) -> np.ndarray:
+        if batch_result is None:
+            return np.array([], dtype=np.float32)
+
+        chunks: list[np.ndarray] = []
+        for frame in batch_result.frame_results:
+            values = frame.angles_samples_deg
+            if values is None:
+                continue
+            arr = np.asarray(values, dtype=np.float32).reshape(-1)
+            if arr.size == 0:
+                continue
+            arr = arr[np.isfinite(arr)]
+            if arr.size:
+                chunks.append(arr)
+
+        if not chunks:
+            return np.array([], dtype=np.float32)
+        return np.concatenate(chunks).astype(np.float32, copy=False)
+
     # ------------------- I/O -------------------
 
     def _set_image_batch(self, image_batch: ImageBatch):
         self._image_batch = image_batch
         self._batch_result = None
         self._batch_results_have_measurements = False
+        self._last_batch_measurements_signature = None
+        self._stack_diameter_histogram_data = None
+        self._stack_angle_histogram_data = None
+        self._stack_diameter_histogram_enabled = False
         self._current_z_index = 0
         self._configure_z_scroll(len(image_batch))
         self._set_current_slice(0, update_view=True)
@@ -1281,6 +1381,13 @@ class MainWindow(QMainWindow):
         # Publish batch outputs back into the GUI and refresh the active slice.
         self._batch_result = batch_result
         self._batch_results_have_measurements = bool(compute_measurements)
+        if compute_measurements:
+            self._last_batch_measurements_signature = self._current_batch_measurement_signature()
+        else:
+            self._last_batch_measurements_signature = None
+            self._stack_diameter_histogram_data = None
+            self._stack_angle_histogram_data = None
+            self._stack_diameter_histogram_enabled = False
         self._set_current_slice(self._current_z_index, update_view=True)
         self.action_save_masks_predictions.setEnabled(True)
         if compute_measurements:
@@ -1439,15 +1546,41 @@ class MainWindow(QMainWindow):
         self._stack3d_window.activateWindow()
 
     def _on_analyze_3d_clicked(self):
-        if self._batch_result is None:
-            self._show_info("Analyze 3D", "Run segmentation or analysis on a stack first.")
+        if self._image_batch is None or len(self._image_batch) == 0:
+            self._show_info("Analyze 3D", "Load a stack first.")
             return
-        if not self._batch_result.has_3d_input:
+        if len(self._image_batch) < 2:
             self._show_info("Analyze 3D", "3D analysis requires at least two slices.")
             return
 
+        self.sync_ui_to_config()
         self.sync_ui_to_sample_properties()
         voxel_spacing_zyx = self.sample_props.spacing_zyx()
+
+        if not self._batch_measurements_match_current_settings():
+            self._stack_diameter_histogram_data = None
+            self._stack_angle_histogram_data = None
+            self._stack_diameter_histogram_enabled = False
+            batch_result = self._run_batch_analysis(
+                compute_measurements=True,
+                error_title="Analyze 3D failed during 2D batch analysis",
+            )
+            if batch_result is None:
+                return
+        elif self._batch_result is None:
+            self._show_warning("Analyze 3D", "No batch result available for 3D processing.")
+            return
+
+        pooled_diameters = self._collect_stack_diameter_samples(self._batch_result)
+        pooled_angles = self._collect_stack_angle_samples(self._batch_result)
+        if pooled_diameters.size:
+            self._stack_diameter_histogram_data = pooled_diameters
+            self._stack_angle_histogram_data = pooled_angles
+            self._stack_diameter_histogram_enabled = True
+        else:
+            self._stack_diameter_histogram_data = None
+            self._stack_angle_histogram_data = None
+            self._stack_diameter_histogram_enabled = False
 
         QtWidgets.QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
         try:
@@ -1502,17 +1635,22 @@ class MainWindow(QMainWindow):
         method = stack3d_meta.get("skeleton_method")
         semantic_labels = int(stack3d_meta.get("semantic_num_labels", int(np.max(semantic_arr)) if semantic_arr.size else 0))
         skeleton_voxels = int(stack3d_meta.get("num_skeleton_voxels", int(np.count_nonzero(skeleton_arr)) if skeleton_arr.size else 0))
+        diameter_samples = int(pooled_diameters.size)
         if method:
             self.statusbar.showMessage(
                 (
                     f"3D analysis complete ({method}). "
-                    f"semantic labels={semantic_labels}, skeleton voxels={skeleton_voxels}."
+                    f"semantic labels={semantic_labels}, skeleton voxels={skeleton_voxels}, "
+                    f"stack diameter samples={diameter_samples}."
                 ),
                 5000,
             )
         else:
             self.statusbar.showMessage(
-                f"3D analysis complete. semantic labels={semantic_labels}, skeleton voxels={skeleton_voxels}.",
+                (
+                    f"3D analysis complete. semantic labels={semantic_labels}, "
+                    f"skeleton voxels={skeleton_voxels}, stack diameter samples={diameter_samples}."
+                ),
                 5000,
             )
 
@@ -2359,8 +2497,18 @@ class MainWindow(QMainWindow):
 
     def _update_distributions_pyqtgraph(self, units_label: str):
         # Thickness
-        self._style_plotwidget(self.graph_diameters, "Fiber thickness", "", f"Thickness ({units_label})")
-        tu = self.current_frame.thickness_units if self.current_frame.thickness_units is not None else np.array([], dtype=np.float32)
+        diameters = (
+            self.current_frame.thickness_units
+            if self.current_frame.thickness_units is not None
+            else np.array([], dtype=np.float32)
+        )
+        title = "Fiber thickness"
+        if self._stack_diameter_histogram_enabled and self._stack_diameter_histogram_data is not None:
+            diameters = self._stack_diameter_histogram_data
+            title = "Fiber thickness (stack aggregate)"
+
+        self._style_plotwidget(self.graph_diameters, title, "", f"Thickness ({units_label})")
+        tu = np.asarray(diameters, dtype=np.float32)
         if tu.size:
             hist, edges = np.histogram(tu, bins=40)
             centers = 0.5 * (edges[:-1] + edges[1:])
@@ -2377,8 +2525,16 @@ class MainWindow(QMainWindow):
 
         if not show_pores:
             # Angles (-90..90)
-            self._style_plotwidget(self.graph_angles, "Fiber orientation", "", "Angle (deg, canonical)")
-            ang = self.current_frame.angles_samples_deg if self.current_frame.angles_samples_deg is not None else np.array([], dtype=np.float32)
+            ang_title = "Fiber orientation"
+            ang = (
+                self.current_frame.angles_samples_deg
+                if self.current_frame.angles_samples_deg is not None
+                else np.array([], dtype=np.float32)
+            )
+            if self._stack_diameter_histogram_enabled and self._stack_angle_histogram_data is not None:
+                ang = self._stack_angle_histogram_data
+                ang_title = "Fiber orientation (stack aggregate)"
+            self._style_plotwidget(self.graph_angles, ang_title, "", "Angle (deg, canonical)")
             if ang.size:
                 hist, edges = np.histogram(ang, bins=36, range=(-90, 90))
                 centers = 0.5 * (edges[:-1] + edges[1:])

@@ -1,5 +1,5 @@
 {
-    "checkpoint_path": "checkpoints/260214_extended_512.pt",
+    "checkpoint_path": "checkpoints/3D_fluo_512.pt",
     "use_gpu": true,
     "scale_label": "1x",
     "max_angle_deg": 30.0,
@@ -13,8 +13,8 @@
     "cluster_params": {},
     "grad_quality_points": [
         -0.35,
-        -0.07,
-        0.07,
+        -0.1,
+        0.1,
         0.35
     ]
 }
