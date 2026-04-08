@@ -18,7 +18,7 @@
 - `Frame`: per-slice state container (`orig_img`, prediction outputs, segmentation outputs, measurement outputs).
 - `BatchResult`: `frame_results: list[Frame]`.
 - `dt`: model output distance transform (`float32`).
-- `dt_u8`, `dt_norm`, `gx`, `gy`, `laplacian`, `style_vec`: cached prediction products.
+- `dt_u8`, `dt_normalized`, `gx`, `gy`, `laplacian`, `style_vec`: cached prediction products.
 - `fragments`: `list[FiberFragment]` from centerline extraction.
 - `markers`: `int32` seed image used by watershed.
 - `labels_2d`: `uint16` segmentation labels.
@@ -36,7 +36,7 @@
 3. Per-frame callback in `_run_batch_analysis(...)`:
 - `_reset_internal_state(preserve_original=False)`
 - `current_frame.begin_frame(frame, frame_id, z_index)`
-- call `segment()` or `analyze_fibers()` (with `_batch_processing_active=True`, so no recursive batch dispatch)
+- call `segment()` or `analyze_fibers()` (with `_is_batch_processing=True`, so no recursive batch dispatch)
 - capture result with `current_frame.snapshot(include_measurements=...)`
 - optionally write artifacts via `_save_batch_outputs(...)`
 4. Collected outputs become `BatchResult(frame_results=[...])`.
@@ -74,7 +74,7 @@
 3. Calls `FiberAnalyzer.analyze(spacing_px_scaled)` returning:
 - `radius_samples` (center/radius mapped back to original scale)
 - `angles_samples_deg`
-- `viz_points`
+- `overlay_samples`
 4. Builds thickness arrays/sample table and orientation stats in GUI.
 5. Computes porosity and pore sampling:
 - `void_mask_and_pore_dt(thr_u8)`

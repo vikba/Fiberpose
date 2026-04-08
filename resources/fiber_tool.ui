@@ -44,7 +44,7 @@
         <string>Segment</string>
        </property>
       </widget>
-      <widget class="QPushButton" name="btn_analyze_fibers">
+      <widget class="QPushButton" name="btn_analyze_2D">
        <property name="geometry">
         <rect>
          <x>10</x>
@@ -713,7 +713,7 @@
       </widget>
       <zorder>groupBox_segmentation</zorder>
       <zorder>btn_segment</zorder>
-      <zorder>btn_analyze_fibers</zorder>
+      <zorder>btn_analyze_2D</zorder>
       <zorder>btn_open_3d</zorder>
       <zorder>groupBox_measurement</zorder>
       <zorder>btn_save_csv</zorder>

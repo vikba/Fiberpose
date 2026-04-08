@@ -140,15 +140,15 @@ class MainWindow(QMainWindow):
         self.btn_reset_view.hide()
 
         # Batch mode state
-        self._batch_mode_active: bool = False
+        self._suppress_batch_dialogs: bool = False
         self._batch_save_options: Dict[str, bool] | None = None
-        self._batch_processing_active: bool = False
+        self._is_batch_processing: bool = False
         self._image_batch: ImageBatch | None = None
         self._batch_result: BatchResult | None = None
-        self._batch_has_measurements: bool = False
+        self._batch_results_have_measurements: bool = False
         self._batch_total_samples: int = 0
         self._batch_processed_samples: int = 0
-        self._batch_compute_measurements: bool = False
+        self._batch_collects_measurements: bool = False
         self._current_z_index: int = 0
         self._stack3d_window: Stack3DWindow | None = None
         self._slice_label = QtWidgets.QLabel("")
@@ -165,7 +165,6 @@ class MainWindow(QMainWindow):
         self._profile_point_items: list[QGraphicsItem] = []
         self._profile_dialog: PlotProfileDialog | None = None
 
-        self.segmentation_mode = "watershed"
         self.rb_watershed.blockSignals(True)
         self.rb_watershed.setChecked(True)
         self.rb_watershed.blockSignals(False)
@@ -180,7 +179,6 @@ class MainWindow(QMainWindow):
         self.chb_strict.setChecked(False)
         self.chb_strict.setEnabled(False)
         self.chb_strict.blockSignals(False)
-        self.cluster_enabled = False
         self.chb_cluster.setChecked(False)
 
 
@@ -300,11 +298,7 @@ class MainWindow(QMainWindow):
 
         # Line Edits (Text boxes)
         # Note: We use `editingFinished` instead of `textChanged`.
-        # `le_minarea` and `le_samspacing` are config-only (not read from main panel).
-        if hasattr(self, "le_mineccentricity"):
-            self.le_mineccentricity.editingFinished.connect(self.sync_ui_to_config)
-        if hasattr(self, "le_minskeletonlen"):
-            self.le_minskeletonlen.editingFinished.connect(self.sync_ui_to_config)
+        # `le_samspacing` is config-only (not read from main panel).
         self.le_pixelsize.editingFinished.connect(self.sync_ui_to_sample_properties)
         if hasattr(self, "le_voxeldepth"):
             self.le_voxeldepth.editingFinished.connect(self.sync_ui_to_sample_properties)
@@ -463,11 +457,11 @@ class MainWindow(QMainWindow):
         """
         Return the cached centerline view with clustering links overlaid for visibility.
         """
-        img = self.current_frame.centerlines
+        img = self.current_frame.centerlines_overlay_img
         base = ensure_rgb_u8(img)
         if base is None:
             return None
-        if not self.cluster_enabled or self.analyzer is None:
+        if not self.config.cluster_enabled or self.analyzer is None:
             return base
         try:
             connections = self.analyzer.get_cluster_connections()
@@ -543,8 +537,8 @@ class MainWindow(QMainWindow):
             dt=np.asarray(dt, dtype=np.float32, copy=False),
             gx=np.asarray(gx, dtype=np.float32, copy=False) if gx is not None else None,
             gy=np.asarray(gy, dtype=np.float32, copy=False) if gy is not None else None,
-            gray_u8=np.asarray(dt_u8, dtype=np.uint8, copy=False) if dt_u8 is not None else None,
-            gray_img=np.asarray(dt_norm, dtype=np.float32, copy=False) if dt_norm is not None else None,
+            dt_u8=np.asarray(dt_u8, dtype=np.uint8, copy=False) if dt_u8 is not None else None,
+            dt_normalized=np.asarray(dt_norm, dtype=np.float32, copy=False) if dt_norm is not None else None,
             lapl_img=np.asarray(lapl, dtype=np.float32, copy=False) if lapl is not None else None,
             style_vec=np.asarray(style_vec, dtype=np.float32, copy=False) if style_vec is not None else None,
             orig_img_scaled=self.current_frame.orig_img_scaled,
@@ -554,19 +548,19 @@ class MainWindow(QMainWindow):
         return True
 
     def _show_info(self, title: str, message: str):
-        if self._batch_mode_active:
+        if self._suppress_batch_dialogs:
             logger.info("[Batch] %s: %s", title, message)
         else:
             QtWidgets.QMessageBox.information(self, title, message)
 
     def _show_warning(self, title: str, message: str):
-        if self._batch_mode_active:
+        if self._suppress_batch_dialogs:
             logger.warning("[Batch] %s: %s", title, message)
         else:
             QtWidgets.QMessageBox.warning(self, title, message)
 
     def _show_error(self, title: str, message: str):
-        if self._batch_mode_active:
+        if self._suppress_batch_dialogs:
             logger.error("[Batch] %s: %s", title, message)
         else:
             QtWidgets.QMessageBox.critical(self, title, message)
@@ -743,7 +737,7 @@ class MainWindow(QMainWindow):
     def _set_image_batch(self, image_batch: ImageBatch):
         self._image_batch = image_batch
         self._batch_result = None
-        self._batch_has_measurements = False
+        self._batch_results_have_measurements = False
         self._current_z_index = 0
         self._configure_z_scroll(len(image_batch))
         self._set_current_slice(0, update_view=True)
@@ -1193,7 +1187,7 @@ class MainWindow(QMainWindow):
 
     def _set_progress_bar(self, sample_progress_percent: float) -> None:
         progress = float(max(0.0, min(100.0, sample_progress_percent)))
-        if self._batch_processing_active and self._batch_total_samples > 0:
+        if self._is_batch_processing and self._batch_total_samples > 0:
             current_sample_progress = progress / 100.0
             processed = min(max(int(self._batch_processed_samples), 0), self._batch_total_samples)
             total = float(self._batch_total_samples)
@@ -1227,18 +1221,18 @@ class MainWindow(QMainWindow):
             self.statusbar.showMessage(f"Processing 0/{total_images} images")
             self._batch_total_samples = total_images
             self._batch_processed_samples = 0
-            self._batch_compute_measurements = bool(compute_measurements)
+            self._batch_collects_measurements = bool(compute_measurements)
             self._set_progress_bar(0.0)
             if self.analyzer is None:
                 raise RuntimeError("Fiber analyzer has not been initialized.")
 
             # Enter internal batch execution mode so frame callbacks can call segment/analyze safely.
             batch_analyzer = BatchAnalyzer(self.analyzer)
-            previous_batch_state = self._batch_mode_active
-            previous_processing_state = self._batch_processing_active
-            self._batch_processing_active = True
+            previous_batch_state = self._suppress_batch_dialogs
+            previous_processing_state = self._is_batch_processing
+            self._is_batch_processing = True
             if len(active_batch) > 1:
-                self._batch_mode_active = True
+                self._suppress_batch_dialogs = True
 
             processed_images = 0
 
@@ -1267,12 +1261,12 @@ class MainWindow(QMainWindow):
 
             try:
                 batch_result = batch_analyzer.analyze(active_batch, _process_frame)
-                batch_result.merge_meta = {
+                batch_result.stack3d_meta = {
                     "info": "3D post-processing not run yet. Click 'Analyze 3D' to merge labels across slices."
                 }
             finally:
-                self._batch_mode_active = previous_batch_state
-                self._batch_processing_active = previous_processing_state
+                self._suppress_batch_dialogs = previous_batch_state
+                self._is_batch_processing = previous_processing_state
         except Exception as exc:
             self._show_error(title, str(exc))
             logger.error("%s: %s", title, exc)
@@ -1282,11 +1276,11 @@ class MainWindow(QMainWindow):
             self.statusbar.clearMessage()
             self._batch_total_samples = 0
             self._batch_processed_samples = 0
-            self._batch_compute_measurements = False
+            self._batch_collects_measurements = False
 
         # Publish batch outputs back into the GUI and refresh the active slice.
         self._batch_result = batch_result
-        self._batch_has_measurements = bool(compute_measurements)
+        self._batch_results_have_measurements = bool(compute_measurements)
         self._set_current_slice(self._current_z_index, update_view=True)
         self.action_save_masks_predictions.setEnabled(True)
         if compute_measurements:
@@ -1469,9 +1463,9 @@ class MainWindow(QMainWindow):
         finally:
             QtWidgets.QApplication.restoreOverrideCursor()
 
-        merge_meta = self._batch_result.merge_meta or {}
-        if merge_meta.get("error"):
-            self._show_warning("Analyze 3D", f"3D processing failed: {merge_meta.get('error')}")
+        stack3d_meta = self._batch_result.stack3d_meta or {}
+        if stack3d_meta.get("error"):
+            self._show_warning("Analyze 3D", f"3D processing failed: {stack3d_meta.get('error')}")
             return
 
         semantic_volume = self._batch_result.semantic_volume
@@ -1505,9 +1499,9 @@ class MainWindow(QMainWindow):
             )
         self.action_save_masks_predictions.setEnabled(True)
 
-        method = merge_meta.get("skeleton_method")
-        semantic_labels = int(merge_meta.get("semantic_num_labels", int(np.max(semantic_arr)) if semantic_arr.size else 0))
-        skeleton_voxels = int(merge_meta.get("num_skeleton_voxels", int(np.count_nonzero(skeleton_arr)) if skeleton_arr.size else 0))
+        method = stack3d_meta.get("skeleton_method")
+        semantic_labels = int(stack3d_meta.get("semantic_num_labels", int(np.max(semantic_arr)) if semantic_arr.size else 0))
+        skeleton_voxels = int(stack3d_meta.get("num_skeleton_voxels", int(np.count_nonzero(skeleton_arr)) if skeleton_arr.size else 0))
         if method:
             self.statusbar.showMessage(
                 (
@@ -1695,7 +1689,7 @@ class MainWindow(QMainWindow):
     def segment(self):
         fr = self.current_frame
 
-        if self._image_batch is not None and not self._batch_processing_active:
+        if self._image_batch is not None and not self._is_batch_processing:
             self._run_batch_analysis(compute_measurements=False)
             return
         if fr.orig_img is None:
@@ -1717,7 +1711,7 @@ class MainWindow(QMainWindow):
         previous_scale = float(fr.scale_factor)
         # Parse the string (e.g., "1x" -> 1.0)
         try:
-            target_scale = float(self.config.scale_string.lower().replace("x", "").replace("×", ""))
+            target_scale = float(self.config.scale_label.lower().replace("x", "").replace("×", ""))
         except ValueError:
             target_scale = 1.0
             
@@ -1805,8 +1799,8 @@ class MainWindow(QMainWindow):
             dt=np.asarray(dt, dtype=np.float32, copy=False),
             gx=np.asarray(gx, dtype=np.float32, copy=False),
             gy=np.asarray(gy, dtype=np.float32, copy=False),
-            gray_u8=self.analyzer.get_dt_u8(),
-            gray_img=dt_norm,
+            dt_u8=self.analyzer.get_dt_u8(),
+            dt_normalized=dt_norm,
             lapl_img=lapl,
             style_vec=style_vec,
             orig_img_scaled=fr.orig_img_scaled,
@@ -1858,7 +1852,7 @@ class MainWindow(QMainWindow):
         base_img = fr.orig_img if fr.scale_factor == 1.0 or fr.orig_img_scaled is None else fr.orig_img_scaled
         fr.set_segmentation_outputs(
             labels_2d=labels,
-            centerlines=self.analyzer.get_centerlines_image(),
+            centerlines_overlay_img=self.analyzer.get_centerlines_image(),
             overlay_img=self._create_overlay(base_img, labels, alpha=0.5, labels_rgb=labels_rgb),
             sampling_overlay=fr.sampling_overlay,
             measurements_overlay=fr.measurements_overlay,
@@ -1872,7 +1866,7 @@ class MainWindow(QMainWindow):
         self.action_save_masks_predictions.setEnabled(True)
 
         self.refresh_view()
-        if self._batch_processing_active and not self._batch_compute_measurements:
+        if self._is_batch_processing and not self._batch_collects_measurements:
             self._set_progress_bar(100.0)
         else:
             self._set_progress_bar(70.0)
@@ -1883,8 +1877,8 @@ class MainWindow(QMainWindow):
         Computes thickness samples via analyzer and renders overlays/plots.
         """
         fr = self.current_frame
-        if self._image_batch is not None and not self._batch_processing_active:
-            if self._batch_result is not None and self._batch_has_measurements:
+        if self._image_batch is not None and not self._is_batch_processing:
+            if self._batch_result is not None and self._batch_results_have_measurements:
                 self._set_current_slice(self._current_z_index, update_view=True)
                 return
             self._run_batch_analysis(compute_measurements=True)
@@ -1897,7 +1891,7 @@ class MainWindow(QMainWindow):
         
         # We need a quick way to convert the config's "1x" string to a float 
         try:
-            target_scale = float(self.config.scale_string.lower().replace("x", "").replace("×", ""))
+            target_scale = float(self.config.scale_label.lower().replace("x", "").replace("×", ""))
         except ValueError:
             target_scale = 1.0
     
@@ -1921,7 +1915,7 @@ class MainWindow(QMainWindow):
                 self._show_info("No segmentation", "Segmentation could not be performed.")
                 return
         logger.info("Starting fiber analysis.")
-        fr.viz_points = []
+        fr.overlay_samples = []
 
         # Params
         spacing_px_input = max(1.0, self.config.sample_spacing)
@@ -1942,10 +1936,10 @@ class MainWindow(QMainWindow):
 
         self.analyzer.scale_factor = fr.scale_factor
 
-        radius_samples, angles_samples_deg, viz_points = self.analyzer.analyze(
+        radius_samples, angles_samples_deg, overlay_samples = self.analyzer.analyze(
             spacing_px=spacing_px_scaled
         )
-        fr.viz_points = viz_points
+        fr.overlay_samples = overlay_samples
 
         self._set_progress_bar(80.0)
 
@@ -2031,7 +2025,7 @@ class MainWindow(QMainWindow):
         fr.set_measurement_outputs(
             samples_table=samples_table,
             fiber_summary=fiber_summary,
-            viz_points=viz_points,
+            overlay_samples=overlay_samples,
             angles_samples_deg=angles_arr,
             thickness_units=thickness_units,
             porosity=porosity,
@@ -2052,7 +2046,7 @@ class MainWindow(QMainWindow):
         self._show_info(
             "Analysis complete",
             f"Radius samples: {len(radius_samples)} (spacing={int(spacing_px_input)} px)\n"
-            f"Stored viz points: {len(fr.viz_points)}\n"
+            f"Stored overlay samples: {len(fr.overlay_samples)}\n"
             f"Mean diameter: {mean_thickness:.2f} {units_label}\n"
             f"Std diameter: {std_thickness:.2f} {units_label}\n"
             f"Orientation index: {orientation_index:.2f}\n"
@@ -2065,7 +2059,7 @@ class MainWindow(QMainWindow):
 
     # ---- single overlay renderer (kept once) ----
     def _render_vector_overlay(self):
-        if not self.current_frame.viz_points:
+        if not self.current_frame.overlay_samples:
             return
         show_diam   = getattr(self, "rb_show_diam", None) and self.rb_show_diam.isChecked()
         show_direct = getattr(self, "rb_show_direct", None) and self.rb_show_direct.isChecked()
@@ -2089,7 +2083,7 @@ class MainWindow(QMainWindow):
                 self._set_pixmap_from_array(out)
                 return
 
-        sampling_base = ensure_rgb_u8(self.current_frame.gray_u8 if self.current_frame.gray_u8 is not None else self.current_frame.gray_img)
+        sampling_base = ensure_rgb_u8(self.current_frame.dt_u8 if self.current_frame.dt_u8 is not None else self.current_frame.dt_normalized)
         if sampling_base is None and self.current_frame.overlay_img is not None:
             sampling_base = ensure_rgb_u8(self.current_frame.overlay_img)
         if sampling_base is None:
@@ -2107,7 +2101,7 @@ class MainWindow(QMainWindow):
 
         H, W = sampling_canvas.shape[:2]
         MAX_SEGMENTS = 15000
-        pts = self.current_frame.viz_points if len(self.current_frame.viz_points) <= MAX_SEGMENTS else self.current_frame.viz_points[::int(np.ceil(len(self.current_frame.viz_points)/MAX_SEGMENTS))]
+        pts = self.current_frame.overlay_samples if len(self.current_frame.overlay_samples) <= MAX_SEGMENTS else self.current_frame.overlay_samples[::int(np.ceil(len(self.current_frame.overlay_samples)/MAX_SEGMENTS))]
 
         line_color = (255, 255, 0)
         point_color = (255, 0, 0)
@@ -2307,7 +2301,7 @@ class MainWindow(QMainWindow):
         if view == "Original":
             img = ensure_rgb_u8(self.current_frame.orig_img)
         elif view == "DT":
-            img = to_uint8_for_view(self.current_frame.gray_img)
+            img = to_uint8_for_view(self.current_frame.dt_normalized)
         elif view == "Laplacian":
             img = to_uint8_for_view(self.current_frame.lapl_img)
         elif view == "Centerlines":
@@ -2317,8 +2311,8 @@ class MainWindow(QMainWindow):
         elif view == "Overlay":
             img = self.current_frame.overlay_img
         elif view == "Sampling":
-            img = self.current_frame.sampling_overlay if self.current_frame.sampling_overlay is not None else ensure_rgb_u8(self.current_frame.gray_u8)
-        elif view in ("Measurements overlay", "Measurements"):
+            img = self.current_frame.sampling_overlay if self.current_frame.sampling_overlay is not None else ensure_rgb_u8(self.current_frame.dt_u8)
+        elif view == "Measurements overlay":
             fallback = self.current_frame.overlay_img if self.current_frame.overlay_img is not None else self._labels_rgb()
             img = self.current_frame.measurements_overlay if self.current_frame.measurements_overlay is not None else fallback
         elif view == "gx": 
@@ -2654,29 +2648,7 @@ class MainWindow(QMainWindow):
         # Model & Hardware
         self.config.checkpoint_path = self.cb_model.currentText().strip()
         self.config.use_gpu = self.chb_usegpu.isChecked()
-        self.config.scale_string = self.cb_scale.currentText().strip()
-
-        # Helper to safely parse floats from QLineEdit
-        def parse_float(le, default):
-            txt = le.text().strip()
-            if not txt:
-                return default
-            try:
-                return float(txt)
-            except ValueError:
-                return default
-
-        # Advanced Limits
-        # Config-only: preserve value loaded from config file / config editor dialog.
-        self.config.min_area = float(getattr(self.config, "min_area", 50.0))
-        if hasattr(self, "le_mineccentricity"):
-            self.config.min_eccentricity = parse_float(self.le_mineccentricity, 0.9)
-        else:
-            self.config.min_eccentricity = float(getattr(self.config, "min_eccentricity", 0.9))
-        if hasattr(self, "le_minskeletonlen"):
-            self.config.min_skeleton_len = parse_float(self.le_minskeletonlen, 20.0)
-        else:
-            self.config.min_skeleton_len = float(getattr(self.config, "min_skeleton_len", 20.0))
+        self.config.scale_label = self.cb_scale.currentText().strip()
 
         # Centerline Params
         # Config-only: preserve value loaded from config file / config editor dialog.
@@ -2723,15 +2695,7 @@ class MainWindow(QMainWindow):
         self.chb_usegpu.setChecked(bool(cfg.use_gpu))
         self.chb_usegpu.blockSignals(False)
         
-        set_combo_text(self.cb_scale, cfg.scale_string)
-
-        # --- Advanced Limits ---
-        if hasattr(self, "le_minarea"):
-            self.le_minarea.setText(str(cfg.min_area))
-        if hasattr(self, "le_mineccentricity"):
-            self.le_mineccentricity.setText(str(cfg.min_eccentricity))
-        if hasattr(self, "le_minskeletonlen"):
-            self.le_minskeletonlen.setText(str(cfg.min_skeleton_len))
+        set_combo_text(self.cb_scale, cfg.scale_label)
 
         # --- Centerline Params ---
         if hasattr(self, "sp_max_cent_angle"):

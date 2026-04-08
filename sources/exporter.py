@@ -48,11 +48,11 @@ class BatchResultExporter:
                     continue
                 try:
                     if artifact == "dt":
-                        if frame.gray_u8 is None:
+                        if frame.dt_u8 is None:
                             skipped.append(self._skip_item(frame_index, artifact, "missing_data"))
                             continue
                         path = self._resolve_output_path(output_dir, base_name, "_dt", image_ext, cfg)
-                        iio.imwrite(path, np.asarray(frame.gray_u8, dtype=np.uint8))
+                        iio.imwrite(path, np.asarray(frame.dt_u8, dtype=np.uint8))
                         written_files.append(path)
                     elif artifact == "labels":
                         if frame.labels_2d is None or np.max(frame.labels_2d) <= 0:

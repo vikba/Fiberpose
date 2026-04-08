@@ -45,7 +45,6 @@ class FiberAnalyzer_2D:
         device: Any,
         model_kwargs: Optional[Dict[str, Any]] = None,
         strict: bool | None = None,
-        high_conf_fib: bool | None = None,
     ):
         self.ckpt_path = ckpt_path
         self.device = device
@@ -72,8 +71,7 @@ class FiberAnalyzer_2D:
         self._model_kwargs = defaults
 
         self._predictor: Optional[FiberposeModel] = None
-        strict_flag = high_conf_fib if strict is None else strict
-        self._strict_centerlines = bool(strict_flag) if strict_flag is not None else False
+        self._strict_centerlines = bool(strict) if strict is not None else False
 
         self._centerline_kwargs: Dict[str, Any] = self._default_centerline_kwargs()
         self._last_max_angle: float = 0.0
@@ -481,7 +479,6 @@ class FiberAnalyzer_2D:
         self,
         mode: str = "watershed",
         params: Optional[Dict[str, Any]] = None,
-        **legacy_kwargs: Any,
     ) -> np.ndarray:
         """
         Dispatch segmentation by mode.
@@ -495,25 +492,7 @@ class FiberAnalyzer_2D:
             raise ValueError("Distance transform not available. Call predict_dt first.")
 
         opts = dict(params or {})
-        if not isinstance(mode, str):
-            opts.setdefault("threshold_u8", int(mode))
-            mode_name = "watershed"
-        else:
-            mode_name = str(mode or "watershed").strip().lower()
-
-        if legacy_kwargs:
-            if "thr_u8" in legacy_kwargs:
-                mode_name = "watershed"
-                opts["threshold_u8"] = int(legacy_kwargs["thr_u8"])
-            if "radius_thresh_px" in legacy_kwargs:
-                mode_name = "ridge"
-                opts["radius_thresh_px"] = legacy_kwargs["radius_thresh_px"]
-            if "high_conf_options" in legacy_kwargs:
-                hc = legacy_kwargs.get("high_conf_options") or {}
-                if isinstance(hc, dict):
-                    for key in ("dilate_extra_px", "min_run_points"):
-                        if key in hc:
-                            opts[key] = hc[key]
+        mode_name = str(mode or "watershed").strip().lower()
 
         if mode_name == "watershed":
             thr_u8 = int(opts.get("threshold_u8", 128))
@@ -998,7 +977,7 @@ class FiberAnalyzer_2D:
         Returns:
           - radius_samples: list of (y, x, r)
           - angles_samples_deg: list[float]
-          - viz_points: list of (y, x, r, ny, nx, ty, tx, angle_deg)
+          - overlay_samples: list of (y, x, r, ny, nx, ty, tx, angle_deg)
         """
         if dt is None or gx is None or gy is None:
             return [], [], []
@@ -1013,7 +992,7 @@ class FiberAnalyzer_2D:
 
         radius_samples: List[tuple[int, int, float]] = []
         angles_samples_deg: List[float] = []
-        viz_points: List[tuple[int, int, float, float, float, float, float, float]] = []
+        overlay_samples: List[tuple[int, int, float, float, float, float, float, float]] = []
 
         def _canon_angle(ty: float, tx: float):
             # Convert tangent direction to canonical orientation angle in image coords:
@@ -1083,7 +1062,7 @@ class FiberAnalyzer_2D:
                 r = (v1 + v2 + r0) / 2
 
                 # Keep per-sample geometry for overlays/diagnostics.
-                viz_points.append((int(round(y)), int(round(x)), r, ny, nx, ty_c, tx_c, float(ang)))
+                overlay_samples.append((int(round(y)), int(round(x)), r, ny, nx, ty_c, tx_c, float(ang)))
                 # Export histogram samples in original scale.
                 radius_samples.append(
                     (
@@ -1093,7 +1072,7 @@ class FiberAnalyzer_2D:
                     )
                 )
 
-        return radius_samples, angles_samples_deg, viz_points
+        return radius_samples, angles_samples_deg, overlay_samples
 
     def analyze(self, constant_segments: Optional[List[np.ndarray]] = None, spacing_px: float = 5.0):
         """
@@ -1102,7 +1081,7 @@ class FiberAnalyzer_2D:
         Returns:
           - radius_samples: list of (y, x, r)
           - angles_samples_deg: list[float]
-          - viz_points: list of (y, x, r, ny, nx, ty, tx, angle_deg)
+          - overlay_samples: list of (y, x, r, ny, nx, ty, tx, angle_deg)
 
         Note:
             `_xy` suffix denotes (x, y) ordering, while `_yx` denotes (y, x).

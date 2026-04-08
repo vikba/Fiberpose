@@ -16,12 +16,7 @@ class AppConfig:
     # --- Model & Hardware ---
     checkpoint_path: str = ""
     use_gpu: bool = True
-    scale_string: str = "1x"
-    
-    # --- Advanced Limits ---
-    min_area: float = 50.0
-    min_eccentricity: float = 0.9
-    min_skeleton_len: float = 20.0
+    scale_label: str = "1x"
     
     # --- Centerline Params ---
     max_angle_deg: float = 30.0
@@ -51,6 +46,9 @@ class AppConfig:
         try:
             with open(filepath, 'r') as f:
                 data = json.load(f)
+                # Backward compatibility for renamed config keys.
+                if "scale_label" not in data and "scale_string" in data:
+                    data["scale_label"] = data.get("scale_string")
                 valid_keys = {k for k in cls.__dataclass_fields__}
                 filtered_data = {k: v for k, v in data.items() if k in valid_keys}
                 return cls(**filtered_data)
@@ -379,7 +377,7 @@ class BatchResult:
     frame_results: List[Frame]
     semantic_volume: Optional[np.ndarray] = None
     semantic_skeleton_volume: Optional[np.ndarray] = None
-    merge_meta: Optional[Dict[str, Any]] = None
+    stack3d_meta: Optional[Dict[str, Any]] = None
 
     def frame_at(self, index: int) -> Frame:
         return self.frame_results[index]
@@ -401,6 +399,15 @@ class BatchResult:
         exporter = BatchResultExporter(export_config=export_config)
         return exporter.save_all(self, output_dir, export_config=export_config)
 
+    # Backward compatibility for callers still using the previous name.
+    @property
+    def merge_meta(self) -> Optional[Dict[str, Any]]:
+        return self.stack3d_meta
+
+    @merge_meta.setter
+    def merge_meta(self, value: Optional[Dict[str, Any]]) -> None:
+        self.stack3d_meta = value
+
 
 @dataclass
 class Frame:
@@ -421,8 +428,8 @@ class Frame:
     orig_img_scaled: Optional[np.ndarray] = None
     scale_factor: float = 1.0
     dt: Optional[np.ndarray] = None
-    gray_u8: Optional[np.ndarray] = None
-    gray_img: Optional[np.ndarray] = None
+    dt_u8: Optional[np.ndarray] = None
+    dt_normalized: Optional[np.ndarray] = None
     lapl_img: Optional[np.ndarray] = None
     gx: Optional[np.ndarray] = None
     gy: Optional[np.ndarray] = None
@@ -430,7 +437,7 @@ class Frame:
 
     # Segmentation products
     labels_2d: Optional[np.ndarray] = None
-    centerlines: Optional[np.ndarray] = None
+    centerlines_overlay_img: Optional[np.ndarray] = None
     overlay_img: Optional[np.ndarray] = None
     sampling_overlay: Optional[np.ndarray] = None
     measurements_overlay: Optional[np.ndarray] = None
@@ -438,7 +445,7 @@ class Frame:
     # Measurement outputs
     samples_table: Optional[Any] = None
     fiber_summary: Optional[Dict[str, Any]] = None
-    viz_points: Optional[Any] = None
+    overlay_samples: Optional[Any] = None
     angles_samples_deg: Optional[np.ndarray] = None
     thickness_units: Optional[np.ndarray] = None
     porosity: Optional[float] = None
@@ -466,8 +473,8 @@ class Frame:
     def clear_prediction(self) -> None:
         self.has_prediction = False
         self.dt = None
-        self.gray_u8 = None
-        self.gray_img = None
+        self.dt_u8 = None
+        self.dt_normalized = None
         self.lapl_img = None
         self.gx = None
         self.gy = None
@@ -479,7 +486,7 @@ class Frame:
     def clear_segmentation(self) -> None:
         self.has_segmentation = False
         self.labels_2d = None
-        self.centerlines = None
+        self.centerlines_overlay_img = None
         self.overlay_img = None
         self.sampling_overlay = None
         self.measurements_overlay = None
@@ -489,7 +496,7 @@ class Frame:
         self.has_measurements = False
         self.samples_table = None
         self.fiber_summary = None
-        self.viz_points = None
+        self.overlay_samples = None
         self.angles_samples_deg = None
         self.thickness_units = None
         self.porosity = None
@@ -513,8 +520,8 @@ class Frame:
         dt: Optional[np.ndarray],
         gx: Optional[np.ndarray],
         gy: Optional[np.ndarray],
-        gray_u8: Optional[np.ndarray],
-        gray_img: Optional[np.ndarray],
+        dt_u8: Optional[np.ndarray],
+        dt_normalized: Optional[np.ndarray],
         lapl_img: Optional[np.ndarray],
         style_vec: Optional[np.ndarray],
         orig_img_scaled: Optional[np.ndarray],
@@ -524,8 +531,8 @@ class Frame:
         self.dt = dt
         self.gx = gx
         self.gy = gy
-        self.gray_u8 = gray_u8
-        self.gray_img = gray_img
+        self.dt_u8 = dt_u8
+        self.dt_normalized = dt_normalized
         self.lapl_img = lapl_img
         self.style_vec = style_vec
         self.orig_img_scaled = orig_img_scaled
@@ -540,7 +547,7 @@ class Frame:
         self,
         *,
         labels_2d: Optional[np.ndarray],
-        centerlines: Optional[np.ndarray],
+        centerlines_overlay_img: Optional[np.ndarray],
         overlay_img: Optional[np.ndarray],
         sampling_overlay: Optional[np.ndarray] = None,
         measurements_overlay: Optional[np.ndarray] = None,
@@ -548,7 +555,7 @@ class Frame:
         invalidate_measurements: bool = True,
     ) -> None:
         self.labels_2d = labels_2d
-        self.centerlines = centerlines
+        self.centerlines_overlay_img = centerlines_overlay_img
         self.overlay_img = overlay_img
         self.sampling_overlay = sampling_overlay
         self.measurements_overlay = measurements_overlay
@@ -566,7 +573,7 @@ class Frame:
         *,
         samples_table: Optional[Any],
         fiber_summary: Optional[Dict[str, Any]],
-        viz_points: Optional[Any],
+        overlay_samples: Optional[Any],
         angles_samples_deg: Optional[np.ndarray],
         thickness_units: Optional[np.ndarray],
         porosity: Optional[float],
@@ -579,7 +586,7 @@ class Frame:
     ) -> None:
         self.samples_table = samples_table
         self.fiber_summary = fiber_summary
-        self.viz_points = viz_points
+        self.overlay_samples = overlay_samples
         self.angles_samples_deg = angles_samples_deg
         self.thickness_units = thickness_units
         self.porosity = porosity

@@ -65,7 +65,7 @@ class StackAnalyzer_3D:
             if semantic_volume is None:
                 batch_result.semantic_skeleton_volume = None
                 meta["error"] = "No per-slice labels available to build a 3D semantic volume."
-                batch_result.merge_meta = meta
+                batch_result.stack3d_meta = meta
                 return batch_result
 
             semantic_volume = np.asarray(semantic_volume, dtype=np.int32)
@@ -79,7 +79,7 @@ class StackAnalyzer_3D:
             if not np.any(binary_mask):
                 batch_result.semantic_skeleton_volume = np.zeros_like(semantic_volume, dtype=np.int32)
                 meta["num_skeleton_voxels"] = 0
-                batch_result.merge_meta = meta
+                batch_result.stack3d_meta = meta
                 return batch_result
 
             skeletonize_3d, skeleton_method = self._resolve_3d_skeletonizer()
@@ -98,7 +98,7 @@ class StackAnalyzer_3D:
         finally:
             meta["elapsed_ms"] = round((perf_counter() - t0) * 1000.0, 3)
 
-        batch_result.merge_meta = meta
+        batch_result.stack3d_meta = meta
         return batch_result
 
     @staticmethod

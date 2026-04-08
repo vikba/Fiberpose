@@ -137,15 +137,12 @@ class ConfigEditorDialog(QtWidgets.QDialog):
             "tooltip": "Relative or absolute path to the model checkpoint (.pt).",
         },
         "use_gpu": {"label": "Use GPU", "kind": "bool"},
-        "scale_string": {
+        "scale_label": {
             "label": "Scale",
             "kind": "enum",
             "options": ["0.5x", "1x", "2x", "4x"],
             "editable": True,
         },
-        "min_area": {"label": "Min area (px)", "kind": "float", "min": 0.0, "max": 1e9, "step": 1.0},
-        "min_eccentricity": {"label": "Min eccentricity", "kind": "float", "min": 0.0, "max": 1.0, "step": 0.01},
-        "min_skeleton_len": {"label": "Min skeleton length (px)", "kind": "float", "min": 0.0, "max": 1e9, "step": 1.0},
         "max_angle_deg": {"label": "Max angle (deg)", "kind": "float", "min": 0.0, "max": 180.0, "step": 1.0},
         "strict_centerlines": {"label": "Strict centerlines", "kind": "bool"},
         "segmentation_mode": {
@@ -752,8 +749,8 @@ class Stack3DWindow(QtWidgets.QDialog):
             except Exception:
                 self._voxel_spacing_zyx = (1.0, 1.0, 1.0)
         elif batch_result is not None:
-            merge_meta = batch_result.merge_meta or {}
-            spacing_meta = merge_meta.get("voxel_spacing_zyx")
+            stack3d_meta = batch_result.stack3d_meta or {}
+            spacing_meta = stack3d_meta.get("voxel_spacing_zyx")
             if spacing_meta is not None:
                 try:
                     self._voxel_spacing_zyx = self._parse_voxel_spacing(spacing_meta)
