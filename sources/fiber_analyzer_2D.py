@@ -989,16 +989,16 @@ class FiberAnalyzer_2D:
         scale_factor: float = 1.0,
     ) -> tuple[
         List[tuple[int, int, float]],
-        List[tuple[int, int, float, float, float, float, float, float]],
         List[float],
+        List[tuple[int, int, float, float, float, float, float, float]],
     ]:
         """
         Pure analysis core with explicit inputs.
 
         Returns:
-          - hist_centers: list of (y, x, r)
+          - radius_samples: list of (y, x, r)
+          - angles_samples_deg: list[float]
           - viz_points: list of (y, x, r, ny, nx, ty, tx, angle_deg)
-          - angles_deg: list[float]
         """
         if dt is None or gx is None or gy is None:
             return [], [], []
@@ -1011,8 +1011,8 @@ class FiberAnalyzer_2D:
         if not np.isfinite(scale) or scale <= 0:
             scale = 1.0
 
-        hist_centers: List[tuple[int, int, float]] = []
-        angles_deg: List[float] = []
+        radius_samples: List[tuple[int, int, float]] = []
+        angles_samples_deg: List[float] = []
         viz_points: List[tuple[int, int, float, float, float, float, float, float]] = []
 
         def _canon_angle(ty: float, tx: float):
@@ -1065,7 +1065,7 @@ class FiberAnalyzer_2D:
                     ty_c, tx_c, ang = float("nan"), float("nan"), float("nan")
                 else:
                     ty_c, tx_c, ang = canon
-                angles_deg.append(ang)
+                angles_samples_deg.append(ang)
 
                 norm = np.sqrt(nx**2 + ny**2)
                 nx /= norm
@@ -1085,7 +1085,7 @@ class FiberAnalyzer_2D:
                 # Keep per-sample geometry for overlays/diagnostics.
                 viz_points.append((int(round(y)), int(round(x)), r, ny, nx, ty_c, tx_c, float(ang)))
                 # Export histogram samples in original scale.
-                hist_centers.append(
+                radius_samples.append(
                     (
                         int(round(y / scale)),
                         int(round(x / scale)),
@@ -1093,16 +1093,16 @@ class FiberAnalyzer_2D:
                     )
                 )
 
-        return hist_centers, viz_points, angles_deg
+        return radius_samples, angles_samples_deg, viz_points
 
     def analyze(self, constant_segments: Optional[List[np.ndarray]] = None, spacing_px: float = 5.0):
         """
         Backward-compatible wrapper over `analyze_from_signatures(...)`.
 
         Returns:
-          - hist_centers: list of (y, x, r)
+          - radius_samples: list of (y, x, r)
+          - angles_samples_deg: list[float]
           - viz_points: list of (y, x, r, ny, nx, ty, tx, angle_deg)
-          - angles_deg: list[float]
 
         Note:
             `_xy` suffix denotes (x, y) ordering, while `_yx` denotes (y, x).

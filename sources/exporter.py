@@ -298,8 +298,8 @@ class BatchResultExporter:
             else np.array([])
         )
         angles = (
-            np.asarray(frame.angles_deg)
-            if getattr(frame, "angles_deg", None) is not None
+            np.asarray(frame.angles_samples_deg)
+            if getattr(frame, "angles_samples_deg", None) is not None
             else np.array([])
         )
 
@@ -311,11 +311,11 @@ class BatchResultExporter:
         return mean_val, std_val, orientation_index, mean_angle_deg, std_angle_deg, porosity, sample_count
 
     @staticmethod
-    def _compute_orientation_stats(angles_deg: np.ndarray) -> tuple[float, float, float]:
-        if angles_deg is None or getattr(angles_deg, "size", 0) == 0:
+    def _compute_orientation_stats(angles_samples_deg: np.ndarray) -> tuple[float, float, float]:
+        if angles_samples_deg is None or getattr(angles_samples_deg, "size", 0) == 0:
             return float("nan"), float("nan"), float("nan")
 
-        angles_rad = np.deg2rad(angles_deg)
+        angles_rad = np.deg2rad(angles_samples_deg)
         mean_cos = float(np.mean(np.cos(angles_rad)))
         mean_sin = float(np.mean(np.sin(angles_rad)))
 

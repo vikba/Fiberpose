@@ -439,7 +439,7 @@ class Frame:
     samples_table: Optional[Any] = None
     fiber_summary: Optional[Dict[str, Any]] = None
     viz_points: Optional[Any] = None
-    angles_deg: Optional[np.ndarray] = None
+    angles_samples_deg: Optional[np.ndarray] = None
     thickness_units: Optional[np.ndarray] = None
     porosity: Optional[float] = None
     pore_diams_units: Optional[np.ndarray] = None
@@ -490,7 +490,7 @@ class Frame:
         self.samples_table = None
         self.fiber_summary = None
         self.viz_points = None
-        self.angles_deg = None
+        self.angles_samples_deg = None
         self.thickness_units = None
         self.porosity = None
         self.pore_diams_units = None
@@ -567,7 +567,7 @@ class Frame:
         samples_table: Optional[Any],
         fiber_summary: Optional[Dict[str, Any]],
         viz_points: Optional[Any],
-        angles_deg: Optional[np.ndarray],
+        angles_samples_deg: Optional[np.ndarray],
         thickness_units: Optional[np.ndarray],
         porosity: Optional[float],
         pore_diams_units: Optional[np.ndarray],
@@ -580,7 +580,7 @@ class Frame:
         self.samples_table = samples_table
         self.fiber_summary = fiber_summary
         self.viz_points = viz_points
-        self.angles_deg = angles_deg
+        self.angles_samples_deg = angles_samples_deg
         self.thickness_units = thickness_units
         self.porosity = porosity
         self.pore_diams_units = pore_diams_units

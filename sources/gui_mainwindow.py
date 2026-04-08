@@ -210,7 +210,7 @@ class MainWindow(QMainWindow):
                 self.menuEdit.addAction(self.action_load_config)
 
         self.btn_segment.clicked.connect(self.segment)
-        self.btn_analyze_fibers.clicked.connect(self.analyze_fibers)
+        self.btn_analyze_2D.clicked.connect(self.analyze_fibers)
         self.btn_save_csv.clicked.connect(self.save_measurements)
         self.btn_set_scalebar.clicked.connect(self._on_set_scalebar_clicked)
         self.btn_plot_profile.clicked.connect(self._on_plot_profile_clicked)
@@ -683,16 +683,16 @@ class MainWindow(QMainWindow):
         return any(u.isLocalFile() and self._is_loadable_path(u.toLocalFile()) for u in urls)
 
     def _compute_orientation_stats(
-        self, angles_deg: np.ndarray
+        self, angles_samples_deg: np.ndarray
     ) -> tuple[float, float, float]:
         """
         Return orientation index, circular mean angle (deg), and circular std (deg)
         for canonical angles in degrees.
         """
-        if angles_deg is None or getattr(angles_deg, "size", 0) == 0:
+        if angles_samples_deg is None or getattr(angles_samples_deg, "size", 0) == 0:
             return float("nan"), float("nan"), float("nan")
 
-        angles_rad = np.deg2rad(angles_deg)
+        angles_rad = np.deg2rad(angles_samples_deg)
         mean_cos = float(np.mean(np.cos(angles_rad)))
         mean_sin = float(np.mean(np.sin(angles_rad)))
 
@@ -730,7 +730,7 @@ class MainWindow(QMainWindow):
             )
 
         diameters = self.current_frame.thickness_units if self.current_frame.thickness_units is not None else np.array([])
-        angles = self.current_frame.angles_deg if self.current_frame.angles_deg is not None else np.array([])
+        angles = self.current_frame.angles_samples_deg if self.current_frame.angles_samples_deg is not None else np.array([])
         mean_val = float(np.mean(diameters)) if diameters.size else float("nan")
         std_val = float(np.std(diameters)) if diameters.size else float("nan")
         sample_count = int(self.current_frame.samples_table.shape[0]) if self.current_frame.samples_table is not None else int(diameters.size)
@@ -1679,14 +1679,16 @@ class MainWindow(QMainWindow):
         if not np.isfinite(scale) or scale <= 0:
             scale = 1.0
         true_length_px = length_px / scale
+        # DT magnitudes are in processing-pixel units; map them back to original scale.
+        profile_vals_true = profile_vals / scale
         distances = np.linspace(0.0, true_length_px, profile_vals.size, dtype=np.float32)
-        delta = float(profile_vals[-1] - profile_vals[0])
+        delta = float(profile_vals_true[-1] - profile_vals_true[0])
         summary = (
             f"Length: {true_length_px:.2f} px · ΔDT: {delta:+.2f} · "
-            f"Min/Max: {float(profile_vals.min()):.2f} / {float(profile_vals.max()):.2f}"
+            f"Min/Max: {float(profile_vals_true.min()):.2f} / {float(profile_vals_true.max()):.2f}"
         )
         dialog = self._ensure_profile_dialog()
-        dialog.update_profile(distances, profile_vals, summary)
+        dialog.update_profile(distances, profile_vals_true, summary)
 
     # ------------------- Segmentation -------------------
 
@@ -1940,7 +1942,7 @@ class MainWindow(QMainWindow):
 
         self.analyzer.scale_factor = fr.scale_factor
 
-        hist_centers, viz_points, angles_deg = self.analyzer.analyze(
+        radius_samples, angles_samples_deg, viz_points = self.analyzer.analyze(
             spacing_px=spacing_px_scaled
         )
         fr.viz_points = viz_points
@@ -1948,18 +1950,18 @@ class MainWindow(QMainWindow):
         self._set_progress_bar(80.0)
 
         # Build sample table and stats (keep in GUI)
-        if hist_centers:
-            radii_px        = np.array([c[2] for c in hist_centers], dtype=np.float32)
+        if radius_samples:
+            radii_px        = np.array([c[2] for c in radius_samples], dtype=np.float32)
             thickness_px    = 2.0 * radii_px
             thickness_units = thickness_px * pixel_size
-            xs = np.array([c[1] for c in hist_centers], dtype=np.int32)
-            ys = np.array([c[0] for c in hist_centers], dtype=np.int32)
-            samples_table = np.column_stack([xs, ys, thickness_px, np.array(angles_deg, dtype=np.float32)]).astype(object)
+            xs = np.array([c[1] for c in radius_samples], dtype=np.int32)
+            ys = np.array([c[0] for c in radius_samples], dtype=np.int32)
+            samples_table = np.column_stack([xs, ys, thickness_px, np.array(angles_samples_deg, dtype=np.float32)]).astype(object)
         else:
             thickness_units = np.array([], dtype=np.float32)
             samples_table = None
 
-        angles_arr = np.array([a for a in angles_deg if np.isfinite(a)], dtype=np.float32)
+        angles_arr = np.array([a for a in angles_samples_deg if np.isfinite(a)], dtype=np.float32)
 
         # --- pore splitting + sampling ------------------------------------------
         thr_u8 = self.config.seg_threshold
@@ -2023,14 +2025,14 @@ class MainWindow(QMainWindow):
             "mean_angle_deg": float(mean_angle_deg),
             "std_angle_deg": float(std_angle_deg),
             "porosity": float(porosity),
-            "sample_count": len(hist_centers) if hist_centers else 0,
+            "sample_count": len(radius_samples) if radius_samples else 0,
             "units": units_label,
         }
         fr.set_measurement_outputs(
             samples_table=samples_table,
             fiber_summary=fiber_summary,
             viz_points=viz_points,
-            angles_deg=angles_arr,
+            angles_samples_deg=angles_arr,
             thickness_units=thickness_units,
             porosity=porosity,
             pore_diams_units=pore_diams_units,
@@ -2049,7 +2051,7 @@ class MainWindow(QMainWindow):
 
         self._show_info(
             "Analysis complete",
-            f"Histogram samples: {len(hist_centers)} (spacing={int(spacing_px_input)} px)\n"
+            f"Radius samples: {len(radius_samples)} (spacing={int(spacing_px_input)} px)\n"
             f"Stored viz points: {len(fr.viz_points)}\n"
             f"Mean diameter: {mean_thickness:.2f} {units_label}\n"
             f"Std diameter: {std_thickness:.2f} {units_label}\n"
@@ -2272,7 +2274,7 @@ class MainWindow(QMainWindow):
         if not show_pores:
             # Angles (-90..90)
             self._style_plotwidget(self.graph_angles, "Fiber orientation", "", "Angle (deg, canonical)")
-            ang = self.current_frame.angles_deg if self.current_frame.angles_deg is not None else np.array([], dtype=np.float32)
+            ang = self.current_frame.angles_samples_deg if self.current_frame.angles_samples_deg is not None else np.array([], dtype=np.float32)
             if ang.size:
                 hist, edges = np.histogram(ang, bins=36, range=(-90, 90))
                 centers = 0.5 * (edges[:-1] + edges[1:])

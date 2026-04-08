@@ -22,7 +22,7 @@
 - `fragments`: `list[FiberFragment]` from centerline extraction.
 - `markers`: `int32` seed image used by watershed.
 - `labels_2d`: `uint16` segmentation labels.
-- `samples_table`, `thickness_units`, `angles_deg`, `porosity`, `pores`, `pore_diams_units`: measurement outputs.
+- `samples_table`, `thickness_units`, `angles_samples_deg`, `porosity`, `pores`, `pore_diams_units`: measurement outputs.
 
 ## Entry Flow
 1. `MainWindow.open_source(...)` loads file/folder into `ImageBatch` via `ImageBatch.from_source/from_path/from_folder`.
@@ -72,9 +72,9 @@
 1. `analyze_fibers()` ensures valid segmentation at current scale; reruns `segment()` if missing or scale mismatch.
 2. Sets `analyzer.scale_factor = frame.scale_factor`.
 3. Calls `FiberAnalyzer.analyze(spacing_px_scaled)` returning:
-- `hist_centers` (center/radius mapped back to original scale)
+- `radius_samples` (center/radius mapped back to original scale)
+- `angles_samples_deg`
 - `viz_points`
-- `angles_deg`
 4. Builds thickness arrays/sample table and orientation stats in GUI.
 5. Computes porosity and pore sampling:
 - `void_mask_and_pore_dt(thr_u8)`
