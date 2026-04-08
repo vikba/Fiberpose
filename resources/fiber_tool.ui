@@ -577,6 +577,11 @@
        </item>
        <item>
         <property name="text">
+         <string>DT grad error</string>
+        </property>
+       </item>
+       <item>
+        <property name="text">
          <string>Laplacian</string>
         </property>
        </item>

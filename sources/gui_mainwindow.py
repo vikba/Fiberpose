@@ -1242,7 +1242,7 @@ class MainWindow(QMainWindow):
                 self._set_progress_bar(0.0)
                 QtWidgets.QApplication.processEvents()
                 # Per-frame routine: hydrate original image, run processing, capture outputs.
-                self._reset_internal_state(preserve_original=False)
+                self._reset_internal_state(preserve_original=False, reset_view=False)
                 self.current_frame.begin_frame(frame, str(frame_id), int(z_index))
                 self.current_image_name = self._frame_base_name(frame_id, z_index)
                 if compute_measurements:
@@ -1860,7 +1860,7 @@ class MainWindow(QMainWindow):
             invalidate_measurements=True,
         )
 
-        if self.cb_view.currentText() not in ["Overlay", "Segmentation", "Measurements overlay", "Sampling"]:
+        if self.cb_view.currentText() == "Original":
             self.cb_view.setCurrentText("Overlay")
 
         self.action_save_masks_predictions.setEnabled(True)
@@ -2235,6 +2235,116 @@ class MainWindow(QMainWindow):
         base_rgb[~vm] = (0, 0, 0)
         return base_rgb
 
+    @staticmethod
+    def _default_grad_quality_points() -> tuple[float, float, float, float]:
+        return (-0.35, -0.08, 0.08, 0.35)
+
+    def _validated_grad_quality_points(self) -> tuple[float, float, float, float]:
+        default = self._default_grad_quality_points()
+        raw = getattr(self.config, "grad_quality_points", default)
+        try:
+            arr = np.asarray(raw, dtype=np.float32).reshape(-1)
+        except Exception:
+            logger.warning("Invalid grad_quality_points=%r. Using default %s", raw, default)
+            return default
+
+        if arr.size != 4 or not np.all(np.isfinite(arr)):
+            logger.warning("Invalid grad_quality_points=%r. Using default %s", raw, default)
+            return default
+
+        p0, p1, p2, p3 = [float(v) for v in arr]
+        if not (p0 < p1 < p2 < p3):
+            logger.warning(
+                "grad_quality_points must be strictly increasing, got %s. Using default %s",
+                [p0, p1, p2, p3],
+                default,
+            )
+            return default
+        if not (p1 <= 0.0 <= p2):
+            logger.warning(
+                "grad_quality_points must satisfy p1 <= 0 <= p2, got %s. Using default %s",
+                [p0, p1, p2, p3],
+                default,
+            )
+            return default
+        return (p0, p1, p2, p3)
+
+    def _signed_grad_error_rgb(self) -> np.ndarray | None:
+        """
+        Signed DT-gradient error view using s = |grad(dt)| - 1.
+        Colors on valid mask (dt > 0):
+          - s <= p0: blue
+          - p0..p1: blue -> green
+          - p1..p2: green
+          - p2..p3: green -> red
+          - s >= p3: red
+        Outside valid mask is black.
+        """
+        dt = self.current_frame.dt
+        gx = self.current_frame.gx
+        gy = self.current_frame.gy
+        if dt is None or gx is None or gy is None:
+            return None
+
+        dt = np.asarray(dt, dtype=np.float32)
+        gx = np.asarray(gx, dtype=np.float32)
+        gy = np.asarray(gy, dtype=np.float32)
+        if dt.shape != gx.shape or dt.shape != gy.shape:
+            logger.warning(
+                "Cannot render signed grad error: shape mismatch dt=%s gx=%s gy=%s",
+                dt.shape,
+                gx.shape,
+                gy.shape,
+            )
+            return None
+
+        valid = dt > 0.0
+        h, w = dt.shape
+        out = np.zeros((h, w, 3), dtype=np.uint8)
+        if not np.any(valid):
+            return out
+
+        mag = np.sqrt(gx * gx + gy * gy)
+        signed_err = mag - 1.0
+        p0, p1, p2, p3 = self._validated_grad_quality_points()
+
+        mask_blue = valid & (signed_err <= p0)
+        out[mask_blue] = (0, 0, 255)
+
+        mask_red = valid & (signed_err >= p3)
+        out[mask_red] = (255, 0, 0)
+
+        mask_bg = valid & (signed_err > p0) & (signed_err < p1)
+        if np.any(mask_bg):
+            t = np.clip((signed_err[mask_bg] - p0) / (p1 - p0), 0.0, 1.0)
+            rgb = np.stack(
+                [
+                    np.zeros_like(t),
+                    255.0 * t,
+                    255.0 * (1.0 - t),
+                ],
+                axis=-1,
+            )
+            out[mask_bg] = rgb.astype(np.uint8)
+
+        mask_green = valid & (signed_err >= p1) & (signed_err <= p2)
+        out[mask_green] = (0, 255, 0)
+
+        mask_gr = valid & (signed_err > p2) & (signed_err < p3)
+        if np.any(mask_gr):
+            t = np.clip((signed_err[mask_gr] - p2) / (p3 - p2), 0.0, 1.0)
+            rgb = np.stack(
+                [
+                    255.0 * t,
+                    255.0 * (1.0 - t),
+                    np.zeros_like(t),
+                ],
+                axis=-1,
+            )
+            out[mask_gr] = rgb.astype(np.uint8)
+
+        return out
+
 
     # ------------------- Plotting -------------------
 
@@ -2319,6 +2429,8 @@ class MainWindow(QMainWindow):
             img = to_uint8_for_view(self.current_frame.gx)
         elif view == "gy":
             img = to_uint8_for_view(self.current_frame.gy)
+        elif view == "DT grad error":
+            img = self._signed_grad_error_rgb()
 
         self._set_pixmap_from_array(img)
 
@@ -2439,7 +2551,7 @@ class MainWindow(QMainWindow):
             return
         self._set_current_slice(int(value), update_view=True)
 
-    def _reset_internal_state(self, preserve_original: bool = False):
+    def _reset_internal_state(self, preserve_original: bool = False, reset_view: bool = True):
         """Clear all derived data, images, analysis artifacts, and charts."""
 
         if self.analyzer is not None:
@@ -2482,7 +2594,8 @@ class MainWindow(QMainWindow):
         self.action_save_masks_predictions.setEnabled(False)
         self.action_save_measurements.setEnabled(False)
 
-        self.cb_view.setCurrentText("Original")
+        if reset_view:
+            self.cb_view.setCurrentText("Original")
 
     def _init_device_from_checkbox(self):
         """On startup: if CUDA is available, check the box and use cuda; else uncheck and use cpu."""

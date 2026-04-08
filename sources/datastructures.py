@@ -37,6 +37,13 @@ class AppConfig:
     cluster_enabled: bool = False
     cluster_params: dict = field(default_factory=dict)
 
+    # --- DT gradient quality view ---
+    # Signed error breakpoints for s = |grad(dt)| - 1:
+    # [p0, p1, p2, p3] with p0 < p1 <= 0 <= p2 < p3.
+    grad_quality_points: list[float] = field(
+        default_factory=lambda: [-0.35, -0.08, 0.08, 0.35]
+    )
+
     def save_to_json(self, filepath: str):
         with open(filepath, 'w') as f:
             json.dump(asdict(self), f, indent=4)

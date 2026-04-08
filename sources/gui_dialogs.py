@@ -173,6 +173,11 @@ class ConfigEditorDialog(QtWidgets.QDialog):
             "kind": "json",
             "tooltip": "JSON dictionary with advanced clustering parameters.",
         },
+        "grad_quality_points": {
+            "label": "Grad quality points (JSON list)",
+            "kind": "json_list",
+            "tooltip": "Signed-error breakpoints [p0, p1, p2, p3] for DT gradient quality view.",
+        },
     }
 
     def __init__(
@@ -297,6 +302,11 @@ class ConfigEditorDialog(QtWidgets.QDialog):
             text.setTabChangesFocus(True)
             text.setMinimumHeight(120)
             return text
+        if kind == "json_list":
+            text = QtWidgets.QPlainTextEdit()
+            text.setTabChangesFocus(True)
+            text.setMinimumHeight(80)
+            return text
         return QtWidgets.QLineEdit()
 
     def _set_widgets_from_config(self, cfg: AppConfig) -> None:
@@ -322,7 +332,11 @@ class ConfigEditorDialog(QtWidgets.QDialog):
                 else:
                     widget.setCurrentText(txt)
             elif isinstance(widget, QtWidgets.QPlainTextEdit):
-                payload = value if isinstance(value, dict) else {}
+                kind = self._FIELD_SPEC.get(key, {}).get("kind")
+                if kind == "json_list":
+                    payload = list(value) if isinstance(value, (list, tuple)) else []
+                else:
+                    payload = value if isinstance(value, dict) else {}
                 widget.setPlainText(json.dumps(payload, indent=2, sort_keys=True))
             elif isinstance(widget, QtWidgets.QLineEdit):
                 widget.setText("" if value is None else str(value))
@@ -343,12 +357,17 @@ class ConfigEditorDialog(QtWidgets.QDialog):
                 data[key] = widget.currentText().strip()
             elif isinstance(widget, QtWidgets.QPlainTextEdit):
                 raw = widget.toPlainText().strip()
+                kind = self._FIELD_SPEC.get(key, {}).get("kind")
                 if not raw:
-                    data[key] = {}
+                    data[key] = [] if kind == "json_list" else {}
                 else:
                     parsed = json.loads(raw)
-                    if not isinstance(parsed, dict):
-                        raise ValueError(f"Field '{key}' must be a JSON object.")
+                    if kind == "json_list":
+                        if not isinstance(parsed, list):
+                            raise ValueError(f"Field '{key}' must be a JSON list.")
+                    else:
+                        if not isinstance(parsed, dict):
+                            raise ValueError(f"Field '{key}' must be a JSON object.")
                     data[key] = parsed
             elif isinstance(widget, QtWidgets.QLineEdit):
                 data[key] = widget.text().strip()
