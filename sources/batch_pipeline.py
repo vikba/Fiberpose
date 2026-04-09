@@ -103,6 +103,11 @@ class StackAnalyzer_3D:
 
             skeletonize_3d, skeleton_method = self._resolve_3d_skeletonizer()
             skeleton_mask = np.asarray(skeletonize_3d(binary_mask), dtype=bool)
+            skeleton_mask = self._prune_short_terminal_branches(
+                skeleton_mask,
+                min_len=3,
+                max_iters=2,
+            )
             semantic_skeleton = np.zeros_like(semantic_volume, dtype=np.int32)
             semantic_skeleton[skeleton_mask] = 1
             batch_result.semantic_skeleton_volume = semantic_skeleton
@@ -203,6 +208,98 @@ class StackAnalyzer_3D:
 
         meta["voxels_after"] = int(np.count_nonzero(mask))
         return mask, meta
+
+    @staticmethod
+    def _prune_short_terminal_branches(
+        skeleton_mask: np.ndarray,
+        min_len: int,
+        max_iters: int = 2,
+    ) -> np.ndarray:
+        skel = np.asarray(skeleton_mask, dtype=bool).copy()
+        if min_len <= 0 or max_iters <= 0 or not np.any(skel):
+            return skel
+
+        kernel = np.ones((3, 3, 3), dtype=np.uint8)
+        offsets = tuple(
+            (dz, dy, dx)
+            for dz in (-1, 0, 1)
+            for dy in (-1, 0, 1)
+            for dx in (-1, 0, 1)
+            if not (dz == 0 and dy == 0 and dx == 0)
+        )
+        z_max, y_max, x_max = skel.shape
+
+        for _ in range(int(max_iters)):
+            skel_u8 = skel.astype(np.uint8, copy=False)
+            degree = ndi.convolve(skel_u8, kernel, mode="constant", cval=0) - skel_u8
+            endpoints = np.column_stack(np.nonzero(skel & (degree == 1)))
+            if endpoints.size == 0:
+                break
+
+            remove_nodes: set[tuple[int, int, int]] = set()
+            visited_path_nodes: set[tuple[int, int, int]] = set()
+
+            for ep in endpoints:
+                start = (int(ep[0]), int(ep[1]), int(ep[2]))
+                if start in visited_path_nodes or not skel[start]:
+                    continue
+
+                path = [start]
+                prev: tuple[int, int, int] | None = None
+                while True:
+                    curr = path[-1]
+                    curr_deg = int(degree[curr])
+                    if len(path) > 1 and curr_deg != 2:
+                        break
+
+                    z, y, x = curr
+                    next_node: tuple[int, int, int] | None = None
+                    next_count = 0
+                    for dz, dy, dx in offsets:
+                        nz = z + dz
+                        ny = y + dy
+                        nx = x + dx
+                        if nz < 0 or ny < 0 or nx < 0 or nz >= z_max or ny >= y_max or nx >= x_max:
+                            continue
+                        if not skel[nz, ny, nx]:
+                            continue
+                        nb = (nz, ny, nx)
+                        if prev is not None and nb == prev:
+                            continue
+                        next_count += 1
+                        if next_node is None:
+                            next_node = nb
+                        if next_count > 1:
+                            break
+
+                    if next_count != 1 or next_node is None or next_node in path:
+                        break
+
+                    prev = curr
+                    path.append(next_node)
+
+                for node in path:
+                    visited_path_nodes.add(node)
+
+                terminal = path[-1]
+                terminal_deg = int(degree[terminal]) if skel[terminal] else 0
+                if terminal_deg >= 3 and len(path) >= 2:
+                    branch_len = len(path) - 1
+                    branch_nodes = path[:-1]
+                else:
+                    branch_len = len(path)
+                    branch_nodes = path
+
+                if branch_len <= int(min_len):
+                    remove_nodes.update(branch_nodes)
+
+            if not remove_nodes:
+                break
+
+            for z, y, x in remove_nodes:
+                skel[z, y, x] = False
+
+        return skel
 
     @staticmethod
     def _build_semantic_volume(frame_results: List[Frame]) -> Optional[np.ndarray]:
