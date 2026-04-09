@@ -6,7 +6,6 @@
 - [x] !Develop criteria for high quality fibers
 - [x] !Implement detection and segmentation of high confidence fiber fragmetns
 - [x] Use python instead of Java for ridge detection
-- [ ] Add training support in CLI
 - [x] Save svs in pixels and units
 - [x] Add calculation of Mean and OI
 - [x] Diameter shold be calculated based on original not rounded distance transform
@@ -18,17 +17,13 @@
 - [x] !Add clustering of fiber fragmetns into one fiber
 - [x] Batch processing
 - [ ] !Improve dataset and finetune NN
-- [ ] Train NN on pores dataset
 - [x] !Add porosity measurement 
 - [x] Add zoom
 - [x] Add scalebar tool (or automatic scalebar detection)
-- [ ] Add logbar
-- [ ] Use lighweight alternative for torch for inference only
 - [x] Add default configuration variable
 - [ ] Load configuration from file
 - [x] Create class FiberSegment
 - [x] Add plotprofile
-- [ ] Add CLI support
 - [x] Dynamically add checkpoints from checkpoints folder
 - [x] Add simple centerline (ridge) segmentation
 - [ ] Implement possibility of pyramid analysis for thin fibers 
@@ -36,9 +31,8 @@
 - [ ] Add lightweight ONNX inference runtime
 - [x] Allow saving style vector
 - [x] Use color coding for angle visialization 
-- [ ] Fix quantization effects for angle measurement
 - [x] Add 3D view
-- [ ] Algorithms for 3D analysis
+- [x] Algorithms for 3D analysis
 - [ ] Add checkbox to turn on/off auto brightness/darkness
 
 
@@ -51,7 +45,7 @@
 - [x] Dt pore image is not updated
 - [x] Don't predict dt, if it was already predicted for that image during change of segmetnation method
 - [x] Angle distribution is reversed in comparison with Directionality and OrientationJ
-- [ ] Plot profile wrong when image is scaled
+- [x] Plot profile wrong when image is scaled
 
 ## 🧹 Refactoring / Cleanup
 - [x] Improve architecture so each class owns only specialized functions (eg FiberAnalyzer own all image processing)

@@ -512,9 +512,9 @@ class FiberAnalyzer_2D:
 
         if mode_name == "fastest_ascend":
             return self.segment_fastest_ascend(
-                sigma=1,
-                dist_thresh=0.1,
-                flux_merge_thresh=1,
+                sigma=float(opts.get("sigma", 1.0)),
+                dist_thresh=float(opts.get("dist_thresh", 0.2)),
+                flux_merge_thresh=float(opts.get("flux_merge_thresh", 5.0)),
             )
 
         raise ValueError(f"Unsupported segmentation mode: {mode}")
