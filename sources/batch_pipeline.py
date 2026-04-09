@@ -38,8 +38,22 @@ class StackAnalyzer_3D:
     def __init__(
         self,
         voxel_spacing_zyx: Sequence[float] = (1.0, 1.0, 1.0),
+        *,
+        preprocess_binary_mask: bool = True,
+        opening_iters: int = 0,
+        closing_iters: int = 0,
+        min_component_voxels: int = 8,
+        component_connectivity: int = 1,
     ):
         self.voxel_spacing_zyx = self._parse_voxel_spacing(voxel_spacing_zyx)
+        self.preprocess_binary_mask = bool(preprocess_binary_mask)
+        self.opening_iters = self._parse_nonnegative_int(opening_iters, "opening_iters")
+        self.closing_iters = self._parse_nonnegative_int(closing_iters, "closing_iters")
+        self.min_component_voxels = self._parse_nonnegative_int(
+            min_component_voxels,
+            "min_component_voxels",
+        )
+        self.component_connectivity = self._parse_connectivity(component_connectivity)
 
     def process(
         self,
@@ -73,9 +87,20 @@ class StackAnalyzer_3D:
             meta["volume_shape"] = [int(v) for v in semantic_volume.shape]
             meta["num_labels_raw"] = int(np.max(semantic_volume)) if semantic_volume.size else 0
             meta["semantic_num_labels"] = int(np.max(semantic_volume)) if semantic_volume.size else 0
-            binary_mask = semantic_volume > 0
-            meta["num_foreground_voxels"] = int(np.count_nonzero(binary_mask))
-            meta["semantic_num_voxels"] = int(np.count_nonzero(binary_mask))
+            binary_mask_raw = semantic_volume > 0
+            raw_voxels = int(np.count_nonzero(binary_mask_raw))
+            meta["num_foreground_voxels_raw"] = raw_voxels
+
+            if self.preprocess_binary_mask:
+                binary_mask, preprocess_meta = self._preprocess_binary_mask(binary_mask_raw)
+                meta["mask_preprocess"] = preprocess_meta
+            else:
+                binary_mask = np.asarray(binary_mask_raw, dtype=bool)
+                meta["mask_preprocess"] = {"enabled": False}
+
+            cleaned_voxels = int(np.count_nonzero(binary_mask))
+            meta["num_foreground_voxels"] = cleaned_voxels
+            meta["semantic_num_voxels"] = cleaned_voxels
             if not np.any(binary_mask):
                 batch_result.semantic_skeleton_volume = np.zeros_like(semantic_volume, dtype=np.int32)
                 meta["num_skeleton_voxels"] = 0
@@ -109,6 +134,72 @@ class StackAnalyzer_3D:
         if any(v <= 0 for v in spacing):
             raise ValueError("voxel_spacing_zyx values must be positive.")
         return spacing
+
+    @staticmethod
+    def _parse_nonnegative_int(value: int, name: str) -> int:
+        try:
+            out = int(value)
+        except Exception as exc:
+            raise ValueError(f"{name} must be an integer.") from exc
+        if out < 0:
+            raise ValueError(f"{name} must be >= 0.")
+        return out
+
+    @staticmethod
+    def _parse_connectivity(value: int) -> int:
+        out = StackAnalyzer_3D._parse_nonnegative_int(value, "component_connectivity")
+        if out < 1 or out > 3:
+            raise ValueError("component_connectivity must be in [1, 3] for 3D masks.")
+        return out
+
+    def _preprocess_binary_mask(self, binary_mask: np.ndarray) -> tuple[np.ndarray, Dict[str, Any]]:
+        from scipy.ndimage import (
+            binary_closing,
+            binary_opening,
+            generate_binary_structure,
+            label,
+        )
+
+        mask = np.asarray(binary_mask, dtype=bool)
+        structure = generate_binary_structure(3, int(self.component_connectivity))
+        before_voxels = int(np.count_nonzero(mask))
+
+        if self.opening_iters > 0:
+            for _ in range(self.opening_iters):
+                mask = np.asarray(binary_opening(mask, structure=structure), dtype=bool)
+
+        if self.closing_iters > 0:
+            for _ in range(self.closing_iters):
+                mask = np.asarray(binary_closing(mask, structure=structure), dtype=bool)
+
+        removed_components = 0
+        removed_voxels = 0
+        num_components_before = 0
+        if self.min_component_voxels > 1 and np.any(mask):
+            labeled, num_components_before = label(mask, structure=structure)
+            component_sizes = np.bincount(labeled.ravel())
+            keep = component_sizes >= int(self.min_component_voxels)
+            keep[0] = False
+            removed_components = int(np.count_nonzero((~keep[1:]) if keep.size > 1 else np.array([], dtype=bool)))
+            if removed_components > 0:
+                keep_mask = keep[labeled]
+                removed_voxels = int(np.count_nonzero(mask & (~keep_mask)))
+                mask = np.asarray(keep_mask, dtype=bool)
+
+        after_voxels = int(np.count_nonzero(mask))
+        meta: Dict[str, Any] = {
+            "enabled": True,
+            "opening_iters": int(self.opening_iters),
+            "closing_iters": int(self.closing_iters),
+            "min_component_voxels": int(self.min_component_voxels),
+            "connectivity": int(self.component_connectivity),
+            "voxels_before": before_voxels,
+            "voxels_after": after_voxels,
+            "components_before_filter": int(num_components_before),
+            "components_removed": int(removed_components),
+            "voxels_removed_by_component_filter": int(removed_voxels),
+        }
+        return mask, meta
 
     @staticmethod
     def _build_semantic_volume(frame_results: List[Frame]) -> Optional[np.ndarray]:

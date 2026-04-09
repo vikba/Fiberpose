@@ -5,6 +5,7 @@ from datetime import datetime
 from typing import Any, Dict
 import numpy as np
 import cv2
+import imageio.v3 as iio
 
 from PyQt6 import QtGui, QtWidgets
 from PyQt6.QtCore import Qt, QEvent, QTimer, QPoint, QLineF, QSize
@@ -930,6 +931,18 @@ class MainWindow(QMainWindow):
     def load_original_from_path(self, path: str):
         self.open_source(path=path, source_kind="auto")
 
+    def _is_single_tiff_stack_source(self) -> bool:
+        if self._image_batch is None:
+            return False
+        metadata = self._image_batch.metadata or {}
+        source_type = str(metadata.get("source_type", "")).strip().lower()
+        if source_type != "stack" or len(self._image_batch) <= 1:
+            return False
+        source_path = str(metadata.get("source_path", "")).strip()
+        if not source_path or not os.path.isfile(source_path):
+            return False
+        return os.path.splitext(source_path)[1].lower() in {".tif", ".tiff"}
+
     def save_predictions(self):
         batch_frame_count = (
             len(self._batch_result.frame_results)
@@ -952,18 +965,91 @@ class MainWindow(QMainWindow):
             )
             if not dest_dir:
                 return
-            export_config = {
-                "preset": "predictions",
-                "image_format": "png",
-                "naming": "frame_id_z",
-                "collision": "suffix",
-                "write_manifest": True,
-            }
-            try:
-                export_result = self._batch_result.save_all(dest_dir, export_config)
-            except Exception as e:
-                self._show_error("Error", f"Failed to save batch predictions:\n{e}")
-                return
+            if self._is_single_tiff_stack_source():
+                source_path = str(self._image_batch.metadata.get("source_path", ""))
+                base_name = os.path.splitext(os.path.basename(source_path))[0] or "stack"
+                frames = list(self._batch_result.frame_results)
+                written_count = 0
+                errors: list[dict[str, Any]] = []
+
+                def _stack_path(suffix: str) -> str:
+                    base_path = os.path.join(dest_dir, f"{base_name}{suffix}.tiff")
+                    if not os.path.exists(base_path):
+                        return base_path
+                    idx = 2
+                    while True:
+                        cand = os.path.join(dest_dir, f"{base_name}{suffix}_{idx}.tiff")
+                        if not os.path.exists(cand):
+                            return cand
+                        idx += 1
+
+                if all(fr.dt_u8 is not None for fr in frames):
+                    try:
+                        dt_stack = np.stack(
+                            [np.asarray(fr.dt_u8, dtype=np.uint8) for fr in frames],
+                            axis=0,
+                        )
+                        iio.imwrite(_stack_path("_dt"), dt_stack)
+                        written_count += 1
+                    except Exception as exc:
+                        errors.append({"artifact": "dt", "error": str(exc)})
+
+                if all(fr.labels_2d is not None for fr in frames):
+                    try:
+                        labels_slices: list[np.ndarray] = []
+                        has_foreground = False
+                        for fr in frames:
+                            labels_2d = np.asarray(fr.labels_2d)
+                            if labels_2d.ndim == 3:
+                                labels_2d = labels_2d[..., 0]
+                            if labels_2d.ndim != 2:
+                                raise ValueError("Labels are not 2D.")
+                            if labels_2d.size and int(np.max(labels_2d)) > 0:
+                                has_foreground = True
+                            labels_slices.append(labels_to_color(labels_2d))
+                        if has_foreground:
+                            labels_stack = np.stack(labels_slices, axis=0)
+                            iio.imwrite(_stack_path("_labels"), labels_stack)
+                            written_count += 1
+                    except Exception as exc:
+                        errors.append({"artifact": "labels", "error": str(exc)})
+
+                if all(fr.overlay_img is not None for fr in frames):
+                    try:
+                        overlay_stack = np.stack(
+                            [np.asarray(fr.overlay_img, dtype=np.uint8) for fr in frames],
+                            axis=0,
+                        )
+                        iio.imwrite(_stack_path("_overlay"), overlay_stack)
+                        written_count += 1
+                    except Exception as exc:
+                        errors.append({"artifact": "overlay", "error": str(exc)})
+
+                if all(fr.measurements_overlay is not None for fr in frames):
+                    try:
+                        debug_stack = np.stack(
+                            [np.asarray(fr.measurements_overlay, dtype=np.uint8) for fr in frames],
+                            axis=0,
+                        )
+                        iio.imwrite(_stack_path("_debug"), debug_stack)
+                        written_count += 1
+                    except Exception as exc:
+                        errors.append({"artifact": "debug", "error": str(exc)})
+
+                export_result = {"written_count": written_count, "errors": errors}
+            else:
+                export_config = {
+                    "preset": "predictions",
+                    "image_format": "png",
+                    "naming": "frame_id_z",
+                    "collision": "suffix",
+                    "write_manifest": True,
+                }
+                try:
+                    export_result = self._batch_result.save_all(dest_dir, export_config)
+                except Exception as e:
+                    self._show_error("Error", f"Failed to save batch predictions:\n{e}")
+                    return
 
             self.working_dir = dest_dir
             error_count = len(export_result.get("errors", []))
@@ -1047,17 +1133,53 @@ class MainWindow(QMainWindow):
             )
             if not dest_dir:
                 return
-            export_config = {
-                "preset": "measurements",
-                "naming": "frame_id_z",
-                "collision": "suffix",
-                "write_manifest": True,
-            }
-            try:
-                export_result = self._batch_result.save_all(dest_dir, export_config)
-            except Exception as e:
-                self._show_error("Error", f"Failed to save batch measurements:\n{e}")
-                return
+            if self._is_single_tiff_stack_source():
+                source_path = str(self._image_batch.metadata.get("source_path", ""))
+                base_name = os.path.splitext(os.path.basename(source_path))[0] or "stack"
+                csv_path = os.path.join(dest_dir, f"{base_name}_samples.csv")
+                if os.path.exists(csv_path):
+                    idx = 2
+                    while True:
+                        cand = os.path.join(dest_dir, f"{base_name}_samples_{idx}.csv")
+                        if not os.path.exists(cand):
+                            csv_path = cand
+                            break
+                        idx += 1
+                try:
+                    with open(csv_path, "w", newline="") as handle:
+                        handle.write("z_index,frame_id,x,y,diameter,angle_deg,fiber_id\n")
+                        for fr in self._batch_result.frame_results:
+                            if fr.samples_table is None or len(fr.samples_table) == 0:
+                                continue
+                            z_index = int(getattr(fr, "z_index", 0))
+                            frame_id = str(getattr(fr, "frame_id", ""))
+                            thickness_units = getattr(fr, "thickness_units", None)
+                            for sample_index, row in enumerate(fr.samples_table, start=1):
+                                x, y, t_px = row[:3]
+                                angle_val = float(row[3]) if len(row) > 3 else float("nan")
+                                if thickness_units is not None and len(thickness_units) >= sample_index:
+                                    diameter_val = float(thickness_units[sample_index - 1])
+                                else:
+                                    diameter_val = float(t_px)
+                                handle.write(
+                                    f"{z_index},{frame_id},{int(x)},{int(y)},{diameter_val:.6f},{angle_val:.6f},0\n"
+                                )
+                    export_result = {"written_count": 1, "errors": []}
+                except Exception as e:
+                    self._show_error("Error", f"Failed to save stack measurements:\n{e}")
+                    return
+            else:
+                export_config = {
+                    "preset": "measurements",
+                    "naming": "frame_id_z",
+                    "collision": "suffix",
+                    "write_manifest": True,
+                }
+                try:
+                    export_result = self._batch_result.save_all(dest_dir, export_config)
+                except Exception as e:
+                    self._show_error("Error", f"Failed to save batch measurements:\n{e}")
+                    return
 
             self.working_dir = dest_dir
             error_count = len(export_result.get("errors", []))
