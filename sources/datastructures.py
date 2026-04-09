@@ -51,16 +51,23 @@ class AppConfig:
     @classmethod
     def load_from_json(cls, filepath: str) -> "AppConfig":
         try:
-            with open(filepath, 'r') as f:
+            with open(filepath, "r", encoding="utf-8") as f:
                 data = json.load(f)
-                # Backward compatibility for renamed config keys.
-                if "scale_label" not in data and "scale_string" in data:
-                    data["scale_label"] = data.get("scale_string")
-                valid_keys = {k for k in cls.__dataclass_fields__}
-                filtered_data = {k: v for k, v in data.items() if k in valid_keys}
-                return cls(**filtered_data)
+            if not isinstance(data, dict):
+                raise ValueError("Config JSON root must be an object.")
+            # Backward compatibility for renamed config keys.
+            if "scale_label" not in data and "scale_string" in data:
+                data["scale_label"] = data.get("scale_string")
+            valid_keys = {k for k in cls.__dataclass_fields__}
+            filtered_data = {k: v for k, v in data.items() if k in valid_keys}
+            return cls(**filtered_data)
+        except FileNotFoundError:
+            logger.info("Config file not found: %s. Using defaults.", filepath)
+        except json.JSONDecodeError as exc:
+            logger.error("Invalid JSON in config file %s: %s. Using defaults.", filepath, exc)
         except Exception:
-            return cls()
+            logger.exception("Failed to load config file %s. Using defaults.", filepath)
+        return cls()
 
 
 @dataclass
