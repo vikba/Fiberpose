@@ -1704,9 +1704,21 @@ class MainWindow(QMainWindow):
             self._stack_angle_histogram_data = None
             self._stack_diameter_histogram_enabled = False
 
+        # Local 3D mask cleanup knobs (kept out of global app config on purpose).
+        stack3d_open_iters = 1
+        stack3d_close_iters = 1
+        stack3d_min_component_voxels = 50
+        stack3d_connectivity = 1
+
         QtWidgets.QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
         try:
-            stack_analyzer_3d = StackAnalyzer_3D(voxel_spacing_zyx=voxel_spacing_zyx)
+            stack_analyzer_3d = StackAnalyzer_3D(
+                voxel_spacing_zyx=voxel_spacing_zyx,
+                open_iters=stack3d_open_iters,
+                close_iters=stack3d_close_iters,
+                min_component_voxels=stack3d_min_component_voxels,
+                connectivity=stack3d_connectivity,
+            )
             self._batch_result = stack_analyzer_3d.process(
                 self._batch_result,
                 force=True,

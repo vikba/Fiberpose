@@ -4,7 +4,7 @@
     "scale_label": "1x",
     "max_angle_deg": 30.0,
     "strict_centerlines": false,
-    "segmentation_mode": "watershed",
+    "segmentation_mode": "fastest_ascend",
     "seg_threshold": 1,
     "sample_spacing": 6.0,
     "render3d_max_display_voxels": 800000000,

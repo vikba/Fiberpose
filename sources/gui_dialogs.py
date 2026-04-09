@@ -936,77 +936,43 @@ class Stack3DWindow(QtWidgets.QDialog):
             overlay_positions: list[np.ndarray] = []
 
             if show_centerlines:
-                points = np.column_stack(np.nonzero(skel_mask))
-                if points.size > 0:
-                    max_points = 200000
-                    if points.shape[0] > max_points:
-                        step = int(np.ceil(points.shape[0] / max_points))
-                        points = points[::step]
-                    pos = np.column_stack([points[:, 2], points[:, 1], points[:, 0]]).astype(np.float32)
-                    pos *= scale_xyz
-                    overlay_positions.append(pos)
-
-                    line_pos, line_color = self._build_centerline_segments_xyz(
-                        skeleton,
-                        max_segments=350000,
-                        connectivity=26,
-                    )
-                    if line_pos.size > 0:
-                        line_pos = line_pos * scale_xyz
-                        line_color = np.tile(
-                            np.array([[1.0, 0.0, 0.0, 1.0]], dtype=np.float32),
-                            (line_pos.shape[0], 1),
-                        )
-                        try:
-                            line_item = self._gl.GLLinePlotItem(
-                                pos=line_pos,
-                                color=line_color,
-                                width=2.5 if overlay_on_top else 1.5,
-                                mode="lines",
-                                antialias=True,
-                            )
-                            if overlay_on_top:
-                                try:
-                                    line_item.setGLOptions("additive")
-                                    from OpenGL import GL
-
-                                    line_item.updateGLOptions(
-                                        {
-                                            "glBlendEquation": (GL.GL_FUNC_ADD,),
-                                            "glBlendFunc": (GL.GL_SRC_ALPHA, GL.GL_ONE_MINUS_SRC_ALPHA),
-                                        }
-                                    )
-                                except Exception:
-                                    pass
-                            self.gl_view.addItem(line_item)
-                            self._line_items.append(line_item)
-                        except Exception:
-                            pass
-
-                    centerline_color = np.tile(
+                line_pos, line_color = self._build_centerline_segments_xyz(
+                    skeleton,
+                    max_segments=350000,
+                    connectivity=26,
+                )
+                if line_pos.size > 0:
+                    line_pos = line_pos * scale_xyz
+                    overlay_positions.append(line_pos)
+                    line_color = np.tile(
                         np.array([[1.0, 0.0, 0.0, 1.0]], dtype=np.float32),
-                        (pos.shape[0], 1),
+                        (line_pos.shape[0], 1),
                     )
-                    self._scatter_item = self._gl.GLScatterPlotItem(
-                        pos=pos,
-                        color=centerline_color,
-                        size=(1.6 if overlay_on_top else 1.2) * world_unit,
-                        pxMode=False,
-                    )
-                    if overlay_on_top:
-                        try:
-                            self._scatter_item.setGLOptions("additive")
-                            from OpenGL import GL
+                    try:
+                        line_item = self._gl.GLLinePlotItem(
+                            pos=line_pos,
+                            color=line_color,
+                            width=2.5 if overlay_on_top else 1.5,
+                            mode="lines",
+                            antialias=True,
+                        )
+                        if overlay_on_top:
+                            try:
+                                line_item.setGLOptions("additive")
+                                from OpenGL import GL
 
-                            self._scatter_item.updateGLOptions(
-                                {
-                                    "glBlendEquation": (GL.GL_FUNC_ADD,),
-                                    "glBlendFunc": (GL.GL_SRC_ALPHA, GL.GL_ONE_MINUS_SRC_ALPHA),
-                                }
-                            )
-                        except Exception:
-                            pass
-                    self.gl_view.addItem(self._scatter_item)
+                                line_item.updateGLOptions(
+                                    {
+                                        "glBlendEquation": (GL.GL_FUNC_ADD,),
+                                        "glBlendFunc": (GL.GL_SRC_ALPHA, GL.GL_ONE_MINUS_SRC_ALPHA),
+                                    }
+                                )
+                            except Exception:
+                                pass
+                        self.gl_view.addItem(line_item)
+                        self._line_items.append(line_item)
+                    except Exception:
+                        pass
 
             if show_junctions:
                 kernel = np.ones((3, 3, 3), dtype=np.uint8)
