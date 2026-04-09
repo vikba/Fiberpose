@@ -1283,6 +1283,109 @@ class Stack3DWindow(QtWidgets.QDialog):
         return palette[inverse]
 
     @staticmethod
+    def _extract_polylines_from_edges(
+        src_xyz: np.ndarray,
+        dst_xyz: np.ndarray,
+        labels: np.ndarray,
+    ) -> list[tuple[np.ndarray, int]]:
+        """Split an undirected voxel-edge graph into open chains between non-degree-2 nodes."""
+        src_i = np.asarray(src_xyz, dtype=np.int32)
+        dst_i = np.asarray(dst_xyz, dtype=np.int32)
+        lab_i = np.asarray(labels, dtype=np.int32).reshape(-1)
+        if src_i.size == 0 or dst_i.size == 0 or lab_i.size == 0:
+            return []
+
+        polylines: list[tuple[np.ndarray, int]] = []
+        for label in np.unique(lab_i):
+            mask = lab_i == int(label)
+            if not np.any(mask):
+                continue
+
+            edges_src = src_i[mask]
+            edges_dst = dst_i[mask]
+            adjacency: dict[tuple[int, int, int], list[tuple[tuple[int, int, int], int]]] = {}
+            edges: list[tuple[tuple[int, int, int], tuple[int, int, int]]] = []
+            for idx in range(edges_src.shape[0]):
+                u = tuple(int(v) for v in edges_src[idx])
+                v = tuple(int(v) for v in edges_dst[idx])
+                if u == v:
+                    continue
+                eid = len(edges)
+                edges.append((u, v))
+                adjacency.setdefault(u, []).append((v, eid))
+                adjacency.setdefault(v, []).append((u, eid))
+
+            if not edges:
+                continue
+
+            degree = {node: len(neighbors) for node, neighbors in adjacency.items()}
+            visited_edges: set[int] = set()
+
+            # Trace maximal open chains from endpoints and junctions.
+            for node, deg in degree.items():
+                if deg == 2:
+                    continue
+                for nbr, eid in adjacency[node]:
+                    if eid in visited_edges:
+                        continue
+                    visited_edges.add(eid)
+                    path = [node]
+                    prev = node
+                    curr = nbr
+                    while True:
+                        path.append(curr)
+                        curr_deg = degree.get(curr, 0)
+                        if curr_deg != 2:
+                            break
+                        n0, e0 = adjacency[curr][0]
+                        n1, e1 = adjacency[curr][1]
+                        nxt, next_eid = (n1, e1) if n0 == prev else (n0, e0)
+                        if next_eid in visited_edges:
+                            break
+                        visited_edges.add(next_eid)
+                        prev, curr = curr, nxt
+                    polylines.append((np.asarray(path, dtype=np.float32), int(label)))
+
+            # Any leftover edges belong to loops; keep them unchanged (edge-wise).
+            for eid, (u, v) in enumerate(edges):
+                if eid in visited_edges:
+                    continue
+                polylines.append((np.asarray([u, v], dtype=np.float32), int(label)))
+
+        return polylines
+
+    @staticmethod
+    def _taubin_smooth_polyline(
+        points_xyz: np.ndarray,
+        fixed_mask: np.ndarray,
+        iters: int = 12,
+        lam: float = 0.4,
+        mu: float = -0.42,
+    ) -> np.ndarray:
+        pts = np.asarray(points_xyz, dtype=np.float32)
+        fixed = np.asarray(fixed_mask, dtype=bool).reshape(-1)
+        if pts.ndim != 2 or pts.shape[1] != 3 or pts.shape[0] < 3:
+            return pts.copy()
+        if fixed.shape[0] != pts.shape[0]:
+            raise ValueError("fixed_mask length must match number of polyline points.")
+        if not np.any(fixed):
+            # Closed loops (no endpoints/junctions in chain representation): keep unchanged.
+            return pts.copy()
+        if iters <= 0:
+            return pts.copy()
+
+        base = pts.copy()
+        out = pts.copy()
+        for _ in range(int(iters)):
+            for alpha in (float(lam), float(mu)):
+                lap = np.zeros_like(out)
+                lap[1:-1] = 0.5 * (out[:-2] + out[2:]) - out[1:-1]
+                lap[fixed] = 0.0
+                out += alpha * lap
+                out[fixed] = base[fixed]
+        return out
+
+    @staticmethod
     def _build_centerline_segments_xyz(
         skeleton: np.ndarray,
         max_segments: int = 350000,
@@ -1375,6 +1478,60 @@ class Stack3DWindow(QtWidgets.QDialog):
         src_xyz = np.concatenate(src_chunks, axis=0)
         dst_xyz = np.concatenate(dst_chunks, axis=0)
         labels = np.concatenate(label_chunks, axis=0)
+
+        sm_src_chunks = []
+        sm_dst_chunks = []
+        sm_label_chunks = []
+        z_smooth_passes = 10
+
+        for points_xyz, seg_label in Stack3DWindow._extract_polylines_from_edges(src_xyz, dst_xyz, labels):
+            n_points = points_xyz.shape[0]
+            if n_points < 2:
+                continue
+            if n_points >= 5:
+                fixed_mask = np.zeros(n_points, dtype=bool)
+                fixed_mask[0] = True
+                fixed_mask[-1] = True
+                points_xyz = Stack3DWindow._taubin_smooth_polyline(
+                    points_xyz,
+                    fixed_mask=fixed_mask,
+                    iters=10,
+                    lam=0.4,
+                    mu=-0.42,
+                )
+                if z_smooth_passes > 0 and points_xyz.shape[0] >= 3:
+                    # Extra 1D smoothing on z only to reduce slice-to-slice jitter.
+                    for _ in range(int(z_smooth_passes)):
+                        z_prev = points_xyz[:, 2].copy()
+                        z_next = z_prev.copy()
+                        z_next[1:-1] = (
+                            0.25 * z_prev[:-2]
+                            + 0.50 * z_prev[1:-1]
+                            + 0.25 * z_prev[2:]
+                        )
+                        z_next[0] = z_prev[0]
+                        z_next[-1] = z_prev[-1]
+                        points_xyz[:, 2] = z_next
+
+            seg_src = points_xyz[:-1]
+            seg_dst = points_xyz[1:]
+            if seg_src.size == 0:
+                continue
+            keep = np.any(seg_src != seg_dst, axis=1)
+            if not np.any(keep):
+                continue
+            seg_src = seg_src[keep]
+            seg_dst = seg_dst[keep]
+
+            sm_src_chunks.append(seg_src.astype(np.float32, copy=False))
+            sm_dst_chunks.append(seg_dst.astype(np.float32, copy=False))
+            sm_label_chunks.append(np.full(seg_src.shape[0], int(seg_label), dtype=np.int32))
+
+        if sm_src_chunks:
+            src_xyz = np.concatenate(sm_src_chunks, axis=0)
+            dst_xyz = np.concatenate(sm_dst_chunks, axis=0)
+            labels = np.concatenate(sm_label_chunks, axis=0)
+
         if src_xyz.shape[0] > max_segments:
             step = int(np.ceil(src_xyz.shape[0] / max_segments))
             src_xyz = src_xyz[::step]
