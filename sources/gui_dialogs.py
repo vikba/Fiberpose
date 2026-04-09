@@ -96,7 +96,7 @@ class BatchSaveOptionsDialog(QtWidgets.QDialog):
 
         self._checkboxes: Dict[str, QtWidgets.QCheckBox] = {
             "dt": QtWidgets.QCheckBox("Distance transform (DT PNG)"),
-            "labels": QtWidgets.QCheckBox("Segmentation labels (colored PNG)"),
+            "labels": QtWidgets.QCheckBox("Segmentation labels (ID map image)"),
             "overlay": QtWidgets.QCheckBox("Overlay visualization"),
             "debug": QtWidgets.QCheckBox("Debug visualization"),
             "samples": QtWidgets.QCheckBox("Samples table (CSV)"),

@@ -59,7 +59,7 @@ class BatchResultExporter:
                             skipped.append(self._skip_item(frame_index, artifact, "missing_data"))
                             continue
                         path = self._resolve_output_path(output_dir, base_name, "_labels", image_ext, cfg)
-                        iio.imwrite(path, self._labels_to_color(frame.labels_2d))
+                        iio.imwrite(path, np.asarray(frame.labels_2d, dtype=np.uint16))
                         written_files.append(path)
                     elif artifact == "overlay":
                         if frame.overlay_img is None:
@@ -265,7 +265,7 @@ class BatchResultExporter:
             handle.write(f"porosity,{porosity:.6f}\n")
             handle.write(f"sample_number,{sample_count}\n")
             handle.write("\n\n")
-            handle.write("x,y,diameter,angle_deg,fiber_id\n")
+            handle.write("x,y,diameter,angle_deg\n")
 
             thickness_units = getattr(frame, "thickness_units", None)
             for idx, row in enumerate(frame.samples_table, start=1):
@@ -275,7 +275,7 @@ class BatchResultExporter:
                     diameter_val = float(thickness_units[idx - 1])
                 else:
                     diameter_val = float(t_px)
-                handle.write(f"{int(x)},{int(y)},{diameter_val:.6f},{angle_val:.6f},0\n")
+                handle.write(f"{int(x)},{int(y)},{diameter_val:.6f},{angle_val:.6f}\n")
 
     def _measurement_summary_from_frame(
         self, frame

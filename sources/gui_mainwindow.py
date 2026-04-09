@@ -1006,7 +1006,7 @@ class MainWindow(QMainWindow):
                                 raise ValueError("Labels are not 2D.")
                             if labels_2d.size and int(np.max(labels_2d)) > 0:
                                 has_foreground = True
-                            labels_slices.append(labels_to_color(labels_2d))
+                            labels_slices.append(np.asarray(labels_2d, dtype=np.uint16))
                         if has_foreground:
                             labels_stack = np.stack(labels_slices, axis=0)
                             iio.imwrite(_stack_path("_labels"), labels_stack)
@@ -1147,7 +1147,7 @@ class MainWindow(QMainWindow):
                         idx += 1
                 try:
                     with open(csv_path, "w", newline="") as handle:
-                        handle.write("z_index,frame_id,x,y,diameter,angle_deg,fiber_id\n")
+                        handle.write("z_index,frame_id,x,y,diameter,angle_deg\n")
                         for fr in self._batch_result.frame_results:
                             if fr.samples_table is None or len(fr.samples_table) == 0:
                                 continue
@@ -1162,7 +1162,7 @@ class MainWindow(QMainWindow):
                                 else:
                                     diameter_val = float(t_px)
                                 handle.write(
-                                    f"{z_index},{frame_id},{int(x)},{int(y)},{diameter_val:.6f},{angle_val:.6f},0\n"
+                                    f"{z_index},{frame_id},{int(x)},{int(y)},{diameter_val:.6f},{angle_val:.6f}\n"
                                 )
                     export_result = {"written_count": 1, "errors": []}
                 except Exception as e:
