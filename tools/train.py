@@ -455,7 +455,7 @@ def main():
         shuffle=True,
         num_workers=cfg.num_workers,
         pin_memory=True,
-        drop_last=True,
+        drop_last=False,
     )
 
     device = torch.device(cfg.device)

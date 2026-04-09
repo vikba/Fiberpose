@@ -399,17 +399,22 @@ def make_loss(args):
         return nn.SmoothL1Loss(beta=args.huber_beta)
     raise ValueError(f"Unknown loss {args.loss}")
 
-def train_one_epoch(model, loader, criterion, optimizer, device, scaler, amp_dtype, clip_grad=None):
+def train_one_epoch(model, loader, criterion, optimizer, device, scaler, amp_dtype, use_amp, clip_grad=None):
     model.train()
     running, n = 0.0, 0
     for x,y in loader:
         x = x.to(device, non_blocking=True)
         y = y.to(device, non_blocking=True)
         optimizer.zero_grad(set_to_none=True)
-        if scaler is not None:
+        if use_amp:
             with autocast(device_type="cuda", dtype=amp_dtype):
                 yhat, _ = model(x)
                 loss = criterion(yhat, y)
+        else:
+            yhat, _ = model(x)
+            loss = criterion(yhat, y)
+
+        if scaler is not None and scaler.is_enabled():
             scaler.scale(loss).backward()
             if clip_grad is not None:
                 scaler.unscale_(optimizer)
@@ -417,8 +422,6 @@ def train_one_epoch(model, loader, criterion, optimizer, device, scaler, amp_dty
             scaler.step(optimizer)
             scaler.update()
         else:
-            yhat, _ = model(x)
-            loss = criterion(yhat, y)
             loss.backward()
             if clip_grad is not None:
                 nn.utils.clip_grad_norm_(model.parameters(), clip_grad)
@@ -471,7 +474,7 @@ def cmd_train(args):
                                  crop_size=None, random_hflip=False, random_vflip=False)
 
     train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True,
-                              num_workers=args.workers, pin_memory=True, drop_last=True)
+                              num_workers=args.workers, pin_memory=True, drop_last=False)
     val_loader   = DataLoader(val_ds, batch_size=args.val_batch_size, shuffle=False,
                               num_workers=args.workers, pin_memory=True)
 
@@ -502,7 +505,7 @@ def cmd_train(args):
     os.makedirs(args.outdir, exist_ok=True)
     for epoch in range(1, args.epochs+1):
         tr_loss = train_one_epoch(model, train_loader, criterion, optimizer, device, scaler,
-                                  amp_dtype, clip_grad=args.clip_grad)
+                                  amp_dtype, use_amp, clip_grad=args.clip_grad)
         va_loss = evaluate(model, val_loader, criterion, device, amp_dtype, use_amp)
         if scheduler is not None:
             scheduler.step()
