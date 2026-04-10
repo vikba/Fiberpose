@@ -333,13 +333,13 @@
          <string>use GPU</string>
         </property>
        </widget>
-       <widget class="QCheckBox" name="chb_3D">
+       <widget class="QCheckBox" name="chb_invert">
         <property name="geometry">
          <rect>
-          <x>130</x>
+          <x>120</x>
           <y>40</y>
-          <width>81</width>
-          <height>17</height>
+          <width>91</width>
+          <height>20</height>
          </rect>
         </property>
         <property name="font">
@@ -348,7 +348,7 @@
          </font>
         </property>
         <property name="text">
-         <string>3D</string>
+         <string>Invert image</string>
         </property>
        </widget>
        <widget class="QLabel" name="label_6">
@@ -423,24 +423,6 @@
          <string>model:</string>
         </property>
        </widget>
-       <widget class="QCheckBox" name="chb_cluster">
-        <property name="geometry">
-         <rect>
-          <x>70</x>
-          <y>190</y>
-          <width>91</width>
-          <height>17</height>
-         </rect>
-        </property>
-        <property name="font">
-         <font>
-          <pointsize>8</pointsize>
-         </font>
-        </property>
-        <property name="text">
-         <string>Cluster fibers</string>
-        </property>
-       </widget>
        <widget class="QRadioButton" name="rb_watershed">
         <property name="enabled">
          <bool>true</bool>
@@ -469,7 +451,7 @@
         <property name="geometry">
          <rect>
           <x>10</x>
-          <y>160</y>
+          <y>170</y>
           <width>81</width>
           <height>25</height>
          </rect>
@@ -507,8 +489,8 @@
         </property>
         <property name="geometry">
          <rect>
-          <x>110</x>
-          <y>160</y>
+          <x>100</x>
+          <y>170</y>
           <width>51</width>
           <height>17</height>
          </rect>
@@ -520,6 +502,24 @@
         </property>
         <property name="text">
          <string>Strict</string>
+        </property>
+       </widget>
+       <widget class="QCheckBox" name="chb_cluster">
+        <property name="geometry">
+         <rect>
+          <x>10</x>
+          <y>200</y>
+          <width>101</width>
+          <height>17</height>
+         </rect>
+        </property>
+        <property name="font">
+         <font>
+          <pointsize>8</pointsize>
+         </font>
+        </property>
+        <property name="text">
+         <string>cluster</string>
         </property>
        </widget>
       </widget>
@@ -567,27 +567,17 @@
        </item>
        <item>
         <property name="text">
-         <string>gx</string>
-        </property>
-       </item>
-       <item>
-        <property name="text">
-         <string>gy</string>
-        </property>
-       </item>
-       <item>
-        <property name="text">
          <string>DT grad error</string>
         </property>
        </item>
        <item>
         <property name="text">
-         <string>Laplacian</string>
+         <string>Centerlines</string>
         </property>
        </item>
        <item>
         <property name="text">
-         <string>Centerlines</string>
+         <string>Segmentation outline</string>
         </property>
        </item>
        <item>
@@ -602,12 +592,27 @@
        </item>
        <item>
         <property name="text">
+         <string>Measurements overlay</string>
+        </property>
+       </item>
+       <item>
+        <property name="text">
          <string>Sampling</string>
         </property>
        </item>
        <item>
         <property name="text">
-         <string>Measurements overlay</string>
+         <string>Laplacian</string>
+        </property>
+       </item>
+       <item>
+        <property name="text">
+         <string>gx</string>
+        </property>
+       </item>
+       <item>
+        <property name="text">
+         <string>gy</string>
         </property>
        </item>
       </widget>

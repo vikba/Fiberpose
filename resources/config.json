@@ -1,10 +1,10 @@
 {
     "checkpoint_path": "checkpoints/fiber_2000_epoch.pt",
     "use_gpu": true,
-    "scale_label": "1x",
+    "scale_label": "2x",
     "max_angle_deg": 30.0,
     "strict_centerlines": false,
-    "segmentation_mode": "watershed",
+    "segmentation_mode": "ridge",
     "seg_threshold": 1,
     "sample_spacing": 6.0,
     "render3d_max_display_voxels": 800000000,

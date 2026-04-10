@@ -25,6 +25,7 @@ import pyqtgraph as pg
 import torch
 from scipy.spatial import cKDTree
 from skimage.measure import profile_line
+from skimage.segmentation import find_boundaries
 
 import logging
 logger = logging.getLogger(__name__)
@@ -457,6 +458,29 @@ class MainWindow(QMainWindow):
         if mask.any():
             out[mask] = out[mask] * (1.0 - alpha) + over[mask] * alpha
         return out.clip(0, 255).astype(np.uint8)
+
+    def _segmentation_outline_view(self) -> np.ndarray | None:
+        labels = self.current_frame.labels_2d
+        if labels is None:
+            return None
+
+        fr = self.current_frame
+        base_img = fr.orig_img if fr.scale_factor == 1.0 or fr.orig_img_scaled is None else fr.orig_img_scaled
+        base_rgb = ensure_rgb_u8(base_img)
+        if base_rgb is None:
+            return None
+        if base_rgb.shape[:2] != labels.shape[:2]:
+            return None
+
+        out = base_rgb.copy()
+        try:
+            boundaries = find_boundaries(labels, mode="outer")
+        except Exception:
+            boundaries = None
+        if boundaries is None or not boundaries.any():
+            return out
+        out[boundaries] = (255, 0, 0)
+        return out
 
     def _centerlines_with_connections(self) -> np.ndarray | None:
         """
@@ -2708,6 +2732,8 @@ class MainWindow(QMainWindow):
             img = self._centerlines_with_connections()
         elif view == "Segmentation":
             img = self._labels_rgb()
+        elif view == "Segmentation outline":
+            img = self._segmentation_outline_view()
         elif view == "Overlay":
             img = self.current_frame.overlay_img
         elif view == "Sampling":
