@@ -99,6 +99,7 @@ class SaveOptionsDialog(QtWidgets.QDialog):
             "labels": QtWidgets.QCheckBox("Segmentation labels (ID map image)"),
             "overlay": QtWidgets.QCheckBox("Overlay visualization"),
             "debug": QtWidgets.QCheckBox("Debug visualization"),
+            "outline": QtWidgets.QCheckBox("Segmentation outline image"),
             "samples": QtWidgets.QCheckBox("Samples table (CSV)"),
             "style_vector": QtWidgets.QCheckBox("Style vector (.npy)"),
         }
@@ -109,6 +110,7 @@ class SaveOptionsDialog(QtWidgets.QDialog):
             "labels": True,
             "overlay": True,
             "debug": True,
+            "outline": False,
             "samples": True,
             "style_vector": False,
         }

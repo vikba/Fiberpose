@@ -51,6 +51,7 @@ class AppConfig:
             "labels": True,
             "overlay": True,
             "debug": True,
+            "outline": False,
             "samples": True,
             "style_vector": False,
             "image_format": "png",
@@ -80,7 +81,7 @@ class AppConfig:
                 pred_opts = data.get("single_predictions_save_options")
                 meas_opts = data.get("single_measurements_save_options")
                 if isinstance(pred_opts, dict):
-                    for key in ("dt", "labels", "overlay", "debug", "samples", "style_vector"):
+                    for key in ("dt", "labels", "overlay", "debug", "outline", "samples", "style_vector"):
                         if key in pred_opts:
                             merged_save_options[key] = bool(pred_opts.get(key))
                 if isinstance(meas_opts, dict) and "samples" in meas_opts:
@@ -507,6 +508,11 @@ class Frame:
         default_factory=lambda: (None, None),
         repr=False,
     )
+    # Cached "Segmentation outline" visualization: (labels-id, outline-rgb-image).
+    segmentation_outline_cache: tuple[Optional[int], Optional[np.ndarray]] = field(
+        default_factory=lambda: (None, None),
+        repr=False,
+    )
 
     @classmethod
     def empty(
@@ -539,6 +545,7 @@ class Frame:
         self.sampling_overlay = None
         self.measurements_overlay = None
         self.labels_rgb_cache = (None, None)
+        self.segmentation_outline_cache = (None, None)
 
     def clear_measurements(self) -> None:
         self.has_measurements = False
@@ -600,6 +607,7 @@ class Frame:
         sampling_overlay: Optional[np.ndarray] = None,
         measurements_overlay: Optional[np.ndarray] = None,
         labels_rgb_cache: Optional[tuple[Optional[int], Optional[np.ndarray]]] = None,
+        segmentation_outline_cache: Optional[tuple[Optional[int], Optional[np.ndarray]]] = None,
         invalidate_measurements: bool = True,
     ) -> None:
         self.labels_2d = labels_2d
@@ -611,6 +619,10 @@ class Frame:
             self.labels_rgb_cache = labels_rgb_cache
         elif labels_2d is None:
             self.labels_rgb_cache = (None, None)
+        if segmentation_outline_cache is not None:
+            self.segmentation_outline_cache = segmentation_outline_cache
+        elif labels_2d is None:
+            self.segmentation_outline_cache = (None, None)
         self.has_segmentation = self.labels_2d is not None
         self.error_message = None
         if invalidate_measurements:

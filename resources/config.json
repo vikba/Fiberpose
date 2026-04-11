@@ -22,6 +22,7 @@
         "labels": false,
         "overlay": false,
         "debug": true,
+        "outline": false,
         "samples": true,
         "style_vector": true,
         "image_format": "png",

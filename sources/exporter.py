@@ -13,11 +13,11 @@ from .utils import label_to_rgb
 class BatchResultExporter:
     """Persist batch/frame outputs using a small dict-based export config."""
 
-    _ALL_ARTIFACTS = ("dt", "labels", "overlay", "debug", "samples", "style_vector")
+    _ALL_ARTIFACTS = ("dt", "labels", "overlay", "debug", "outline", "samples", "style_vector")
     _PRESET_ARTIFACTS = {
-        "predictions": {"dt", "labels", "overlay", "debug"},
+        "predictions": {"dt", "labels", "overlay", "debug", "outline"},
         "measurements": {"samples"},
-        "full": {"dt", "labels", "overlay", "debug", "samples", "style_vector"},
+        "full": {"dt", "labels", "overlay", "debug", "outline", "samples", "style_vector"},
     }
 
     def __init__(self, export_config: dict[str, Any] | None = None):
@@ -127,6 +127,14 @@ class BatchResultExporter:
                         path = self._resolve_output_path(output_dir, base_name, "_debug", image_ext, cfg)
                         iio.imwrite(path, np.asarray(frame.measurements_overlay, dtype=np.uint8))
                         written_files.append(path)
+                    elif artifact == "outline":
+                        outline_img = self._cached_outline_image(frame)
+                        if outline_img is None:
+                            skipped.append(self._skip_item(frame_index, artifact, "missing_data"))
+                            continue
+                        path = self._resolve_output_path(output_dir, base_name, "_outline", image_ext, cfg)
+                        iio.imwrite(path, np.asarray(outline_img, dtype=np.uint8))
+                        written_files.append(path)
                     elif artifact == "samples":
                         if frame.samples_table is None or len(frame.samples_table) == 0:
                             skipped.append(self._skip_item(frame_index, artifact, "missing_data"))
@@ -213,6 +221,14 @@ class BatchResultExporter:
                     path = self._resolve_output_path(output_dir, base_name, "_debug", ".tiff", cfg)
                     iio.imwrite(path, np.stack(arrays, axis=0))
                     written_files.append(path)
+                elif artifact == "outline":
+                    arrays = self._collect_stack_arrays(frames, artifact)
+                    if arrays is None:
+                        skipped.append(self._skip_item(-1, artifact, "missing_data"))
+                        continue
+                    path = self._resolve_output_path(output_dir, base_name, "_outline", ".tiff", cfg)
+                    iio.imwrite(path, np.stack(arrays, axis=0))
+                    written_files.append(path)
                 elif artifact == "samples":
                     if not any(
                         getattr(frame, "samples_table", None) is not None and len(frame.samples_table) > 0
@@ -274,9 +290,28 @@ class BatchResultExporter:
                 if src is None:
                     return None
                 arrays.append(np.asarray(src, dtype=np.uint8))
+            elif artifact == "outline":
+                src = self._cached_outline_image(frame)
+                if src is None:
+                    return None
+                arrays.append(np.asarray(src, dtype=np.uint8))
             else:
                 return None
         return arrays
+
+    @staticmethod
+    def _cached_outline_image(frame: Any) -> np.ndarray | None:
+        """
+        Return the cached outline visualization image.
+        Saving must not recompute outlines.
+        """
+        cache = getattr(frame, "segmentation_outline_cache", None)
+        if not isinstance(cache, tuple) or len(cache) != 2:
+            return None
+        cached_img = cache[1]
+        if cached_img is None:
+            return None
+        return np.asarray(cached_img, dtype=np.uint8)
 
     def _stack_base_name(self, frames: list[Any], cfg: dict[str, Any]) -> str:
         explicit_base = cfg.get("base_name")

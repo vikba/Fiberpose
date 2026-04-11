@@ -464,17 +464,16 @@ class MainWindow(QMainWindow):
             out[mask] = out[mask] * (1.0 - alpha) + over[mask] * alpha
         return out.clip(0, 255).astype(np.uint8)
 
-    def _segmentation_outline_view(self) -> np.ndarray | None:
-        labels = self.current_frame.labels_2d
+    @staticmethod
+    def _build_segmentation_outline_image(
+        base_img: np.ndarray | None,
+        labels: np.ndarray | None,
+    ) -> np.ndarray | None:
+        """Build the RGB outline image used by the "Segmentation outline" view."""
         if labels is None:
             return None
-
-        fr = self.current_frame
-        base_img = fr.orig_img if fr.scale_factor == 1.0 or fr.orig_img_scaled is None else fr.orig_img_scaled
         base_rgb = ensure_rgb_u8(base_img)
-        if base_rgb is None:
-            return None
-        if base_rgb.shape[:2] != labels.shape[:2]:
+        if base_rgb is None or base_rgb.shape[:2] != labels.shape[:2]:
             return None
 
         out = base_rgb.copy()
@@ -482,10 +481,23 @@ class MainWindow(QMainWindow):
             boundaries = find_boundaries(labels, mode="outer")
         except Exception:
             boundaries = None
-        if boundaries is None or not boundaries.any():
-            return out
-        out[boundaries] = (255, 0, 0)
+        if boundaries is not None and boundaries.any():
+            out[boundaries] = (255, 0, 0)
         return out
+
+    def _segmentation_outline_view(self) -> np.ndarray | None:
+        labels = self.current_frame.labels_2d
+        if labels is None:
+            return None
+
+        fr = self.current_frame
+        base_img = fr.orig_img if fr.scale_factor == 1.0 or fr.orig_img_scaled is None else fr.orig_img_scaled
+        cache_id, cache_img = fr.segmentation_outline_cache
+        current_id = id(labels)
+        if cache_id != current_id or cache_img is None:
+            cache_img = self._build_segmentation_outline_image(base_img, labels)
+            fr.segmentation_outline_cache = (current_id, cache_img)
+        return cache_img
 
     def _centerlines_with_connections(self) -> np.ndarray | None:
         """
@@ -974,7 +986,7 @@ class MainWindow(QMainWindow):
             return defaults
 
         normalized = dict(defaults)
-        artifact_keys = ("dt", "labels", "overlay", "debug", "samples", "style_vector")
+        artifact_keys = ("dt", "labels", "overlay", "debug", "outline", "samples", "style_vector")
         for key in artifact_keys:
             if key in raw_options:
                 normalized[key] = bool(raw_options.get(key))
@@ -1008,7 +1020,7 @@ class MainWindow(QMainWindow):
 
     @staticmethod
     def _artifact_exclude_from_save_options(options: Dict[str, Any]) -> list[str]:
-        artifact_keys = ("dt", "labels", "overlay", "debug", "samples", "style_vector")
+        artifact_keys = ("dt", "labels", "overlay", "debug", "outline", "samples", "style_vector")
         return [name for name in artifact_keys if not bool(options.get(name, False))]
 
     def _effective_batch_result_for_save(self) -> BatchResult | None:
@@ -1128,7 +1140,7 @@ class MainWindow(QMainWindow):
         save_options = self._normalize_save_options(getattr(self.config, "save_options", {}))
         if not any(
             bool(save_options.get(key, False))
-            for key in ("dt", "labels", "overlay", "debug", "samples", "style_vector")
+            for key in ("dt", "labels", "overlay", "debug", "outline", "samples", "style_vector")
         ):
             self._show_warning(
                 "Nothing selected",
@@ -2042,14 +2054,18 @@ class MainWindow(QMainWindow):
             logger.error("Segmentation failed: %s", e)
             return
 
+        base_img = fr.orig_img if fr.scale_factor == 1.0 or fr.orig_img_scaled is None else fr.orig_img_scaled
+
         if labels is not None:
             labels_rgb = labels_to_color(labels)
             labels_cache = (id(labels), labels_rgb)
+            outline_img = self._build_segmentation_outline_image(base_img, labels)
+            outline_cache = (id(labels), outline_img)
         else:
             labels_rgb = None
             labels_cache = (None, None)
+            outline_cache = (None, None)
 
-        base_img = fr.orig_img if fr.scale_factor == 1.0 or fr.orig_img_scaled is None else fr.orig_img_scaled
         fr.set_segmentation_outputs(
             labels_2d=labels,
             centerlines_overlay_img=self.analyzer.get_centerlines_image(),
@@ -2057,6 +2073,7 @@ class MainWindow(QMainWindow):
             sampling_overlay=fr.sampling_overlay,
             measurements_overlay=fr.measurements_overlay,
             labels_rgb_cache=labels_cache,
+            segmentation_outline_cache=outline_cache,
             invalidate_measurements=True,
         )
 
@@ -2735,6 +2752,7 @@ class MainWindow(QMainWindow):
             self.current_frame.labels_rgb_cache = (id(self.current_frame.labels_2d), labels_rgb)
         else:
             self.current_frame.labels_rgb_cache = (None, None)
+            self.current_frame.segmentation_outline_cache = (None, None)
 
     def _set_current_slice(self, index: int, update_view: bool = True):
         if self._image_batch is None:
