@@ -1,21 +1,15 @@
 from __future__ import annotations
 
 from time import perf_counter
-from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Sequence
+from typing import Any, Callable, Dict, List, Optional, Sequence
 
 import numpy as np
 from scipy import ndimage as ndi
 
 from .datastructures import BatchResult, Frame, ImageBatch
 
-if TYPE_CHECKING:
-    from .fiber_analyzer_2D import FiberAnalyzer_2D
-
 class BatchAnalyzer:
     """Dimension-agnostic orchestrator that executes per-frame analysis."""
-
-    def __init__(self, analyzer: "FiberAnalyzer_2D"):
-        self._analyzer = analyzer
 
     def analyze(
         self,
@@ -26,7 +20,6 @@ class BatchAnalyzer:
         z_indices = batch.metadata.get("z_indices", list(range(len(batch))))
         filenames = batch.metadata.get("filenames", [str(i) for i in range(len(batch))])
         for idx, frame in enumerate(batch.frames):
-            self._analyzer.reset_prediction_state()
             frame_id = str(filenames[idx]) if idx < len(filenames) else str(idx)
             z_index = int(z_indices[idx]) if idx < len(z_indices) else idx
             results.append(frame_processor(frame, frame_id, z_index))

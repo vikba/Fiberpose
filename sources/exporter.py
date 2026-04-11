@@ -7,9 +7,6 @@ from typing import Any
 import imageio.v3 as iio
 import numpy as np
 
-from .utils import label_to_rgb
-
-
 class BatchResultExporter:
     """Persist batch/frame outputs using a small dict-based export config."""
 
@@ -460,24 +457,6 @@ class BatchResultExporter:
             if not os.path.exists(next_candidate):
                 return next_candidate
             i += 1
-
-    @staticmethod
-    def _labels_to_color(labels: np.ndarray) -> np.ndarray:
-        arr = np.asarray(labels, dtype=np.int64)
-        if arr.ndim != 2:
-            raise ValueError("labels must be a 2D array")
-        h, w = arr.shape
-        out = np.zeros((h, w, 3), dtype=np.uint8)
-        if arr.size == 0:
-            return out
-        for value in np.unique(arr):
-            if int(value) == 0:
-                continue
-            mask = arr == value
-            if not mask.any():
-                continue
-            out[mask] = label_to_rgb(int(value))
-        return out
 
     def _write_samples_csv(self, frame, path: str) -> None:
         mean_val, std_val, orientation_index, mean_angle_deg, std_angle_deg, porosity, sample_count = (

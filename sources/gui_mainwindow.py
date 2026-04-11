@@ -756,31 +756,6 @@ class MainWindow(QMainWindow):
 
         return orientation_index, mean_angle_deg, std_angle_deg
 
-    def _measurement_export_summary(self) -> tuple[float, float, float, float, float, float, int]:
-        """
-        Return mean diameter, std, orientation index, mean angle, std angle, porosity, and sample count for CSV export.
-        Falls back to recomputing from cached arrays if the summary is missing.
-        """
-        if self.current_frame.fiber_summary:
-            return (
-                float(self.current_frame.fiber_summary.get("mean_diameter", float("nan"))),
-                float(self.current_frame.fiber_summary.get("std_diameter", float("nan"))),
-                float(self.current_frame.fiber_summary.get("orientation_index", float("nan"))),
-                float(self.current_frame.fiber_summary.get("mean_angle_deg", float("nan"))),
-                float(self.current_frame.fiber_summary.get("std_angle_deg", float("nan"))),
-                float(self.current_frame.fiber_summary.get("porosity", float("nan"))),
-                int(self.current_frame.fiber_summary.get("sample_count", 0)),
-            )
-
-        diameters = self.current_frame.thickness_units if self.current_frame.thickness_units is not None else np.array([])
-        angles = self.current_frame.angles_samples_deg if self.current_frame.angles_samples_deg is not None else np.array([])
-        mean_val = float(np.mean(diameters)) if diameters.size else float("nan")
-        std_val = float(np.std(diameters)) if diameters.size else float("nan")
-        sample_count = int(self.current_frame.samples_table.shape[0]) if self.current_frame.samples_table is not None else int(diameters.size)
-        orientation_index, mean_angle_deg, std_angle_deg = self._compute_orientation_stats(angles)
-        porosity = float(self.current_frame.porosity) if self.current_frame.porosity is not None else float("nan")
-        return mean_val, std_val, orientation_index, mean_angle_deg, std_angle_deg, porosity, sample_count
-
     def _current_batch_measurement_signature(self) -> str | None:
         if self._image_batch is None:
             return None
@@ -1436,7 +1411,7 @@ class MainWindow(QMainWindow):
                 raise RuntimeError("Fiber analyzer has not been initialized.")
 
             # Enter internal batch execution mode so frame callbacks can call segment/analyze safely.
-            batch_analyzer = BatchAnalyzer(self.analyzer)
+            batch_analyzer = BatchAnalyzer()
             previous_batch_state = self._suppress_batch_dialogs
             previous_processing_state = self._is_batch_processing
             self._is_batch_processing = True
@@ -1451,7 +1426,7 @@ class MainWindow(QMainWindow):
                 self._set_progress_bar(0.0)
                 QtWidgets.QApplication.processEvents()
                 # Per-frame routine: hydrate original image, run processing, capture outputs.
-                self._reset_internal_state(preserve_original=False, reset_view=False)
+                self._reset_processing_state(preserve_original=False)
                 self.current_frame.begin_frame(frame, str(frame_id), int(z_index))
                 self.current_image_name = self._frame_base_name(frame_id, z_index)
                 if compute_measurements:
@@ -2789,13 +2764,10 @@ class MainWindow(QMainWindow):
             return
         self._set_current_slice(int(value), update_view=True)
 
-    def _reset_internal_state(self, preserve_original: bool = False, reset_view: bool = True):
-        """Clear all derived data, images, analysis artifacts, and charts."""
-
+    def _reset_processing_state(self, preserve_original: bool = False):
+        """Reset analyzer + frame processing state, without touching UI widgets/charts."""
         if self.analyzer is not None:
             self.analyzer.reset_prediction_state()
-        if self._profile_dialog is not None:
-            self._profile_dialog.close()
 
         preserved_orig = self.current_frame.orig_img if preserve_original else None
         preserved_frame_id = self.current_frame.frame_id if preserve_original else ""
@@ -2807,6 +2779,12 @@ class MainWindow(QMainWindow):
         )
         if not preserve_original:
             self.current_image_name = None
+
+    def _reset_internal_state(self, preserve_original: bool = False, reset_view: bool = True):
+        """Clear all derived data, images, analysis artifacts, and charts."""
+        self._reset_processing_state(preserve_original=preserve_original)
+        if self._profile_dialog is not None:
+            self._profile_dialog.close()
 
         self._scalebar_pending = False
         self._scalebar_points = []
