@@ -44,12 +44,27 @@ class AppConfig:
         default_factory=lambda: [-0.35, -0.08, 0.08, 0.35]
     )
 
+    # --- Save/export defaults (single image, folder batch, and stack exports) ---
+    save_options: dict = field(
+        default_factory=lambda: {
+            "dt": True,
+            "labels": True,
+            "overlay": True,
+            "debug": True,
+            "samples": True,
+            "style_vector": False,
+            "image_format": "png",
+            "collision": "suffix",
+            "write_manifest": True,
+        }
+    )
+
     def save_to_json(self, filepath: str):
         with open(filepath, 'w') as f:
             json.dump(asdict(self), f, indent=4)
 
     @classmethod
-    def load_from_json(cls, filepath: str) -> "AppConfig":
+    def load_from_json(cls, filepath: str, *, strict: bool = False) -> "AppConfig":
         try:
             with open(filepath, "r", encoding="utf-8") as f:
                 data = json.load(f)
@@ -58,14 +73,33 @@ class AppConfig:
             # Backward compatibility for renamed config keys.
             if "scale_label" not in data and "scale_string" in data:
                 data["scale_label"] = data.get("scale_string")
+            # Backward compatibility for legacy save-option keys.
+            if "save_options" not in data:
+                default_save_options = cls().save_options
+                merged_save_options = dict(default_save_options)
+                pred_opts = data.get("single_predictions_save_options")
+                meas_opts = data.get("single_measurements_save_options")
+                if isinstance(pred_opts, dict):
+                    for key in ("dt", "labels", "overlay", "debug", "samples", "style_vector"):
+                        if key in pred_opts:
+                            merged_save_options[key] = bool(pred_opts.get(key))
+                if isinstance(meas_opts, dict) and "samples" in meas_opts:
+                    merged_save_options["samples"] = bool(meas_opts.get("samples"))
+                data["save_options"] = merged_save_options
             valid_keys = {k for k in cls.__dataclass_fields__}
             filtered_data = {k: v for k, v in data.items() if k in valid_keys}
             return cls(**filtered_data)
         except FileNotFoundError:
+            if strict:
+                raise
             logger.info("Config file not found: %s. Using defaults.", filepath)
         except json.JSONDecodeError as exc:
+            if strict:
+                raise
             logger.error("Invalid JSON in config file %s: %s. Using defaults.", filepath, exc)
         except Exception:
+            if strict:
+                raise
             logger.exception("Failed to load config file %s. Using defaults.", filepath)
         return cls()
 

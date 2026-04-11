@@ -5,7 +5,6 @@ from datetime import datetime
 from typing import Any, Dict
 import numpy as np
 import cv2
-import imageio.v3 as iio
 
 from PyQt6 import QtGui, QtWidgets
 from PyQt6.QtCore import Qt, QEvent, QTimer, QPoint, QLineF, QSize
@@ -33,7 +32,7 @@ logging.basicConfig(level=logging.INFO)
 
 from .gui_dialogs import (
     PlotProfileDialog,
-    BatchSaveOptionsDialog,
+    SaveOptionsDialog,
     Stack3DWindow,
     ConfigEditorDialog,
 )
@@ -143,7 +142,6 @@ class MainWindow(QMainWindow):
 
         # Batch mode state
         self._suppress_batch_dialogs: bool = False
-        self._batch_save_options: Dict[str, bool] | None = None
         self._is_batch_processing: bool = False
         self._image_batch: ImageBatch | None = None
         self._batch_result: BatchResult | None = None
@@ -202,6 +200,13 @@ class MainWindow(QMainWindow):
         self.action_load_image.triggered.connect(self.load_original)
         self.action_save_masks_predictions.triggered.connect(self.save_predictions)
         self.action_save_measurements.triggered.connect(self.save_measurements)
+        self.action_save_options = QtGui.QAction("Save options...", self)
+        self.action_save_options.triggered.connect(self._on_edit_save_options)
+        if hasattr(self, "menuFile"):
+            if hasattr(self, "action_batch_processing"):
+                self.menuFile.insertAction(self.action_batch_processing, self.action_save_options)
+            else:
+                self.menuFile.addAction(self.action_save_options)
         if hasattr(self, "action_edit"):
             self.action_edit.setText("Edit config...")
             self.action_edit.triggered.connect(self._on_edit_config)
@@ -611,13 +616,7 @@ class MainWindow(QMainWindow):
     def _load_config_from_path(self, path: str) -> bool:
         selected_path = os.path.abspath(path)
         try:
-            with open(selected_path, "r", encoding="utf-8") as f:
-                raw = json.load(f)
-            if not isinstance(raw, dict):
-                raise ValueError("Config JSON root must be an object.")
-            valid_keys = set(AppConfig.__dataclass_fields__.keys())
-            filtered = {k: v for k, v in raw.items() if k in valid_keys}
-            self.config = AppConfig(**filtered)
+            self.config = AppConfig.load_from_json(selected_path, strict=True)
         except Exception as exc:
             self._show_error("Load config failed", str(exc))
             return False
@@ -648,6 +647,15 @@ class MainWindow(QMainWindow):
         self.config_filepath = dialog.result_config_path()
         self._apply_runtime_after_config_change()
         self.statusbar.showMessage(f"Config updated: {self.config_filepath}", 5000)
+
+    def _on_edit_save_options(self):
+        current_options = self._normalize_save_options(getattr(self.config, "save_options", {}))
+        dialog = SaveOptionsDialog(self, current_options)
+        if dialog.exec() != QtWidgets.QDialog.DialogCode.Accepted:
+            return
+
+        self.config.save_options = self._normalize_save_options(dialog.options())
+        self.statusbar.showMessage("Save options updated.", 4000)
 
 
     # ------------------- Drag & drop -------------------
@@ -955,321 +963,264 @@ class MainWindow(QMainWindow):
     def load_original_from_path(self, path: str):
         self.open_source(path=path, source_kind="auto")
 
-    def _is_single_tiff_stack_source(self) -> bool:
+    @staticmethod
+    def _default_save_options() -> Dict[str, Any]:
+        return dict(AppConfig().save_options)
+
+    @classmethod
+    def _normalize_save_options(cls, raw_options: Any) -> Dict[str, Any]:
+        defaults = cls._default_save_options()
+        if not isinstance(raw_options, dict):
+            return defaults
+
+        normalized = dict(defaults)
+        artifact_keys = ("dt", "labels", "overlay", "debug", "samples", "style_vector")
+        for key in artifact_keys:
+            if key in raw_options:
+                normalized[key] = bool(raw_options.get(key))
+
+        image_format = str(raw_options.get("image_format", defaults["image_format"])).strip().lower()
+        normalized["image_format"] = image_format if image_format in {"png", "tiff"} else defaults["image_format"]
+
+        collision = str(raw_options.get("collision", defaults["collision"])).strip().lower()
+        normalized["collision"] = collision if collision in {"suffix", "overwrite", "error"} else defaults["collision"]
+
+        normalized["write_manifest"] = bool(raw_options.get("write_manifest", defaults["write_manifest"]))
+        return normalized
+
+    def _current_save_layout(self) -> str:
+        """Return export layout based on loaded source type."""
         if self._image_batch is None:
-            return False
-        metadata = self._image_batch.metadata or {}
-        source_type = str(metadata.get("source_type", "")).strip().lower()
-        if source_type != "stack" or len(self._image_batch) <= 1:
-            return False
-        source_path = str(metadata.get("source_path", "")).strip()
-        if not source_path or not os.path.isfile(source_path):
-            return False
-        return os.path.splitext(source_path)[1].lower() in {".tif", ".tiff"}
+            return "single"
+        source_type = str((self._image_batch.metadata or {}).get("source_type", "")).strip().lower()
+        if source_type == "folder":
+            return "frames"
+        if source_type == "stack":
+            return "stack"
+        return "single"
 
-    def save_predictions(self):
-        batch_frame_count = (
-            len(self._batch_result.frame_results)
-            if self._batch_result is not None
-            else 0
-        )
-        if batch_frame_count > 1:
-            has_predictions = any(
-                fr.has_prediction or fr.has_segmentation
-                for fr in self._batch_result.frame_results
-            )
-            if not has_predictions:
-                self._show_info("Nothing to save", "Run segmentation first.")
-                return
+    def _current_source_base_name(self) -> str:
+        if self._image_batch is not None:
+            source_path = str((self._image_batch.metadata or {}).get("source_path", "")).strip()
+            if source_path:
+                return os.path.splitext(os.path.basename(os.path.normpath(source_path)))[0] or "fiberpose"
+        return self.current_image_name or "fiberpose"
 
-            dest_dir = QFileDialog.getExistingDirectory(
-                self,
-                "Save batch predictions to folder",
-                self.working_dir,
-            )
-            if not dest_dir:
-                return
-            if self._is_single_tiff_stack_source():
-                source_path = str(self._image_batch.metadata.get("source_path", ""))
-                base_name = os.path.splitext(os.path.basename(source_path))[0] or "stack"
-                frames = list(self._batch_result.frame_results)
-                written_count = 0
-                errors: list[dict[str, Any]] = []
+    @staticmethod
+    def _artifact_exclude_from_save_options(options: Dict[str, Any]) -> list[str]:
+        artifact_keys = ("dt", "labels", "overlay", "debug", "samples", "style_vector")
+        return [name for name in artifact_keys if not bool(options.get(name, False))]
 
-                def _stack_path(suffix: str) -> str:
-                    base_path = os.path.join(dest_dir, f"{base_name}{suffix}.tiff")
-                    if not os.path.exists(base_path):
-                        return base_path
-                    idx = 2
-                    while True:
-                        cand = os.path.join(dest_dir, f"{base_name}{suffix}_{idx}.tiff")
-                        if not os.path.exists(cand):
-                            return cand
-                        idx += 1
+    def _effective_batch_result_for_save(self) -> BatchResult | None:
+        layout = self._current_save_layout()
+        if layout != "single":
+            if self._image_batch is None or self._batch_result is None:
+                return None
+            if len(self._batch_result.frame_results) != len(self._image_batch):
+                return None
+            return self._batch_result
 
-                if all(fr.dt_u8 is not None for fr in frames):
-                    try:
-                        dt_stack = np.stack(
-                            [np.asarray(fr.dt_u8, dtype=np.uint8) for fr in frames],
-                            axis=0,
-                        )
-                        iio.imwrite(_stack_path("_dt"), dt_stack)
-                        written_count += 1
-                    except Exception as exc:
-                        errors.append({"artifact": "dt", "error": str(exc)})
+        if self._batch_result is not None and len(self._batch_result.frame_results) == 1:
+            return self._batch_result
 
-                if all(fr.labels_2d is not None for fr in frames):
-                    try:
-                        labels_slices: list[np.ndarray] = []
-                        has_foreground = False
-                        for fr in frames:
-                            labels_2d = np.asarray(fr.labels_2d)
-                            if labels_2d.ndim == 3:
-                                labels_2d = labels_2d[..., 0]
-                            if labels_2d.ndim != 2:
-                                raise ValueError("Labels are not 2D.")
-                            if labels_2d.size and int(np.max(labels_2d)) > 0:
-                                has_foreground = True
-                            labels_slices.append(np.asarray(labels_2d, dtype=np.uint16))
-                        if has_foreground:
-                            labels_stack = np.stack(labels_slices, axis=0)
-                            iio.imwrite(_stack_path("_labels"), labels_stack)
-                            written_count += 1
-                    except Exception as exc:
-                        errors.append({"artifact": "labels", "error": str(exc)})
+        if self.current_frame.orig_img is None:
+            return None
 
-                if all(fr.overlay_img is not None for fr in frames):
-                    try:
-                        overlay_stack = np.stack(
-                            [np.asarray(fr.overlay_img, dtype=np.uint8) for fr in frames],
-                            axis=0,
-                        )
-                        iio.imwrite(_stack_path("_overlay"), overlay_stack)
-                        written_count += 1
-                    except Exception as exc:
-                        errors.append({"artifact": "overlay", "error": str(exc)})
-
-                if all(fr.measurements_overlay is not None for fr in frames):
-                    try:
-                        debug_stack = np.stack(
-                            [np.asarray(fr.measurements_overlay, dtype=np.uint8) for fr in frames],
-                            axis=0,
-                        )
-                        iio.imwrite(_stack_path("_debug"), debug_stack)
-                        written_count += 1
-                    except Exception as exc:
-                        errors.append({"artifact": "debug", "error": str(exc)})
-
-                export_result = {"written_count": written_count, "errors": errors}
-            else:
-                export_config = {
-                    "preset": "predictions",
-                    "image_format": "png",
-                    "naming": "frame_id_z",
-                    "collision": "suffix",
-                    "write_manifest": True,
-                }
-                try:
-                    export_result = self._batch_result.save_all(dest_dir, export_config)
-                except Exception as e:
-                    self._show_error("Error", f"Failed to save batch predictions:\n{e}")
-                    return
-
-            self.working_dir = dest_dir
-            error_count = len(export_result.get("errors", []))
-            if error_count:
-                self._show_warning(
-                    "Saved with issues",
-                    f"Saved {export_result.get('written_count', 0)} file(s) to:\n{dest_dir}\n"
-                    f"Encountered {error_count} export error(s).",
-                )
-                return
-            self._show_info(
-                "Saved",
-                f"Saved {export_result.get('written_count', 0)} file(s) to:\n{dest_dir}",
-            )
-            return
-
-        if not (self.current_frame.has_prediction or self.current_frame.has_segmentation):
-            self._show_info("Nothing to save", "Run segmentation first.")
-            return
-        default_base = (self.current_image_name or "fiberpose") + "_results.png"
-        base, _ = QtWidgets.QFileDialog.getSaveFileName(
-            self,
-            "Save predictions (choose base name)",
-            os.path.join(self.working_dir, default_base),
-            "PNG (*.png);;TIFF (*.tif *.tiff)",
-        )
-        if not base:
-            return
-        dest_dir = os.path.dirname(base) or self.working_dir
-        base_name = os.path.splitext(os.path.basename(base))[0] or (self.current_image_name or "fiberpose")
-        selected_ext = os.path.splitext(base)[1].lower()
-        image_format = "tiff" if selected_ext in {".tif", ".tiff"} else "png"
-        export_config = {
-            "preset": "predictions",
-            "image_format": image_format,
-            "naming": "frame_id",
-            "collision": "overwrite",
-            "base_name": base_name,
-            "write_manifest": False,
-        }
-
-        try:
-            export_result = self._export_current_frame(dest_dir, export_config)
-        except Exception as e:
-            self._show_error("Error", f"Failed to save:\n{e}")
-            return
-
-        self.working_dir = dest_dir
-        error_count = len(export_result.get("errors", []))
-        if error_count:
-            self._show_warning(
-                "Saved with issues",
-                f"Saved {export_result.get('written_count', 0)} file(s) to:\n{dest_dir}\n"
-                f"Encountered {error_count} export error(s).",
-            )
-            return
-        self._show_info(
-            "Saved",
-            f"Saved {export_result.get('written_count', 0)} file(s) to:\n{dest_dir}",
-        )
-
-    def save_measurements(self):
-        batch_frame_count = (
-            len(self._batch_result.frame_results)
-            if self._batch_result is not None
-            else 0
-        )
-        if batch_frame_count > 1:
-            has_measurements = any(
-                fr.has_measurements and fr.samples_table is not None and len(fr.samples_table) > 0
-                for fr in self._batch_result.frame_results
-            )
-            if not has_measurements:
-                self._show_info("Nothing to save", "Run Analyze fibers first.")
-                return
-
-            dest_dir = QFileDialog.getExistingDirectory(
-                self,
-                "Save batch measurements to folder",
-                self.working_dir,
-            )
-            if not dest_dir:
-                return
-            if self._is_single_tiff_stack_source():
-                source_path = str(self._image_batch.metadata.get("source_path", ""))
-                base_name = os.path.splitext(os.path.basename(source_path))[0] or "stack"
-                csv_path = os.path.join(dest_dir, f"{base_name}_samples.csv")
-                if os.path.exists(csv_path):
-                    idx = 2
-                    while True:
-                        cand = os.path.join(dest_dir, f"{base_name}_samples_{idx}.csv")
-                        if not os.path.exists(cand):
-                            csv_path = cand
-                            break
-                        idx += 1
-                try:
-                    with open(csv_path, "w", newline="") as handle:
-                        handle.write("z_index,frame_id,x,y,diameter,angle_deg\n")
-                        for fr in self._batch_result.frame_results:
-                            if fr.samples_table is None or len(fr.samples_table) == 0:
-                                continue
-                            z_index = int(getattr(fr, "z_index", 0))
-                            frame_id = str(getattr(fr, "frame_id", ""))
-                            thickness_units = getattr(fr, "thickness_units", None)
-                            for sample_index, row in enumerate(fr.samples_table, start=1):
-                                x, y, t_px = row[:3]
-                                angle_val = float(row[3]) if len(row) > 3 else float("nan")
-                                if thickness_units is not None and len(thickness_units) >= sample_index:
-                                    diameter_val = float(thickness_units[sample_index - 1])
-                                else:
-                                    diameter_val = float(t_px)
-                                handle.write(
-                                    f"{z_index},{frame_id},{int(x)},{int(y)},{diameter_val:.6f},{angle_val:.6f}\n"
-                                )
-                    export_result = {"written_count": 1, "errors": []}
-                except Exception as e:
-                    self._show_error("Error", f"Failed to save stack measurements:\n{e}")
-                    return
-            else:
-                export_config = {
-                    "preset": "measurements",
-                    "naming": "frame_id_z",
-                    "collision": "suffix",
-                    "write_manifest": True,
-                }
-                try:
-                    export_result = self._batch_result.save_all(dest_dir, export_config)
-                except Exception as e:
-                    self._show_error("Error", f"Failed to save batch measurements:\n{e}")
-                    return
-
-            self.working_dir = dest_dir
-            error_count = len(export_result.get("errors", []))
-            if error_count:
-                self._show_warning(
-                    "Saved with issues",
-                    f"Saved {export_result.get('written_count', 0)} file(s) to:\n{dest_dir}\n"
-                    f"Encountered {error_count} export error(s).",
-                )
-                return
-            self._show_info(
-                "Saved",
-                f"Saved {export_result.get('written_count', 0)} file(s) to:\n{dest_dir}",
-            )
-            return
-
-        if not self.current_frame.has_measurements or self.current_frame.samples_table is None or len(self.current_frame.samples_table) == 0:
-            self._show_info("Nothing to save", "Run Analyze fibers first.")
-            return
-        default_csv = (self.current_image_name or "fiberpose") + "_measurements.csv"
-        base, _ = QtWidgets.QFileDialog.getSaveFileName(
-            self,
-            "Save measurements (CSV)",
-            os.path.join(self.working_dir, default_csv),
-            "CSV (*.csv)",
-        )
-        if not base:
-            return
-        dest_dir = os.path.dirname(base) or self.working_dir
-        base_name = os.path.splitext(os.path.basename(base))[0] or (self.current_image_name or "fiberpose")
-        export_config = {
-            "preset": "measurements",
-            "naming": "frame_id",
-            "collision": "overwrite",
-            "base_name": base_name,
-            "write_manifest": False,
-        }
-
-        try:
-            export_result = self._export_current_frame(dest_dir, export_config)
-        except Exception as e:
-            self._show_error("Error", f"Failed to save CSVs:\n{e}")
-            return
-
-        error_count = len(export_result.get("errors", []))
-        if error_count:
-            self._show_warning(
-                "Saved with issues",
-                f"Saved {export_result.get('written_count', 0)} file(s) to:\n{dest_dir}\n"
-                f"Encountered {error_count} export error(s).",
-            )
-            return
-        self.working_dir = dest_dir
-        self._show_info(
-            "Saved",
-            f"Saved {export_result.get('written_count', 0)} CSV file(s) to:\n{dest_dir}",
-        )
-
-    def _export_current_frame(self, output_dir: str, export_config: Dict[str, Any]) -> Dict[str, Any]:
         frame_result = self.current_frame.snapshot(
             include_measurements=True,
             frame_id=str(self.current_frame.frame_id),
             z_index=int(self.current_frame.z_index),
         )
-        batch_result = BatchResult(frame_results=[frame_result])
-        return batch_result.save_all(output_dir, export_config)
+        return BatchResult(frame_results=[frame_result])
+
+    def _build_export_config(
+        self,
+        *,
+        layout: str,
+        save_options: Dict[str, Any],
+        base_name: str | None = None,
+        image_format_override: str | None = None,
+    ) -> Dict[str, Any]:
+        image_format = image_format_override or str(save_options.get("image_format", "png"))
+        export_config: Dict[str, Any] = {
+            "preset": "full",
+            "exclude": self._artifact_exclude_from_save_options(save_options),
+            "collision": str(save_options.get("collision", "suffix")),
+            "write_manifest": bool(save_options.get("write_manifest", True)),
+            "layout": layout,
+            "source_base_name": self._current_source_base_name(),
+        }
+
+        if layout == "single":
+            export_config.update(
+                {
+                    "naming": "frame_id",
+                    "collision": "overwrite",
+                    "base_name": base_name or self._current_source_base_name(),
+                    "image_format": "tiff" if image_format == "tiff" else "png",
+                    "write_manifest": False,
+                }
+            )
+        elif layout == "frames":
+            export_config.update(
+                {
+                    "naming": "frame_id_z",
+                    "image_format": "tiff" if image_format == "tiff" else "png",
+                }
+            )
+        elif layout == "stack":
+            if base_name:
+                export_config["base_name"] = str(base_name)
+        else:
+            raise ValueError(f"Unsupported save layout: {layout}")
+
+        return export_config
+
+    def _prompt_save_destination(
+        self,
+        *,
+        layout: str,
+        default_base_name: str,
+        title_single: str,
+        title_multi: str,
+        image_format: str,
+    ) -> tuple[str, str | None, str | None] | None:
+        if layout == "single":
+            ext = ".tiff" if image_format == "tiff" else ".png"
+            default_path = os.path.join(self.working_dir, f"{default_base_name}{ext}")
+            selected, _ = QtWidgets.QFileDialog.getSaveFileName(
+                self,
+                title_single,
+                default_path,
+                "All Files (*)",
+            )
+            if not selected:
+                return None
+            dest_dir = os.path.dirname(selected) or self.working_dir
+            base_name = os.path.splitext(os.path.basename(selected))[0] or default_base_name
+            selected_ext = os.path.splitext(selected)[1].strip().lower()
+            if selected_ext in {".tif", ".tiff"}:
+                image_format_override = "tiff"
+            elif selected_ext == ".png":
+                image_format_override = "png"
+            else:
+                image_format_override = None
+            return dest_dir, base_name, image_format_override
+
+        dest_dir = QFileDialog.getExistingDirectory(
+            self,
+            title_multi,
+            self.working_dir,
+        )
+        if not dest_dir:
+            return None
+        return dest_dir, None, None
+
+    def _execute_save(
+        self,
+        *,
+        batch_result: BatchResult,
+        layout: str,
+        default_base_name: str,
+        title_single: str,
+        title_multi: str,
+    ) -> bool:
+        save_options = self._normalize_save_options(getattr(self.config, "save_options", {}))
+        if not any(
+            bool(save_options.get(key, False))
+            for key in ("dt", "labels", "overlay", "debug", "samples", "style_vector")
+        ):
+            self._show_warning(
+                "Nothing selected",
+                "All artifacts are disabled in File -> Save options.",
+            )
+            return False
+
+        target = self._prompt_save_destination(
+            layout=layout,
+            default_base_name=default_base_name,
+            title_single=title_single,
+            title_multi=title_multi,
+            image_format=str(save_options.get("image_format", "png")),
+        )
+        if target is None:
+            return False
+        dest_dir, base_name, image_format_override = target
+
+        export_config = self._build_export_config(
+            layout=layout,
+            save_options=save_options,
+            base_name=base_name,
+            image_format_override=image_format_override,
+        )
+
+        try:
+            export_result = batch_result.save_all(dest_dir, export_config)
+        except Exception as exc:
+            self._show_error("Error", f"Failed to save:\n{exc}")
+            return False
+
+        self.working_dir = dest_dir
+        error_count = len(export_result.get("errors", []))
+        if error_count:
+            self._show_warning(
+                "Saved with issues",
+                f"Saved {export_result.get('written_count', 0)} file(s) to:\n{dest_dir}\n"
+                f"Encountered {error_count} export error(s).",
+            )
+            return False
+
+        self._show_info(
+            "Saved",
+            f"Saved {export_result.get('written_count', 0)} file(s) to:\n{dest_dir}",
+        )
+        return True
+
+    def save_predictions(self):
+        batch_result = self._effective_batch_result_for_save()
+        if batch_result is None:
+            self._show_info("Nothing to save", "Run segmentation first.")
+            return
+
+        has_predictions = any(
+            fr.has_prediction or fr.has_segmentation
+            for fr in batch_result.frame_results
+        )
+        if not has_predictions:
+            self._show_info("Nothing to save", "Run segmentation first.")
+            return
+
+        default_base_name = (self.current_image_name or "fiberpose") + "_results"
+        self._execute_save(
+            batch_result=batch_result,
+            layout=self._current_save_layout(),
+            default_base_name=default_base_name,
+            title_single="Save predictions (choose base name)",
+            title_multi="Save predictions to folder",
+        )
+
+    def save_measurements(self):
+        batch_result = self._effective_batch_result_for_save()
+        if batch_result is None:
+            self._show_info("Nothing to save", "Run Analyze fibers first.")
+            return
+
+        has_measurements = any(
+            fr.has_measurements and fr.samples_table is not None and len(fr.samples_table) > 0
+            for fr in batch_result.frame_results
+        )
+        if not has_measurements:
+            self._show_info("Nothing to save", "Run Analyze fibers first.")
+            return
+
+        default_base_name = (self.current_image_name or "fiberpose") + "_measurements"
+        self._execute_save(
+            batch_result=batch_result,
+            layout=self._current_save_layout(),
+            default_base_name=default_base_name,
+            title_single="Save measurements (choose base name)",
+            title_multi="Save measurements to folder",
+        )
 
 
     # ------------------- Scalebar -------------------
@@ -1545,39 +1496,14 @@ class MainWindow(QMainWindow):
         )
         return batch_result
 
-    @staticmethod
-    def _batch_export_config_from_options(options: Dict[str, bool]) -> Dict[str, Any]:
-        default_flags = {
-            "dt": True,
-            "labels": True,
-            "overlay": True,
-            "debug": True,
-            "samples": True,
-            "style_vector": False,
-        }
-        artifacts = tuple(default_flags.keys())
-        excluded = [
-            name
-            for name in artifacts
-            if not bool(options.get(name, default_flags[name]))
-        ]
-        return {
-            "preset": "full",
-            "image_format": "png",
-            "naming": "frame_id_z",
-            "collision": "suffix",
-            "exclude": excluded,
-            "write_manifest": True,
-        }
-
-    def _prompt_batch_save_options(self) -> Dict[str, bool] | None:
-        dialog = BatchSaveOptionsDialog(self, self._batch_save_options)
-        result = dialog.exec()
-        if result == QtWidgets.QDialog.DialogCode.Accepted:
-            options = dialog.options()
-            self._batch_save_options = options
-            return options
-        return None
+    def _batch_export_config_from_save_options(self) -> Dict[str, Any]:
+        save_options = self._normalize_save_options(getattr(self.config, "save_options", {}))
+        return self._build_export_config(
+            layout="frames",
+            save_options=save_options,
+            base_name=None,
+            image_format_override=None,
+        )
 
     def _on_batch_processing(self):
         self._run_batch_processing_for_folder(None)
@@ -1587,42 +1513,20 @@ class MainWindow(QMainWindow):
         if image_batch is None:
             return
 
-        save_options = self._prompt_batch_save_options()
-        if not save_options:
-            return
-
-        # Use self.config instead of deleted helpers
-        prev_strict_mode = self.config.strict_centerlines
-        prev_seg_mode = self.config.segmentation_mode
-
-
-        batch_strict_mode = bool(save_options.get("strict", prev_strict_mode))
-        self._set_strict_mode(batch_strict_mode)
-        if batch_strict_mode and prev_seg_mode != "ridge":
-            self.rb_ridge.setChecked(True)
-
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         directory = self.working_dir
         output_root = os.path.join(directory, f"fiberpose_batch_{timestamp}")
         os.makedirs(output_root, exist_ok=True)
 
-        batch_result: BatchResult | None = None
-        try:
-            batch_result = self._run_batch_analysis(
-                compute_measurements=True,
-                image_batch=image_batch,
-                error_title="Batch processing failed",
-            )
-        finally:
-            # Restore previous state using config and UI setters
-            self._set_strict_mode(prev_strict_mode)
-            if prev_seg_mode != self.config.segmentation_mode:
-                self._set_segmentation_mode(prev_seg_mode)
-                
+        batch_result = self._run_batch_analysis(
+            compute_measurements=True,
+            image_batch=image_batch,
+            error_title="Batch processing failed",
+        )
         if batch_result is None:
             return
 
-        export_config = self._batch_export_config_from_options(save_options)
+        export_config = self._batch_export_config_from_save_options()
         export_result = batch_result.save_all(output_root, export_config)
 
         failures: list[tuple[str, str]] = []

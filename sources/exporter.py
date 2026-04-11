@@ -34,15 +34,67 @@ class BatchResultExporter:
 
         os.makedirs(output_dir, exist_ok=True)
 
+        layout = str(cfg.get("layout", "frames")).strip().lower()
+        if layout == "stack":
+            written_files, skipped, errors = self._save_stack_artifacts(
+                batch_result=batch_result,
+                output_dir=output_dir,
+                cfg=cfg,
+                artifacts=artifacts,
+            )
+        else:
+            written_files, skipped, errors = self._save_framewise_artifacts(
+                batch_result=batch_result,
+                output_dir=output_dir,
+                cfg=cfg,
+                artifacts=artifacts,
+            )
+
+        manifest_path = None
+        if cfg.get("write_manifest", True):
+            manifest = {
+                "export_config": cfg,
+                "written_files": [os.path.relpath(p, output_dir) for p in written_files],
+                "written_count": len(written_files),
+                "skipped": skipped,
+                "errors": errors,
+            }
+            manifest_path = self._resolve_output_path(output_dir, "manifest", "", ".json", cfg)
+            with open(manifest_path, "w", encoding="utf-8") as handle:
+                json.dump(manifest, handle, indent=2)
+
+        return {
+            "output_dir": output_dir,
+            "written_files": written_files,
+            "written_count": len(written_files),
+            "skipped": skipped,
+            "errors": errors,
+            "manifest_path": manifest_path,
+        }
+
+    @staticmethod
+    def _skip_item(frame_index: int, artifact: str, reason: str) -> dict[str, Any]:
+        return {
+            "frame_index": int(frame_index),
+            "artifact": artifact,
+            "reason": reason,
+        }
+
+    def _save_framewise_artifacts(
+        self,
+        *,
+        batch_result,
+        output_dir: str,
+        cfg: dict[str, Any],
+        artifacts: set[str],
+    ) -> tuple[list[str], list[dict[str, Any]], list[dict[str, Any]]]:
         written_files: list[str] = []
         skipped: list[dict[str, Any]] = []
         errors: list[dict[str, Any]] = []
-
         image_ext = ".tiff" if cfg["image_format"] == "tiff" else ".png"
 
         for frame_index, frame in enumerate(batch_result.frame_results):
             base_name = self._make_base_name(frame, frame_index, cfg)
-
             for artifact in self._ALL_ARTIFACTS:
                 if artifact not in artifacts:
                     continue
@@ -99,35 +151,167 @@ class BatchResultExporter:
                         }
                     )
 
-        manifest_path = None
-        if cfg.get("write_manifest", True):
-            manifest = {
-                "export_config": cfg,
-                "written_files": [os.path.relpath(p, output_dir) for p in written_files],
-                "written_count": len(written_files),
-                "skipped": skipped,
-                "errors": errors,
-            }
-            manifest_path = self._resolve_output_path(output_dir, "manifest", "", ".json", cfg)
-            with open(manifest_path, "w", encoding="utf-8") as handle:
-                json.dump(manifest, handle, indent=2)
+        return written_files, skipped, errors
 
-        return {
-            "output_dir": output_dir,
-            "written_files": written_files,
-            "written_count": len(written_files),
-            "skipped": skipped,
-            "errors": errors,
-            "manifest_path": manifest_path,
-        }
+    def _save_stack_artifacts(
+        self,
+        *,
+        batch_result,
+        output_dir: str,
+        cfg: dict[str, Any],
+        artifacts: set[str],
+    ) -> tuple[list[str], list[dict[str, Any]], list[dict[str, Any]]]:
+        """
+        Save stack sources as stack-level files.
+        Image artifacts are written as multi-page TIFF stacks.
+        """
+        written_files: list[str] = []
+        skipped: list[dict[str, Any]] = []
+        errors: list[dict[str, Any]] = []
+        frames = list(batch_result.frame_results)
+        if not frames:
+            return written_files, skipped, errors
+
+        base_name = self._stack_base_name(frames, cfg)
+
+        for artifact in self._ALL_ARTIFACTS:
+            if artifact not in artifacts:
+                continue
+            try:
+                if artifact == "dt":
+                    arrays = self._collect_stack_arrays(frames, artifact)
+                    if arrays is None:
+                        skipped.append(self._skip_item(-1, artifact, "missing_data"))
+                        continue
+                    path = self._resolve_output_path(output_dir, base_name, "_dt", ".tiff", cfg)
+                    iio.imwrite(path, np.stack(arrays, axis=0))
+                    written_files.append(path)
+                elif artifact == "labels":
+                    arrays = self._collect_stack_arrays(frames, artifact)
+                    if arrays is None:
+                        skipped.append(self._skip_item(-1, artifact, "missing_data"))
+                        continue
+                    if not any(arr.size and int(np.max(arr)) > 0 for arr in arrays):
+                        skipped.append(self._skip_item(-1, artifact, "missing_data"))
+                        continue
+                    path = self._resolve_output_path(output_dir, base_name, "_labels", ".tiff", cfg)
+                    iio.imwrite(path, np.stack(arrays, axis=0))
+                    written_files.append(path)
+                elif artifact == "overlay":
+                    arrays = self._collect_stack_arrays(frames, artifact)
+                    if arrays is None:
+                        skipped.append(self._skip_item(-1, artifact, "missing_data"))
+                        continue
+                    path = self._resolve_output_path(output_dir, base_name, "_overlay", ".tiff", cfg)
+                    iio.imwrite(path, np.stack(arrays, axis=0))
+                    written_files.append(path)
+                elif artifact == "debug":
+                    arrays = self._collect_stack_arrays(frames, artifact)
+                    if arrays is None:
+                        skipped.append(self._skip_item(-1, artifact, "missing_data"))
+                        continue
+                    path = self._resolve_output_path(output_dir, base_name, "_debug", ".tiff", cfg)
+                    iio.imwrite(path, np.stack(arrays, axis=0))
+                    written_files.append(path)
+                elif artifact == "samples":
+                    if not any(
+                        getattr(frame, "samples_table", None) is not None and len(frame.samples_table) > 0
+                        for frame in frames
+                    ):
+                        skipped.append(self._skip_item(-1, artifact, "missing_data"))
+                        continue
+                    path = self._resolve_output_path(output_dir, base_name, "_samples", ".csv", cfg)
+                    self._write_stack_samples_csv(frames, path)
+                    written_files.append(path)
+                elif artifact == "style_vector":
+                    if not all(getattr(frame, "style_vec", None) is not None for frame in frames):
+                        skipped.append(self._skip_item(-1, artifact, "missing_data"))
+                        continue
+                    path = self._resolve_output_path(output_dir, base_name, "_style", ".npy", cfg)
+                    stack = np.stack(
+                        [np.asarray(frame.style_vec, dtype=np.float32) for frame in frames],
+                        axis=0,
+                    )
+                    np.save(path, stack)
+                    written_files.append(path)
+            except Exception as exc:
+                errors.append(
+                    {
+                        "frame_index": -1,
+                        "frame_id": str(base_name),
+                        "artifact": artifact,
+                        "error": str(exc),
+                    }
+                )
+
+        return written_files, skipped, errors
+
+    def _collect_stack_arrays(self, frames: list[Any], artifact: str) -> list[np.ndarray] | None:
+        arrays: list[np.ndarray] = []
+        for frame in frames:
+            if artifact == "dt":
+                src = getattr(frame, "dt_u8", None)
+                if src is None:
+                    return None
+                arrays.append(np.asarray(src, dtype=np.uint8))
+            elif artifact == "labels":
+                src = getattr(frame, "labels_2d", None)
+                if src is None:
+                    return None
+                arr = np.asarray(src)
+                if arr.ndim == 3:
+                    arr = arr[..., 0]
+                if arr.ndim != 2:
+                    return None
+                arrays.append(np.asarray(arr, dtype=np.uint16))
+            elif artifact == "overlay":
+                src = getattr(frame, "overlay_img", None)
+                if src is None:
+                    return None
+                arrays.append(np.asarray(src, dtype=np.uint8))
+            elif artifact == "debug":
+                src = getattr(frame, "measurements_overlay", None)
+                if src is None:
+                    return None
+                arrays.append(np.asarray(src, dtype=np.uint8))
+            else:
+                return None
+        return arrays
+
+    def _stack_base_name(self, frames: list[Any], cfg: dict[str, Any]) -> str:
+        explicit_base = cfg.get("base_name")
+        if explicit_base:
+            return self._sanitize_name(str(explicit_base))
+
+        source_base_name = cfg.get("source_base_name")
+        if source_base_name:
+            return self._sanitize_name(str(source_base_name))
+
+        first_id = str(getattr(frames[0], "frame_id", "") or "").strip()
+        if first_id:
+            return self._sanitize_name(os.path.splitext(os.path.basename(first_id))[0])
+        return "stack"
 
     @staticmethod
-    def _skip_item(frame_index: int, artifact: str, reason: str) -> dict[str, Any]:
-        return {
-            "frame_index": int(frame_index),
-            "artifact": artifact,
-            "reason": reason,
-        }
+    def _write_stack_samples_csv(frames: list[Any], path: str) -> None:
+        with open(path, "w", newline="") as handle:
+            handle.write("z_index,frame_id,x,y,diameter,angle_deg\n")
+            for frame in frames:
+                if frame.samples_table is None or len(frame.samples_table) == 0:
+                    continue
+                z_index = int(getattr(frame, "z_index", 0))
+                frame_id = str(getattr(frame, "frame_id", ""))
+                thickness_units = getattr(frame, "thickness_units", None)
+                for sample_index, row in enumerate(frame.samples_table, start=1):
+                    x, y, t_px = row[:3]
+                    angle_val = float(row[3]) if len(row) > 3 else float("nan")
+                    if thickness_units is not None and len(thickness_units) >= sample_index:
+                        diameter_val = float(thickness_units[sample_index - 1])
+                    else:
+                        diameter_val = float(t_px)
+                    handle.write(
+                        f"{z_index},{frame_id},{int(x)},{int(y)},{diameter_val:.6f},{angle_val:.6f}\n"
+                    )
 
     def _normalize_export_config(self, export_config: dict[str, Any]) -> dict[str, Any]:
         cfg = {
@@ -135,9 +319,11 @@ class BatchResultExporter:
             "image_format": "png",
             "naming": "frame_id_z",
             "collision": "suffix",
+            "layout": "frames",
             "include": [],
             "exclude": [],
             "base_name": None,
+            "source_base_name": None,
             "write_manifest": True,
         }
         cfg.update(export_config)
@@ -157,6 +343,11 @@ class BatchResultExporter:
             raise ValueError(f"Unsupported naming: {naming}")
         cfg["naming"] = naming
 
+        layout = str(cfg.get("layout", "frames")).lower()
+        if layout not in {"single", "frames", "stack"}:
+            raise ValueError(f"Unsupported layout: {layout}")
+        cfg["layout"] = layout
+
         collision = str(cfg.get("collision", "suffix"))
         if collision not in {"suffix", "overwrite", "error"}:
             raise ValueError(f"Unsupported collision: {collision}")
@@ -170,6 +361,9 @@ class BatchResultExporter:
             exclude = []
         cfg["include"] = [str(item) for item in include]
         cfg["exclude"] = [str(item) for item in exclude]
+        cfg["source_base_name"] = (
+            str(cfg.get("source_base_name")).strip() if cfg.get("source_base_name") is not None else None
+        )
         cfg["write_manifest"] = bool(cfg.get("write_manifest", True))
         return cfg
 

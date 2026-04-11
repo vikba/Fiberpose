@@ -75,21 +75,21 @@ class PlotProfileDialog(QtWidgets.QDialog):
         super().closeEvent(event)
 
 
-class BatchSaveOptionsDialog(QtWidgets.QDialog):
-    """Modal dialog that lets the user choose which batch artifacts to produce per sample."""
+class SaveOptionsDialog(QtWidgets.QDialog):
+    """Modal dialog for shared export options used by all save actions."""
 
     def __init__(
         self,
         parent: QtWidgets.QWidget | None = None,
-        initial_options: Dict[str, bool] | None = None,
+        initial_options: Dict[str, Any] | None = None,
     ):
         super().__init__(parent)
-        self.setWindowTitle("Batch export options")
+        self.setWindowTitle("Save options")
         self.setModal(True)
 
         layout = QtWidgets.QVBoxLayout(self)
         info_label = QtWidgets.QLabel(
-            "Select the result files to save for each processed image."
+            "These options apply to all exports: single image, folder batch, and stack save."
         )
         info_label.setWordWrap(True)
         layout.addWidget(info_label)
@@ -103,8 +103,8 @@ class BatchSaveOptionsDialog(QtWidgets.QDialog):
             "style_vector": QtWidgets.QCheckBox("Style vector (.npy)"),
         }
 
-        defaults = initial_options or {}
-        default_states = {
+        defaults = initial_options if isinstance(initial_options, dict) else {}
+        default_states: Dict[str, bool] = {
             "dt": True,
             "labels": True,
             "overlay": True,
@@ -116,6 +116,30 @@ class BatchSaveOptionsDialog(QtWidgets.QDialog):
             checkbox.setChecked(defaults.get(key, default_states.get(key, True)))
             layout.addWidget(checkbox)
 
+        image_format_row = QtWidgets.QHBoxLayout()
+        image_format_row.addWidget(QtWidgets.QLabel("Image format:"))
+        self.cb_image_format = QtWidgets.QComboBox()
+        self.cb_image_format.addItems(["png", "tiff"])
+        selected_image_format = str(defaults.get("image_format", "png")).strip().lower()
+        idx_image_format = self.cb_image_format.findText(selected_image_format)
+        self.cb_image_format.setCurrentIndex(idx_image_format if idx_image_format >= 0 else 0)
+        image_format_row.addWidget(self.cb_image_format, 1)
+        layout.addLayout(image_format_row)
+
+        collision_row = QtWidgets.QHBoxLayout()
+        collision_row.addWidget(QtWidgets.QLabel("Collision policy:"))
+        self.cb_collision = QtWidgets.QComboBox()
+        self.cb_collision.addItems(["suffix", "overwrite", "error"])
+        selected_collision = str(defaults.get("collision", "suffix")).strip().lower()
+        idx_collision = self.cb_collision.findText(selected_collision)
+        self.cb_collision.setCurrentIndex(idx_collision if idx_collision >= 0 else 0)
+        collision_row.addWidget(self.cb_collision, 1)
+        layout.addLayout(collision_row)
+
+        self.chb_write_manifest = QtWidgets.QCheckBox("Write export manifest (manifest.json)")
+        self.chb_write_manifest.setChecked(bool(defaults.get("write_manifest", True)))
+        layout.addWidget(self.chb_write_manifest)
+
         button_box = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
         )
@@ -123,8 +147,12 @@ class BatchSaveOptionsDialog(QtWidgets.QDialog):
         button_box.rejected.connect(self.reject)
         layout.addWidget(button_box)
 
-    def options(self) -> Dict[str, bool]:
-        return {key: checkbox.isChecked() for key, checkbox in self._checkboxes.items()}
+    def options(self) -> Dict[str, Any]:
+        options: Dict[str, Any] = {key: checkbox.isChecked() for key, checkbox in self._checkboxes.items()}
+        options["image_format"] = self.cb_image_format.currentText().strip().lower() or "png"
+        options["collision"] = self.cb_collision.currentText().strip().lower() or "suffix"
+        options["write_manifest"] = bool(self.chb_write_manifest.isChecked())
+        return options
 
 
 class ConfigEditorDialog(QtWidgets.QDialog):
@@ -177,6 +205,11 @@ class ConfigEditorDialog(QtWidgets.QDialog):
             "label": "Grad quality points (JSON list)",
             "kind": "json_list",
             "tooltip": "Signed-error breakpoints [p0, p1, p2, p3] for DT gradient quality view.",
+        },
+        "save_options": {
+            "label": "Save options (JSON object)",
+            "kind": "json",
+            "tooltip": "Shared export options for single-image, folder, and stack saves.",
         },
     }
 
