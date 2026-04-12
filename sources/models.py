@@ -1,19 +1,46 @@
-"""Model wrapper utilities for loading checkpoints and running ResUnet inference."""
+"""Inference wrapper for Fiberpose ResUnet checkpoints."""
 
-# app/nn_predictor.py
+from __future__ import annotations
+
 import logging
 import os
 from typing import Optional
+
 import numpy as np
 import torch
 from torch.amp import autocast
 
-from .resunet import ResUnet, parse_nbase, _safe_torch_load, torch_GPU, torch_CPU
+from .resunet import ResUnet, parse_nbase, torch_GPU, torch_CPU
 
 logger = logging.getLogger(__name__)
 
+
+def _resolve_device(
+    device: Optional[torch.device | str] = None,
+    cpu: bool = False,
+) -> torch.device:
+    if device is not None:
+        dev = torch.device(device) if not isinstance(device, torch.device) else device
+        if dev.type == "cuda" and not torch.cuda.is_available():
+            logger.warning("Requested CUDA but no CUDA device is available; falling back to CPU.")
+            return torch_CPU
+        return dev
+    if cpu:
+        return torch_CPU
+    return torch_GPU if torch.cuda.is_available() else torch_CPU
+
+
+def _resolve_amp_dtype(device: torch.device, fp16: bool) -> torch.dtype:
+    if device.type != "cuda":
+        return torch.float32
+    if fp16:
+        return torch.float16
+    return torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
+
+
 class FiberposeModel:
-    """Wrap model lifecycle operations for fiberpose."""
+    """Thin inference wrapper around ResUnet."""
+
     def __init__(
         self,
         ckpt_path: str,
@@ -28,102 +55,50 @@ class FiberposeModel:
         concat_style: bool = False,
         checkpointing: bool = False,
         dropout: bool = False,
-        cpu: bool = False,            # kept for back-compat; ignored if `device` given
+        cpu: bool = False,
         amp: bool = True,
         fp16: bool = False,
-        device: Optional[torch.device | str] = None,  # NEW: 'cuda', 'cuda:1', 'cpu', etc.
+        device: Optional[torch.device | str] = None,
     ):
-        """Initialize fiberpose model and establish required runtime state.
-        
-        Args:
-            ckpt_path (str): Filesystem location describing where ckpt path is read or written.
-            nbase (str): Value for nbase interpreted by this routine.
-            nout (int): Value for nout interpreted by this routine.
-            sz (int): Value for sz interpreted by this routine.
-            pool_kernel (int): Value for pool kernel interpreted by this routine.
-            scale (int): Numeric control parameter for scale during computation.
-            dilation (int): Value for dilation interpreted by this routine.
-            residual_on (bool): Value for residual on interpreted by this routine.
-            style_on (bool): Value for style on interpreted by this routine.
-            concat_style (bool): Value for concat style interpreted by this routine.
-            checkpointing (bool): Value for checkpointing interpreted by this routine.
-            dropout (bool): Value for dropout interpreted by this routine.
-            cpu (bool): Value for cpu interpreted by this routine.
-            amp (bool): Value for amp interpreted by this routine.
-            fp16 (bool): Value for fp16 interpreted by this routine.
-            device (Optional[torch.device | str]): Execution target device (for example CPU or CUDA).
-        
-        Returns:
-            Any: Object containing the init outcome for downstream use.
-        
-        Raises:
-            FileNotFoundError: If an expected file or directory cannot be located."""
         if not os.path.isfile(ckpt_path):
             raise FileNotFoundError(f"Checkpoint not found: {ckpt_path}")
 
-        # ---- resolve device (prefers explicit `device`, else legacy `cpu`, else auto) ----
-        def _resolve_device(dev_arg, legacy_cpu_flag):
-            """Provide an internal helper for resolve device.
-            
-            Args:
-                dev_arg (Any): Value for dev arg interpreted by this routine.
-                legacy_cpu_flag (Any): Value for legacy cpu flag interpreted by this routine.
-            
-            Returns:
-                Any: Object containing the resolve device outcome for downstream use."""
-            if dev_arg is not None:
-                d = torch.device(dev_arg) if not isinstance(dev_arg, torch.device) else dev_arg
-                if d.type == "cuda" and not torch.cuda.is_available():
-                    print("[WARN] Requested CUDA but no CUDA available; falling back to CPU.")
-                    return torch_CPU
-                return d
-            if legacy_cpu_flag:
-                return torch_CPU
-            return torch_GPU if torch.cuda.is_available() else torch_CPU
-
-        self.device = _resolve_device(device, cpu)
-
-        # ---- AMP config (only meaningful on CUDA) ----
-        self.use_amp = (self.device.type == "cuda") and amp
-        if self.device.type == "cuda":
-            if fp16:
-                self.amp_dtype = torch.float16
-            else:
-                self.amp_dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
-        else:
-            self.amp_dtype = torch.float32  # not used unless you later enable CPU autocast
+        self.device = _resolve_device(device=device, cpu=cpu)
+        self.use_amp = (self.device.type == "cuda") and bool(amp)
+        self.amp_dtype = _resolve_amp_dtype(self.device, fp16=fp16)
 
         self.nbase_str = nbase
         self.nbase = parse_nbase(nbase)
         self.nout = int(nout)
 
         self.model = ResUnet(
-            nbase=self.nbase, nout=self.nout, sz=sz,
-            residual_on=residual_on, style_on=style_on, concatenation=concat_style,
-            mkldnn=False, dim=2, checkpoint=checkpointing, dropout=dropout,
-            kernel_size=pool_kernel, scale_factor=scale, dilation=dilation,
+            nbase=self.nbase,
+            nout=self.nout,
+            sz=sz,
+            residual_on=residual_on,
+            style_on=style_on,
+            concatenation=concat_style,
+            mkldnn=False,
+            dim=2,
+            checkpoint=checkpointing,
+            dropout=dropout,
+            kernel_size=pool_kernel,
+            scale_factor=scale,
+            dilation=dilation,
         ).to(self.device)
 
         try:
-            self.model.load_model(ckpt_path, cpu=(self.device.type == "cpu"))
-        except Exception as exc:
+            self.model.load_model(ckpt_path, map_location=self.device, strict=True)
+        except Exception:
             logger.exception("Failed to load checkpoint '%s'", ckpt_path)
             raise
-        logger.info("Loaded checkpoint '%s' on device '%s'", ckpt_path, self.device)
+
         self.model.eval()
+        logger.info("Loaded checkpoint '%s' on device '%s'", ckpt_path, self.device)
 
     @torch.no_grad()
     def predict(self, img: np.ndarray, return_style: bool = False):
-        """Orchestrate predict within the current module workflow.
-        
-        Args:
-            img (np.ndarray): Value for img interpreted by this routine.
-            return_style (bool): Value for return style interpreted by this routine.
-        
-        Returns:
-            Any: Object containing the predict outcome for downstream use."""
-        in_ch = self.nbase[0]
-        arr = self._prep_input(img, in_ch)
+        arr = self._prep_input(img, self.nbase[0])
         x = torch.from_numpy(arr[None, ...]).to(self.device)
 
         if self.use_amp:
@@ -132,60 +107,52 @@ class FiberposeModel:
         else:
             y, style = self.model(x)
 
-        y = y.detach().cpu().numpy()
-        dt = y[0, 2, ...].astype(np.float32)
+        y_np = y.detach().cpu().numpy()
+        dt = y_np[0, 2].astype(np.float32)
+
         if not return_style:
             return dt
 
         style_vec = style.detach().cpu().numpy()
         if style_vec.ndim > 1:
             style_vec = style_vec[0]
-        style_vec = np.asarray(style_vec, dtype=np.float32, copy=False)
-        return dt, style_vec
-
+        return dt, np.asarray(style_vec, dtype=np.float32, copy=False)
 
     @staticmethod
     def _prep_input(x: np.ndarray, in_channels: int) -> np.ndarray:
-        """Provide an internal helper for prep input.
-        
-        Args:
-            x (np.ndarray): Coordinate component representing the x axis value.
-            in_channels (int): Value for in channels interpreted by this routine.
-        
-        Returns:
-            np.ndarray: Array containing the prep input output aligned with downstream expectations.
-        
-        Raises:
-            ValueError: If provided values violate validation or domain constraints."""
         if x.ndim == 2:
-            arr = x.astype(np.float32)[None, ...]  # (1,H,W)
+            arr = x.astype(np.float32)[None, ...]
+
         elif x.ndim == 3:
             if x.shape[2] == in_channels:
                 arr = np.transpose(x, (2, 0, 1)).astype(np.float32)
-            else:
-                if in_channels == 1:
-                    if x.shape[2] >= 3:
-                        r,g,b = x[...,0], x[...,1], x[...,2]
-                        arr = (0.2126*r + 0.7152*g + 0.0722*b).astype(np.float32)[None, ...]
-                    else:
-                        arr = x[...,0:1].astype(np.float32).transpose(2,0,1)
-                elif in_channels == 3:
-                    if x.shape[2] == 1:
-                        arr = np.repeat(x, 3, axis=2).astype(np.float32).transpose(2,0,1)
-                    else:
-                        arr = x[..., :3].astype(np.float32).transpose(2,0,1)
-                else:
-                    raise ValueError(f"Unsupported channel adapt; in_channels={in_channels}, x.shape={x.shape}")
-        else:
-            raise ValueError(f"Unsupported input shape {x.shape}")
 
-        vmin, vmax = float(np.min(arr)), float(np.max(arr))
+            elif in_channels == 1:
+                if x.shape[2] >= 3:
+                    r, g, b = x[..., 0], x[..., 1], x[..., 2]
+                    gray = 0.2126 * r + 0.7152 * g + 0.0722 * b
+                    arr = gray.astype(np.float32)[None, ...]
+                else:
+                    arr = x[..., 0:1].astype(np.float32).transpose(2, 0, 1)
+
+            elif in_channels == 3:
+                if x.shape[2] == 1:
+                    arr = np.repeat(x, 3, axis=2).astype(np.float32).transpose(2, 0, 1)
+                else:
+                    arr = x[..., :3].astype(np.float32).transpose(2, 0, 1)
+
+            else:
+                raise ValueError(
+                    f"Unsupported channel adaptation: in_channels={in_channels}, x.shape={x.shape}"
+                )
+        else:
+            raise ValueError(f"Unsupported input shape: {x.shape}")
+
+        vmin = float(np.min(arr))
+        vmax = float(np.max(arr))
         if vmax > vmin:
             arr = (arr - vmin) / (vmax - vmin + 1e-12)
         else:
             arr = np.zeros_like(arr, dtype=np.float32)
-        return arr.astype(np.float32)
-    
-    def train(self):
-        """Orchestrate train within the current module workflow."""
-        pass
+
+        return arr.astype(np.float32, copy=False)
