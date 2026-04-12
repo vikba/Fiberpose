@@ -28,6 +28,7 @@ class AppConfig:
     # --- Segmentation Params ---
     segmentation_mode: str = "watershed"
     seg_threshold: int = 1
+    invert_input: bool = False
     
     # --- Analysis & Physical Units ---
     sample_spacing: float = 5.0

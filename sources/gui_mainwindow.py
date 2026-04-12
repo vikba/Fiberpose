@@ -257,6 +257,7 @@ class MainWindow(QMainWindow):
 
         # react to checkbox changes at runtime
         self.chb_usegpu.toggled.connect(self._on_usegpu_toggled)
+        self.chb_invert.toggled.connect(self._on_invert_toggled)
         self.chb_cluster.toggled.connect(self._on_cluster_toggled)
         self._on_cluster_toggled(self.chb_cluster.isChecked())
         self.rb_watershed.toggled.connect(self._on_segmentation_mode_changed)
@@ -293,6 +294,7 @@ class MainWindow(QMainWindow):
 
         # Checkboxes and Radio Buttons
         self.chb_usegpu.toggled.connect(self.sync_ui_to_config)
+        self.chb_invert.toggled.connect(self.sync_ui_to_config)
         self.chb_strict.toggled.connect(self.sync_ui_to_config)
         self.chb_cluster.toggled.connect(self.sync_ui_to_config)
         
@@ -612,7 +614,7 @@ class MainWindow(QMainWindow):
         # specifically for this frame's original image.
         try:
             self.analyzer.predict_dt(
-                image=self.current_frame.orig_img,
+                image=self._image_for_inference(self.current_frame.orig_img),
                 max_angle_deg=max_angle,
                 centerline_kwargs=centerline_kwargs or None,
             )
@@ -658,6 +660,14 @@ class MainWindow(QMainWindow):
             logger.info("[Batch] %s: %s", title, message)
         else:
             QtWidgets.QMessageBox.information(self, title, message)
+
+    def _image_for_inference(self, image: np.ndarray | None) -> np.ndarray | None:
+        if image is None or not bool(getattr(self.config, "invert_input", False)):
+            return image
+        try:
+            return cv2.bitwise_not(image)
+        except Exception:
+            return np.max(image) - image
 
     def _show_warning(self, title: str, message: str):
         """Provide an internal helper for show warning.
@@ -901,6 +911,7 @@ class MainWindow(QMainWindow):
                 "strict_centerlines": bool(self.config.strict_centerlines),
                 "segmentation_mode": str(self.config.segmentation_mode),
                 "seg_threshold": int(self.config.seg_threshold),
+                "invert_input": bool(getattr(self.config, "invert_input", False)),
                 "sample_spacing": float(self.config.sample_spacing),
                 "cluster_enabled": bool(self.config.cluster_enabled),
                 "cluster_params": cluster_params,
@@ -2280,7 +2291,7 @@ class MainWindow(QMainWindow):
             logger.info("Starting Distance transform prediction.")
             try:
                 self.analyzer.predict_dt(
-                    image=processing_img,
+                    image=self._image_for_inference(processing_img),
                     max_angle_deg=max_angle,
                     centerline_kwargs=centerline_params,
                 )
@@ -3238,6 +3249,12 @@ class MainWindow(QMainWindow):
             device = torch.device('cuda' if self.config.use_gpu else 'cpu')
             self.analyzer.set_device(device)
 
+    def _on_invert_toggled(self, checked: bool):
+        self.config.invert_input = bool(checked)
+        if self.analyzer is not None:
+            self.analyzer.reset_prediction_state()
+        self.current_frame.clear_prediction()
+
     def _on_segmentation_mode_changed(self, checked: bool | None = None):
         """Handle the segmentation mode changed event and propagate UI state updates.
         
@@ -3399,6 +3416,7 @@ class MainWindow(QMainWindow):
         # Model & Hardware
         self.config.checkpoint_path = self.cb_model.currentText().strip()
         self.config.use_gpu = self.chb_usegpu.isChecked()
+        self.config.invert_input = self.chb_invert.isChecked()
         self.config.scale_label = self.cb_scale.currentText().strip()
 
         # Centerline Params
@@ -3450,6 +3468,9 @@ class MainWindow(QMainWindow):
         self.chb_usegpu.blockSignals(True)
         self.chb_usegpu.setChecked(bool(cfg.use_gpu))
         self.chb_usegpu.blockSignals(False)
+        self.chb_invert.blockSignals(True)
+        self.chb_invert.setChecked(bool(getattr(cfg, "invert_input", False)))
+        self.chb_invert.blockSignals(False)
         
         set_combo_text(self.cb_scale, cfg.scale_label)
 

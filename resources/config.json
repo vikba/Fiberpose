@@ -6,6 +6,7 @@
     "strict_centerlines": false,
     "segmentation_mode": "watershed",
     "seg_threshold": 1,
+    "invert_input": true,
     "sample_spacing": 5.0,
     "render3d_max_display_voxels": 8000000,
     "render3d_max_display_edge": 320,
