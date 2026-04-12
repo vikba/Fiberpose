@@ -32,15 +32,7 @@ class BatchResultExporter:
         output_dir: str,
         export_config: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        """Persist all using the configured export strategy.
-        
-        Args:
-            batch_result (Any): Value for batch result interpreted by this routine.
-            output_dir (str): Filesystem location describing where output dir is read or written.
-            export_config (dict[str, Any] | None): Configuration values that control how export config is processed.
-        
-        Returns:
-            dict[str, Any]: Mapping containing named save all outputs and metadata."""
+        """Export configured artifacts for all frames (or as stacks) and return a save manifest."""
         cfg = self._normalize_export_config(export_config or self.export_config)
         artifacts = self._resolve_artifacts(cfg)
 

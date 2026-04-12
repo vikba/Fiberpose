@@ -294,7 +294,6 @@ class MainWindow(QMainWindow):
 
         # Checkboxes and Radio Buttons
         self.chb_usegpu.toggled.connect(self.sync_ui_to_config)
-        self.chb_invert.toggled.connect(self.sync_ui_to_config)
         self.chb_strict.toggled.connect(self.sync_ui_to_config)
         self.chb_cluster.toggled.connect(self.sync_ui_to_config)
         
@@ -662,7 +661,7 @@ class MainWindow(QMainWindow):
             QtWidgets.QMessageBox.information(self, title, message)
 
     def _image_for_inference(self, image: np.ndarray | None) -> np.ndarray | None:
-        if image is None or not bool(getattr(self.config, "invert_input", False)):
+        if image is None or not bool(self.chb_invert.isChecked()):
             return image
         try:
             return cv2.bitwise_not(image)
@@ -911,10 +910,12 @@ class MainWindow(QMainWindow):
                 "strict_centerlines": bool(self.config.strict_centerlines),
                 "segmentation_mode": str(self.config.segmentation_mode),
                 "seg_threshold": int(self.config.seg_threshold),
-                "invert_input": bool(getattr(self.config, "invert_input", False)),
                 "sample_spacing": float(self.config.sample_spacing),
                 "cluster_enabled": bool(self.config.cluster_enabled),
                 "cluster_params": cluster_params,
+            },
+            "runtime": {
+                "invert_input": bool(self.chb_invert.isChecked()),
             },
             "sample_properties": {
                 "spacing_zyx": spacing_zyx,
@@ -1049,14 +1050,7 @@ class MainWindow(QMainWindow):
             )
 
     def open_source(self, path: str | None = None, source_kind: str = "auto") -> ImageBatch | None:
-        """Orchestrate open source within the current module workflow.
-        
-        Args:
-            path (str | None): Filesystem location describing where path is read or written.
-            source_kind (str): Value for source kind interpreted by this routine.
-        
-        Returns:
-            ImageBatch | None: Result object produced by the open source routine."""
+        """Load an image file/folder/stack source and initialize frame/batch state."""
         selected_path = path
 
         if selected_path is None:
@@ -2218,7 +2212,7 @@ class MainWindow(QMainWindow):
     # ------------------- Segmentation -------------------
 
     def segment(self):
-        """Orchestrate segment within the current module workflow."""
+        """Run the segmentation workflow for the current frame or active batch."""
         fr = self.current_frame
 
         if self._image_batch is not None and not self._is_batch_processing:
@@ -2250,7 +2244,7 @@ class MainWindow(QMainWindow):
         scale_changed = not (previous_scale == target_scale)
 
         if scale_changed:
-            self.analyzer.reset_prediction_state()
+            self.analyzer._reset_prediction_state()
             fr.clear_prediction()
 
         
@@ -2287,7 +2281,7 @@ class MainWindow(QMainWindow):
 
         self._set_progress_bar(0.0)
 
-        if not self.analyzer.dt_predicted():
+        if not self.analyzer._has_dt_prediction():
             logger.info("Starting Distance transform prediction.")
             try:
                 self.analyzer.predict_dt(
@@ -2436,7 +2430,7 @@ class MainWindow(QMainWindow):
         scale_mismatch = (
             self.analyzer is not None
             and fr.has_segmentation
-            and self.analyzer.dt_predicted()
+            and self.analyzer._has_dt_prediction()
             and not math.isclose(current_scale, target_scale, rel_tol=1e-6, abs_tol=1e-6)
         )
 
@@ -3169,7 +3163,7 @@ class MainWindow(QMainWindow):
     def _reset_processing_state(self, preserve_original: bool = False):
         """Reset analyzer + frame processing state, without touching UI widgets/charts."""
         if self.analyzer is not None:
-            self.analyzer.reset_prediction_state()
+            self.analyzer._reset_prediction_state()
 
         preserved_orig = self.current_frame.orig_img if preserve_original else None
         preserved_frame_id = self.current_frame.frame_id if preserve_original else ""
@@ -3250,9 +3244,8 @@ class MainWindow(QMainWindow):
             self.analyzer.set_device(device)
 
     def _on_invert_toggled(self, checked: bool):
-        self.config.invert_input = bool(checked)
         if self.analyzer is not None:
-            self.analyzer.reset_prediction_state()
+            self.analyzer._reset_prediction_state()
         self.current_frame.clear_prediction()
 
     def _on_segmentation_mode_changed(self, checked: bool | None = None):
@@ -3416,7 +3409,6 @@ class MainWindow(QMainWindow):
         # Model & Hardware
         self.config.checkpoint_path = self.cb_model.currentText().strip()
         self.config.use_gpu = self.chb_usegpu.isChecked()
-        self.config.invert_input = self.chb_invert.isChecked()
         self.config.scale_label = self.cb_scale.currentText().strip()
 
         # Centerline Params
@@ -3468,9 +3460,6 @@ class MainWindow(QMainWindow):
         self.chb_usegpu.blockSignals(True)
         self.chb_usegpu.setChecked(bool(cfg.use_gpu))
         self.chb_usegpu.blockSignals(False)
-        self.chb_invert.blockSignals(True)
-        self.chb_invert.setChecked(bool(getattr(cfg, "invert_input", False)))
-        self.chb_invert.blockSignals(False)
         
         set_combo_text(self.cb_scale, cfg.scale_label)
 

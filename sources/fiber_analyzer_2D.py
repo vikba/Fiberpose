@@ -98,22 +98,17 @@ class FiberAnalyzer_2D:
         }
 
         self.scale_factor: float = 1.0
-        self.reset_prediction_state()
+        self._reset_prediction_state()
 
     # ------------------------------------------------------------------ #
     # Internal helpers / state
 
-    def dt_predicted(self):
-        """Orchestrate dt predicted within the current module workflow.
-        
-        Returns:
-            Any: Object containing the dt predicted outcome for downstream use."""
-        if self._dt is not None:
-            return True
-        return False
+    def _has_dt_prediction(self) -> bool:
+        """Return whether a distance-transform prediction is currently cached."""
+        return self._dt is not None
 
-    def reset_prediction_state(self):
-        """Orchestrate reset prediction state within the current module workflow."""
+    def _reset_prediction_state(self) -> None:
+        """Clear all cached prediction, segmentation, and analysis state."""
         self._dt: Optional[np.ndarray] = None
         self._dt_u8: Optional[np.ndarray] = None
         self._dt_norm: Optional[np.ndarray] = None
@@ -184,7 +179,7 @@ class FiberAnalyzer_2D:
             return
         self.ckpt_path = ckpt_path
         self._predictor = None
-        self.reset_prediction_state()
+        self._reset_prediction_state()
         logger.info("FiberAnalyzer_2D checkpoint switched to %s", ckpt_path)
 
     def _ensure_predictor(self) -> FiberposeModel:
@@ -286,7 +281,7 @@ class FiberAnalyzer_2D:
         if image is None:
             raise ValueError("Input image is None.")
 
-        self.reset_prediction_state()
+        self._reset_prediction_state()
 
         dt, style_vec = self._run_model(image)
         dt_smooth = gaussian_filter(dt, sigma=float(smooth_sigma))
@@ -540,7 +535,7 @@ class FiberAnalyzer_2D:
         params: Optional[Dict[str, Any]] = None,
     ) -> np.ndarray:
         """
-        Dispatch segmentation by mode.
+        Run segmentation from cached prediction/centerline state.
 
         Supported modes:
             - watershed: params = {"threshold_u8": int}
@@ -1222,7 +1217,7 @@ class FiberAnalyzer_2D:
 
     def analyze(self, constant_segments: Optional[List[np.ndarray]] = None, spacing_px: float = 5.0):
         """
-        Backward-compatible wrapper over `analyze_from_signatures(...)`.
+        Run thickness/orientation sampling on current centerline segments.
 
         Returns:
           - radius_samples: list of (y, x, r)

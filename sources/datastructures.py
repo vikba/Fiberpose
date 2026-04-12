@@ -28,7 +28,6 @@ class AppConfig:
     # --- Segmentation Params ---
     segmentation_mode: str = "watershed"
     seg_threshold: int = 1
-    invert_input: bool = False
     
     # --- Analysis & Physical Units ---
     sample_spacing: float = 5.0
@@ -93,7 +92,9 @@ class AppConfig:
             valid_keys = set(cls.__dataclass_fields__)
             unknown_keys = sorted(set(data.keys()) - valid_keys)
             if unknown_keys:
-                raise ValueError(f"Unknown config key(s): {', '.join(unknown_keys)}")
+                if strict:
+                    raise ValueError(f"Unknown config key(s): {', '.join(unknown_keys)}")
+                data = {k: v for k, v in data.items() if k in valid_keys}
             return cls(**data)
         except FileNotFoundError:
             if strict:

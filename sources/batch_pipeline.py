@@ -18,14 +18,7 @@ class BatchAnalyzer:
         batch: ImageBatch,
         frame_processor: Callable[[np.ndarray, str, int], Frame],
     ) -> BatchResult:
-        """Orchestrate analyze within the current module workflow.
-        
-        Args:
-            batch (ImageBatch): Value for batch interpreted by this routine.
-            frame_processor (Callable[[np.ndarray, str, int], Frame]): Array-like data carrying frame processor values for analysis.
-        
-        Returns:
-            BatchResult: Result object produced by the analyze routine."""
+        """Run per-frame processing across an `ImageBatch` and collect `Frame` results."""
         results: List[Frame] = []
         z_indices = batch.metadata.get("z_indices", list(range(len(batch))))
         filenames = batch.metadata.get("filenames", [str(i) for i in range(len(batch))])
@@ -71,14 +64,7 @@ class StackAnalyzer_3D:
         *,
         force: bool = False,
     ) -> BatchResult:
-        """Orchestrate process within the current module workflow.
-        
-        Args:
-            batch_result (BatchResult): Value for batch result interpreted by this routine.
-            force (bool): Boolean flag that toggles force behavior.
-        
-        Returns:
-            BatchResult: Result object produced by the process routine."""
+        """Build semantic 3D outputs (volume + skeleton) from per-slice segmentation results."""
         if batch_result.has_3d_outputs and not force:
             return batch_result
 
