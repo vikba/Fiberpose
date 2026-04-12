@@ -71,25 +71,11 @@ class AppConfig:
                 data = json.load(f)
             if not isinstance(data, dict):
                 raise ValueError("Config JSON root must be an object.")
-            # Backward compatibility for renamed config keys.
-            if "scale_label" not in data and "scale_string" in data:
-                data["scale_label"] = data.get("scale_string")
-            # Backward compatibility for legacy save-option keys.
-            if "save_options" not in data:
-                default_save_options = cls().save_options
-                merged_save_options = dict(default_save_options)
-                pred_opts = data.get("single_predictions_save_options")
-                meas_opts = data.get("single_measurements_save_options")
-                if isinstance(pred_opts, dict):
-                    for key in ("dt", "labels", "overlay", "debug", "outline", "samples", "style_vector"):
-                        if key in pred_opts:
-                            merged_save_options[key] = bool(pred_opts.get(key))
-                if isinstance(meas_opts, dict) and "samples" in meas_opts:
-                    merged_save_options["samples"] = bool(meas_opts.get("samples"))
-                data["save_options"] = merged_save_options
-            valid_keys = {k for k in cls.__dataclass_fields__}
-            filtered_data = {k: v for k, v in data.items() if k in valid_keys}
-            return cls(**filtered_data)
+            valid_keys = set(cls.__dataclass_fields__)
+            unknown_keys = sorted(set(data.keys()) - valid_keys)
+            if unknown_keys:
+                raise ValueError(f"Unknown config key(s): {', '.join(unknown_keys)}")
+            return cls(**data)
         except FileNotFoundError:
             if strict:
                 raise

@@ -1,32 +1,32 @@
 {
-    "checkpoint_path": "checkpoints/fiber_epoch_4500.pt",
+    "checkpoint_path": "checkpoints/fiber_2000_epoch.pt",
     "use_gpu": true,
     "scale_label": "1x",
     "max_angle_deg": 30.0,
     "strict_centerlines": false,
     "segmentation_mode": "watershed",
     "seg_threshold": 1,
-    "sample_spacing": 6.0,
-    "render3d_max_display_voxels": 800000000,
-    "render3d_max_display_edge": 1500,
+    "sample_spacing": 5.0,
+    "render3d_max_display_voxels": 8000000,
+    "render3d_max_display_edge": 320,
     "cluster_enabled": false,
     "cluster_params": {},
     "grad_quality_points": [
         -0.35,
-        -0.1,
-        0.1,
+        -0.08,
+        0.08,
         0.35
     ],
     "save_options": {
-        "dt": true,
-        "labels": false,
-        "overlay": false,
-        "debug": false,
-        "outline": true,
-        "samples": true,
-        "style_vector": true,
-        "image_format": "png",
         "collision": "suffix",
-        "write_manifest": false
+        "debug": true,
+        "dt": true,
+        "image_format": "png",
+        "labels": true,
+        "outline": false,
+        "overlay": true,
+        "samples": true,
+        "style_vector": false,
+        "write_manifest": true
     }
 }
