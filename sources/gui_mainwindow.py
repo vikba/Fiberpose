@@ -220,7 +220,6 @@ class MainWindow(QMainWindow):
 
         self.btn_segment.clicked.connect(self.segment)
         self.btn_analyze_2D.clicked.connect(self.analyze_fibers)
-        self.btn_save_csv.clicked.connect(self.save_measurements)
         self.btn_set_scalebar.clicked.connect(self._on_set_scalebar_clicked)
         self.btn_plot_profile.clicked.connect(self._on_plot_profile_clicked)
         self.btn_analyze_3D.clicked.connect(self._on_analyze_3d_clicked)
@@ -233,9 +232,8 @@ class MainWindow(QMainWindow):
         # Set default checkpoint
         self._init_checkpoint_selector()
 
-        # Disable saves initially
-        self.action_save_masks_predictions.setEnabled(False)
-        self.action_save_measurements.setEnabled(False)
+        # Disable saves initially.
+        self._refresh_save_actions()
 
         self.resize(1100, 800)
         self.refresh_view()
@@ -961,8 +959,7 @@ class MainWindow(QMainWindow):
             return defaults
 
         normalized = dict(defaults)
-        artifact_keys = ("dt", "labels", "overlay", "debug", "outline", "samples", "style_vector")
-        for key in artifact_keys:
+        for key in cls._save_artifact_keys():
             if key in raw_options:
                 normalized[key] = bool(raw_options.get(key))
 
@@ -974,6 +971,10 @@ class MainWindow(QMainWindow):
 
         normalized["write_manifest"] = bool(raw_options.get("write_manifest", defaults["write_manifest"]))
         return normalized
+
+    @staticmethod
+    def _save_artifact_keys() -> tuple[str, ...]:
+        return ("dt", "labels", "overlay", "debug", "outline", "samples", "style_vector")
 
     def _current_save_layout(self) -> str:
         """Return export layout based on loaded source type."""
@@ -995,8 +996,7 @@ class MainWindow(QMainWindow):
 
     @staticmethod
     def _artifact_exclude_from_save_options(options: Dict[str, Any]) -> list[str]:
-        artifact_keys = ("dt", "labels", "overlay", "debug", "outline", "samples", "style_vector")
-        return [name for name in artifact_keys if not bool(options.get(name, False))]
+        return [name for name in MainWindow._save_artifact_keys() if not bool(options.get(name, False))]
 
     def _effective_batch_result_for_save(self) -> BatchResult | None:
         layout = self._current_save_layout()
@@ -1023,20 +1023,24 @@ class MainWindow(QMainWindow):
     def _build_export_config(
         self,
         *,
+        kind: str,
         layout: str,
         save_options: Dict[str, Any],
         base_name: str | None = None,
         image_format_override: str | None = None,
     ) -> Dict[str, Any]:
+        if kind not in {"results", "csv"}:
+            raise ValueError(f"Unsupported save kind: {kind}")
         image_format = image_format_override or str(save_options.get("image_format", "png"))
         export_config: Dict[str, Any] = {
-            "preset": "full",
-            "exclude": self._artifact_exclude_from_save_options(save_options),
+            "preset": "full" if kind == "results" else "measurements",
             "collision": str(save_options.get("collision", "suffix")),
             "write_manifest": bool(save_options.get("write_manifest", True)),
             "layout": layout,
             "source_base_name": self._current_source_base_name(),
         }
+        if kind == "results":
+            export_config["exclude"] = self._artifact_exclude_from_save_options(save_options)
 
         if layout == "single":
             export_config.update(
@@ -1044,17 +1048,15 @@ class MainWindow(QMainWindow):
                     "naming": "frame_id",
                     "collision": "overwrite",
                     "base_name": base_name or self._current_source_base_name(),
-                    "image_format": "tiff" if image_format == "tiff" else "png",
                     "write_manifest": False,
                 }
             )
+            if kind == "results":
+                export_config["image_format"] = "tiff" if image_format == "tiff" else "png"
         elif layout == "frames":
-            export_config.update(
-                {
-                    "naming": "frame_id_z",
-                    "image_format": "tiff" if image_format == "tiff" else "png",
-                }
-            )
+            export_config["naming"] = "frame_id_z"
+            if kind == "results":
+                export_config["image_format"] = "tiff" if image_format == "tiff" else "png"
         elif layout == "stack":
             if base_name:
                 export_config["base_name"] = str(base_name)
@@ -1066,25 +1068,29 @@ class MainWindow(QMainWindow):
     def _prompt_save_destination(
         self,
         *,
+        kind: str,
         layout: str,
         default_base_name: str,
-        title_single: str,
-        title_multi: str,
         image_format: str,
     ) -> tuple[str, str | None, str | None] | None:
+        is_csv = kind == "csv"
         if layout == "single":
-            ext = ".tiff" if image_format == "tiff" else ".png"
+            ext = ".csv" if is_csv else (".tiff" if image_format == "tiff" else ".png")
+            title_single = "Export CSV (choose file name)" if is_csv else "Export results (choose base name)"
+            file_filter = "CSV Files (*.csv);;All Files (*)" if is_csv else "All Files (*)"
             default_path = os.path.join(self.working_dir, f"{default_base_name}{ext}")
             selected, _ = QtWidgets.QFileDialog.getSaveFileName(
                 self,
                 title_single,
                 default_path,
-                "All Files (*)",
+                file_filter,
             )
             if not selected:
                 return None
             dest_dir = os.path.dirname(selected) or self.working_dir
             base_name = os.path.splitext(os.path.basename(selected))[0] or default_base_name
+            if is_csv:
+                return dest_dir, base_name, None
             selected_ext = os.path.splitext(selected)[1].strip().lower()
             if selected_ext in {".tif", ".tiff"}:
                 image_format_override = "tiff"
@@ -1094,6 +1100,7 @@ class MainWindow(QMainWindow):
                 image_format_override = None
             return dest_dir, base_name, image_format_override
 
+        title_multi = "Export CSV to folder" if is_csv else "Export results to folder"
         dest_dir = QFileDialog.getExistingDirectory(
             self,
             title_multi,
@@ -1103,111 +1110,102 @@ class MainWindow(QMainWindow):
             return None
         return dest_dir, None, None
 
-    def _execute_save(
+    def _run_export(
         self,
         *,
         batch_result: BatchResult,
-        layout: str,
-        default_base_name: str,
-        title_single: str,
-        title_multi: str,
+        dest_dir: str,
+        export_config: Dict[str, Any],
     ) -> bool:
-        save_options = self._normalize_save_options(getattr(self.config, "save_options", {}))
-        if not any(
-            bool(save_options.get(key, False))
-            for key in ("dt", "labels", "overlay", "debug", "outline", "samples", "style_vector")
-        ):
-            self._show_warning(
-                "Nothing selected",
-                "All artifacts are disabled in File -> Save options.",
-            )
-            return False
-
-        target = self._prompt_save_destination(
-            layout=layout,
-            default_base_name=default_base_name,
-            title_single=title_single,
-            title_multi=title_multi,
-            image_format=str(save_options.get("image_format", "png")),
-        )
-        if target is None:
-            return False
-        dest_dir, base_name, image_format_override = target
-
-        export_config = self._build_export_config(
-            layout=layout,
-            save_options=save_options,
-            base_name=base_name,
-            image_format_override=image_format_override,
-        )
-
         try:
             export_result = batch_result.save_all(dest_dir, export_config)
         except Exception as exc:
-            self._show_error("Error", f"Failed to save:\n{exc}")
+            self._show_error("Error", f"Failed to export:\n{exc}")
             return False
 
         self.working_dir = dest_dir
         error_count = len(export_result.get("errors", []))
         if error_count:
             self._show_warning(
-                "Saved with issues",
-                f"Saved {export_result.get('written_count', 0)} file(s) to:\n{dest_dir}\n"
+                "Exported with issues",
+                f"Exported {export_result.get('written_count', 0)} file(s) to:\n{dest_dir}\n"
                 f"Encountered {error_count} export error(s).",
             )
             return False
 
         self._show_info(
-            "Saved",
-            f"Saved {export_result.get('written_count', 0)} file(s) to:\n{dest_dir}",
+            "Export complete",
+            f"Exported {export_result.get('written_count', 0)} file(s) to:\n{dest_dir}",
         )
         return True
 
-    def save_predictions(self):
-        batch_result = self._effective_batch_result_for_save()
+    @staticmethod
+    def _has_export_data(kind: str, batch_result: BatchResult | None) -> bool:
         if batch_result is None:
-            self._show_info("Nothing to save", "Run segmentation first.")
+            return False
+        if kind == "results":
+            return any(fr.has_prediction or fr.has_segmentation for fr in batch_result.frame_results)
+        if kind == "csv":
+            return any(
+                fr.has_measurements and fr.samples_table is not None and len(fr.samples_table) > 0
+                for fr in batch_result.frame_results
+            )
+        return False
+
+    def _refresh_save_actions(self) -> None:
+        batch_result = self._effective_batch_result_for_save()
+        has_results = self._has_export_data("results", batch_result)
+        has_csv = self._has_export_data("csv", batch_result)
+        self.action_save_masks_predictions.setEnabled(has_results)
+        self.action_save_measurements.setEnabled(has_csv)
+
+    def _save_by_kind(self, kind: str) -> None:
+        batch_result = self._effective_batch_result_for_save()
+        if not self._has_export_data(kind, batch_result):
+            message = "Run segmentation first." if kind == "results" else "Run Analyze fibers first."
+            self._show_info("Nothing to export", message)
             return
 
-        has_predictions = any(
-            fr.has_prediction or fr.has_segmentation
-            for fr in batch_result.frame_results
+        save_options = self._normalize_save_options(getattr(self.config, "save_options", {}))
+        if kind == "results" and not any(bool(save_options.get(key, False)) for key in self._save_artifact_keys()):
+            self._show_warning(
+                "Nothing selected",
+                "All artifacts are disabled in File -> Save options.",
+            )
+            return
+
+        layout = self._current_save_layout()
+        default_base_name = (self.current_image_name or "fiberpose") + (
+            "_results" if kind == "results" else "_samples"
         )
-        if not has_predictions:
-            self._show_info("Nothing to save", "Run segmentation first.")
-            return
-
-        default_base_name = (self.current_image_name or "fiberpose") + "_results"
-        self._execute_save(
-            batch_result=batch_result,
-            layout=self._current_save_layout(),
+        target = self._prompt_save_destination(
+            kind=kind,
+            layout=layout,
             default_base_name=default_base_name,
-            title_single="Save predictions (choose base name)",
-            title_multi="Save predictions to folder",
+            image_format=str(save_options.get("image_format", "png")),
         )
+        if target is None:
+            return
+        dest_dir, base_name, image_format_override = target
+
+        export_config = self._build_export_config(
+            kind=kind,
+            layout=layout,
+            save_options=save_options,
+            base_name=base_name,
+            image_format_override=image_format_override,
+        )
+        self._run_export(
+            batch_result=batch_result,
+            dest_dir=dest_dir,
+            export_config=export_config,
+        )
+
+    def save_predictions(self):
+        self._save_by_kind("results")
 
     def save_measurements(self):
-        batch_result = self._effective_batch_result_for_save()
-        if batch_result is None:
-            self._show_info("Nothing to save", "Run Analyze fibers first.")
-            return
-
-        has_measurements = any(
-            fr.has_measurements and fr.samples_table is not None and len(fr.samples_table) > 0
-            for fr in batch_result.frame_results
-        )
-        if not has_measurements:
-            self._show_info("Nothing to save", "Run Analyze fibers first.")
-            return
-
-        default_base_name = (self.current_image_name or "fiberpose") + "_measurements"
-        self._execute_save(
-            batch_result=batch_result,
-            layout=self._current_save_layout(),
-            default_base_name=default_base_name,
-            title_single="Save measurements (choose base name)",
-            title_multi="Save measurements to folder",
-        )
+        self._save_by_kind("csv")
 
 
     # ------------------- Scalebar -------------------
@@ -1473,24 +1471,13 @@ class MainWindow(QMainWindow):
             self._stack_angle_histogram_data = None
             self._stack_diameter_histogram_enabled = False
         self._set_current_slice(self._current_z_index, update_view=True)
-        self.action_save_masks_predictions.setEnabled(True)
-        if compute_measurements:
-            self.action_save_measurements.setEnabled(True)
+        self._refresh_save_actions()
         logger.info(
             "Batch %s completed successfully for %d frame(s).",
             "analysis" if compute_measurements else "segmentation",
             len(active_batch),
         )
         return batch_result
-
-    def _batch_export_config_from_save_options(self) -> Dict[str, Any]:
-        save_options = self._normalize_save_options(getattr(self.config, "save_options", {}))
-        return self._build_export_config(
-            layout="frames",
-            save_options=save_options,
-            base_name=None,
-            image_format_override=None,
-        )
 
     def _on_batch_processing(self):
         self._run_batch_processing_for_folder(None)
@@ -1513,7 +1500,14 @@ class MainWindow(QMainWindow):
         if batch_result is None:
             return
 
-        export_config = self._batch_export_config_from_save_options()
+        save_options = self._normalize_save_options(getattr(self.config, "save_options", {}))
+        export_config = self._build_export_config(
+            kind="results",
+            layout="frames",
+            save_options=save_options,
+            base_name=None,
+            image_format_override=None,
+        )
         export_result = batch_result.save_all(output_root, export_config)
 
         failures: list[tuple[str, str]] = []
@@ -1679,7 +1673,7 @@ class MainWindow(QMainWindow):
                 self._batch_result,
                 voxel_spacing_zyx=voxel_spacing_zyx,
             )
-        self.action_save_masks_predictions.setEnabled(True)
+        self._refresh_save_actions()
 
         method = stack3d_meta.get("skeleton_method")
         semantic_labels = int(stack3d_meta.get("semantic_num_labels", int(np.max(semantic_arr)) if semantic_arr.size else 0))
@@ -2055,7 +2049,7 @@ class MainWindow(QMainWindow):
         if self.cb_view.currentText() == "Original":
             self.cb_view.setCurrentText("Overlay")
 
-        self.action_save_masks_predictions.setEnabled(True)
+        self._refresh_save_actions()
 
         self.refresh_view()
         if self._is_batch_processing and not self._batch_collects_measurements:
@@ -2246,7 +2240,7 @@ class MainWindow(QMainWindow):
             f"Std angle: {std_angle_deg:.2f} deg"
         )
 
-        self.action_save_measurements.setEnabled(True)
+        self._refresh_save_actions()
         logger.info("Fiber analysis completed successfully.")
 
     # ---- single overlay renderer (kept once) ----
@@ -2807,8 +2801,7 @@ class MainWindow(QMainWindow):
         # ---- UI actions / state ----
         self._pixitem.setPixmap(QtGui.QPixmap())
 
-        self.action_save_masks_predictions.setEnabled(False)
-        self.action_save_measurements.setEnabled(False)
+        self._refresh_save_actions()
 
         if reset_view:
             self.cb_view.setCurrentText("Original")

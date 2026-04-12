@@ -280,24 +280,6 @@
         </property>
        </widget>
       </widget>
-      <widget class="QPushButton" name="btn_save_csv">
-       <property name="geometry">
-        <rect>
-         <x>130</x>
-         <y>660</y>
-         <width>101</width>
-         <height>31</height>
-        </rect>
-       </property>
-       <property name="font">
-        <font>
-         <pointsize>12</pointsize>
-        </font>
-       </property>
-       <property name="text">
-        <string>Save CSV</string>
-       </property>
-      </widget>
       <widget class="QGroupBox" name="groupBox_segmentation">
        <property name="geometry">
         <rect>
@@ -726,7 +708,6 @@
       <zorder>btn_analyze_2D</zorder>
       <zorder>btn_open_3d</zorder>
       <zorder>groupBox_measurement</zorder>
-      <zorder>btn_save_csv</zorder>
       <zorder>progress_bar</zorder>
       <zorder>text_edit2</zorder>
       <zorder>cb_view</zorder>
@@ -807,9 +788,9 @@
      <string>File</string>
     </property>
     <addaction name="action_load_image"/>
+    <addaction name="action_batch_processing"/>
     <addaction name="action_save_masks_predictions"/>
     <addaction name="action_save_measurements"/>
-    <addaction name="action_batch_processing"/>
    </widget>
    <widget class="QMenu" name="menuEdit">
     <property name="title">
@@ -837,17 +818,17 @@
   <widget class="QStatusBar" name="statusbar"/>
   <action name="action_load_image">
    <property name="text">
-    <string>Load image (*.tif, *.png, *.jpg)</string>
+    <string>Open Image/Stack</string>
    </property>
   </action>
   <action name="action_save_masks_predictions">
    <property name="text">
-    <string>Save masks and predictions</string>
+    <string>Export Segmentation Results</string>
    </property>
   </action>
   <action name="action_save_measurements">
    <property name="text">
-    <string>Save fiber measurements (CSV)</string>
+    <string>Export measurements (CSV)</string>
    </property>
   </action>
   <action name="actionAdd_custom_torch_model">
@@ -862,7 +843,7 @@
   </action>
   <action name="action_batch_processing">
    <property name="text">
-    <string>Load folder (batch processing)</string>
+    <string>Run Batch On Folder</string>
    </property>
   </action>
   <action name="action_edit">
