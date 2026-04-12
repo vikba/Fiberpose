@@ -25,8 +25,8 @@
         "labels": true,
         "outline": false,
         "overlay": true,
-        "samples": true,
         "style_vector": false,
+        "tables": true,
         "write_manifest": true
     }
 }

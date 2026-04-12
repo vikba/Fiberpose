@@ -100,7 +100,7 @@ class SaveOptionsDialog(QtWidgets.QDialog):
             "overlay": QtWidgets.QCheckBox("Overlay visualization"),
             "debug": QtWidgets.QCheckBox("Debug visualization"),
             "outline": QtWidgets.QCheckBox("Segmentation outline image"),
-            "samples": QtWidgets.QCheckBox("Samples table (CSV)"),
+            "tables": QtWidgets.QCheckBox("Measurements table (CSV)"),
             "style_vector": QtWidgets.QCheckBox("Style vector (.npy)"),
         }
 
@@ -111,7 +111,7 @@ class SaveOptionsDialog(QtWidgets.QDialog):
             "overlay": True,
             "debug": True,
             "outline": False,
-            "samples": True,
+            "tables": True,
             "style_vector": False,
         }
         for key, checkbox in self._checkboxes.items():

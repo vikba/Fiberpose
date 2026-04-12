@@ -10,11 +10,11 @@ import numpy as np
 class BatchResultExporter:
     """Persist batch/frame outputs using a small dict-based export config."""
 
-    _ALL_ARTIFACTS = ("dt", "labels", "overlay", "debug", "outline", "samples", "style_vector")
+    _ALL_ARTIFACTS = ("dt", "labels", "overlay", "debug", "outline", "tables", "style_vector")
     _PRESET_ARTIFACTS = {
         "predictions": {"dt", "labels", "overlay", "debug", "outline"},
-        "measurements": {"samples"},
-        "full": {"dt", "labels", "overlay", "debug", "outline", "samples", "style_vector"},
+        "measurements": {"tables"},
+        "full": {"dt", "labels", "overlay", "debug", "outline", "tables", "style_vector"},
     }
 
     def __init__(self, export_config: dict[str, Any] | None = None):
@@ -132,7 +132,7 @@ class BatchResultExporter:
                         path = self._resolve_output_path(output_dir, base_name, "_outline", image_ext, cfg)
                         iio.imwrite(path, np.asarray(outline_img, dtype=np.uint8))
                         written_files.append(path)
-                    elif artifact == "samples":
+                    elif artifact == "tables":
                         if frame.samples_table is None or len(frame.samples_table) == 0:
                             skipped.append(self._skip_item(frame_index, artifact, "missing_data"))
                             continue
@@ -226,7 +226,7 @@ class BatchResultExporter:
                     path = self._resolve_output_path(output_dir, base_name, "_outline", ".tiff", cfg)
                     iio.imwrite(path, np.stack(arrays, axis=0))
                     written_files.append(path)
-                elif artifact == "samples":
+                elif artifact == "tables":
                     if not any(
                         getattr(frame, "samples_table", None) is not None and len(frame.samples_table) > 0
                         for frame in frames

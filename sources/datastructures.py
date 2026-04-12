@@ -52,7 +52,7 @@ class AppConfig:
             "overlay": True,
             "debug": True,
             "outline": False,
-            "samples": True,
+            "tables": True,
             "style_vector": False,
             "image_format": "png",
             "collision": "suffix",

@@ -200,23 +200,9 @@ class MainWindow(QMainWindow):
         self.action_load_image.triggered.connect(self.load_original)
         self.action_save_masks_predictions.triggered.connect(self.save_predictions)
         self.action_save_measurements.triggered.connect(self.save_measurements)
-        self.action_save_options = QtGui.QAction("Save options...", self)
         self.action_save_options.triggered.connect(self._on_edit_save_options)
-        if hasattr(self, "menuFile"):
-            if hasattr(self, "action_batch_processing"):
-                self.menuFile.insertAction(self.action_batch_processing, self.action_save_options)
-            else:
-                self.menuFile.addAction(self.action_save_options)
-        if hasattr(self, "action_edit"):
-            self.action_edit.setText("Edit config...")
-            self.action_edit.triggered.connect(self._on_edit_config)
-        if hasattr(self, "menuEdit"):
-            self.action_load_config = QtGui.QAction("Load config...", self)
-            self.action_load_config.triggered.connect(self._on_load_config)
-            if hasattr(self, "action_edit"):
-                self.menuEdit.insertAction(self.action_edit, self.action_load_config)
-            else:
-                self.menuEdit.addAction(self.action_load_config)
+        self.action_edit_config.triggered.connect(self._on_edit_config)
+        self.action_load_config.triggered.connect(self._on_load_config)
 
         self.btn_segment.clicked.connect(self.segment)
         self.btn_analyze_2D.clicked.connect(self.analyze_fibers)
@@ -974,7 +960,7 @@ class MainWindow(QMainWindow):
 
     @staticmethod
     def _save_artifact_keys() -> tuple[str, ...]:
-        return ("dt", "labels", "overlay", "debug", "outline", "samples", "style_vector")
+        return ("dt", "labels", "overlay", "debug", "outline", "tables", "style_vector")
 
     def _current_save_layout(self) -> str:
         """Return export layout based on loaded source type."""
