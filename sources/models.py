@@ -1,3 +1,5 @@
+"""Model wrapper utilities for loading checkpoints and running ResUnet inference."""
+
 # app/nn_predictor.py
 import logging
 import os
@@ -11,6 +13,7 @@ from .resunet import ResUnet, parse_nbase, _safe_torch_load, torch_GPU, torch_CP
 logger = logging.getLogger(__name__)
 
 class FiberposeModel:
+    """Wrap model lifecycle operations for fiberpose."""
     def __init__(
         self,
         ckpt_path: str,
@@ -30,11 +33,44 @@ class FiberposeModel:
         fp16: bool = False,
         device: Optional[torch.device | str] = None,  # NEW: 'cuda', 'cuda:1', 'cpu', etc.
     ):
+        """Initialize fiberpose model and establish required runtime state.
+        
+        Args:
+            ckpt_path (str): Filesystem location describing where ckpt path is read or written.
+            nbase (str): Value for nbase interpreted by this routine.
+            nout (int): Value for nout interpreted by this routine.
+            sz (int): Value for sz interpreted by this routine.
+            pool_kernel (int): Value for pool kernel interpreted by this routine.
+            scale (int): Numeric control parameter for scale during computation.
+            dilation (int): Value for dilation interpreted by this routine.
+            residual_on (bool): Value for residual on interpreted by this routine.
+            style_on (bool): Value for style on interpreted by this routine.
+            concat_style (bool): Value for concat style interpreted by this routine.
+            checkpointing (bool): Value for checkpointing interpreted by this routine.
+            dropout (bool): Value for dropout interpreted by this routine.
+            cpu (bool): Value for cpu interpreted by this routine.
+            amp (bool): Value for amp interpreted by this routine.
+            fp16 (bool): Value for fp16 interpreted by this routine.
+            device (Optional[torch.device | str]): Execution target device (for example CPU or CUDA).
+        
+        Returns:
+            Any: Object containing the init outcome for downstream use.
+        
+        Raises:
+            FileNotFoundError: If an expected file or directory cannot be located."""
         if not os.path.isfile(ckpt_path):
             raise FileNotFoundError(f"Checkpoint not found: {ckpt_path}")
 
         # ---- resolve device (prefers explicit `device`, else legacy `cpu`, else auto) ----
         def _resolve_device(dev_arg, legacy_cpu_flag):
+            """Provide an internal helper for resolve device.
+            
+            Args:
+                dev_arg (Any): Value for dev arg interpreted by this routine.
+                legacy_cpu_flag (Any): Value for legacy cpu flag interpreted by this routine.
+            
+            Returns:
+                Any: Object containing the resolve device outcome for downstream use."""
             if dev_arg is not None:
                 d = torch.device(dev_arg) if not isinstance(dev_arg, torch.device) else dev_arg
                 if d.type == "cuda" and not torch.cuda.is_available():
@@ -78,6 +114,14 @@ class FiberposeModel:
 
     @torch.no_grad()
     def predict(self, img: np.ndarray, return_style: bool = False):
+        """Orchestrate predict within the current module workflow.
+        
+        Args:
+            img (np.ndarray): Value for img interpreted by this routine.
+            return_style (bool): Value for return style interpreted by this routine.
+        
+        Returns:
+            Any: Object containing the predict outcome for downstream use."""
         in_ch = self.nbase[0]
         arr = self._prep_input(img, in_ch)
         x = torch.from_numpy(arr[None, ...]).to(self.device)
@@ -102,6 +146,17 @@ class FiberposeModel:
 
     @staticmethod
     def _prep_input(x: np.ndarray, in_channels: int) -> np.ndarray:
+        """Provide an internal helper for prep input.
+        
+        Args:
+            x (np.ndarray): Coordinate component representing the x axis value.
+            in_channels (int): Value for in channels interpreted by this routine.
+        
+        Returns:
+            np.ndarray: Array containing the prep input output aligned with downstream expectations.
+        
+        Raises:
+            ValueError: If provided values violate validation or domain constraints."""
         if x.ndim == 2:
             arr = x.astype(np.float32)[None, ...]  # (1,H,W)
         elif x.ndim == 3:
@@ -132,4 +187,5 @@ class FiberposeModel:
         return arr.astype(np.float32)
     
     def train(self):
+        """Orchestrate train within the current module workflow."""
         pass

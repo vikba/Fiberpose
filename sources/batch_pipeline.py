@@ -1,3 +1,5 @@
+"""Batch orchestration for per-frame analysis and optional 3D post-processing."""
+
 from __future__ import annotations
 
 from time import perf_counter
@@ -16,6 +18,14 @@ class BatchAnalyzer:
         batch: ImageBatch,
         frame_processor: Callable[[np.ndarray, str, int], Frame],
     ) -> BatchResult:
+        """Orchestrate analyze within the current module workflow.
+        
+        Args:
+            batch (ImageBatch): Value for batch interpreted by this routine.
+            frame_processor (Callable[[np.ndarray, str, int], Frame]): Array-like data carrying frame processor values for analysis.
+        
+        Returns:
+            BatchResult: Result object produced by the analyze routine."""
         results: List[Frame] = []
         z_indices = batch.metadata.get("z_indices", list(range(len(batch))))
         filenames = batch.metadata.get("filenames", [str(i) for i in range(len(batch))])
@@ -38,6 +48,14 @@ class StackAnalyzer_3D:
         min_component_voxels: int = 0,
         connectivity: int = 1,
     ):
+        """Initialize stack analyzer 3 d and establish required runtime state.
+        
+        Args:
+            voxel_spacing_zyx (Sequence[float]): Value for voxel spacing zyx interpreted by this routine.
+            open_iters (int): Numeric control parameter for open iters during computation.
+            close_iters (int): Numeric control parameter for close iters during computation.
+            min_component_voxels (int): Value for min component voxels interpreted by this routine.
+            connectivity (int): Value for connectivity interpreted by this routine."""
         self.voxel_spacing_zyx = self._parse_voxel_spacing(voxel_spacing_zyx)
         self.open_iters = self._parse_nonnegative_int(open_iters, "open_iters")
         self.close_iters = self._parse_nonnegative_int(close_iters, "close_iters")
@@ -53,6 +71,14 @@ class StackAnalyzer_3D:
         *,
         force: bool = False,
     ) -> BatchResult:
+        """Orchestrate process within the current module workflow.
+        
+        Args:
+            batch_result (BatchResult): Value for batch result interpreted by this routine.
+            force (bool): Boolean flag that toggles force behavior.
+        
+        Returns:
+            BatchResult: Result object produced by the process routine."""
         if batch_result.has_3d_outputs and not force:
             return batch_result
 
@@ -120,6 +146,16 @@ class StackAnalyzer_3D:
 
     @staticmethod
     def _parse_voxel_spacing(voxel_spacing_zyx: Sequence[float]) -> tuple[float, float, float]:
+        """Provide an internal helper for parse voxel spacing.
+        
+        Args:
+            voxel_spacing_zyx (Sequence[float]): Value for voxel spacing zyx interpreted by this routine.
+        
+        Returns:
+            tuple[float, float, float]: Tuple grouping the parse voxel spacing outputs in a stable positional order.
+        
+        Raises:
+            ValueError: If provided values violate validation or domain constraints."""
         if len(voxel_spacing_zyx) != 3:
             raise ValueError("voxel_spacing_zyx must contain exactly 3 values.")
         spacing = tuple(float(v) for v in voxel_spacing_zyx)
@@ -129,6 +165,17 @@ class StackAnalyzer_3D:
 
     @staticmethod
     def _parse_nonnegative_int(value: int, name: str) -> int:
+        """Provide an internal helper for parse nonnegative int.
+        
+        Args:
+            value (int): Value for value interpreted by this routine.
+            name (str): Value for name interpreted by this routine.
+        
+        Returns:
+            int: Result object produced by the parse nonnegative int routine.
+        
+        Raises:
+            ValueError: If provided values violate validation or domain constraints."""
         try:
             out = int(value)
         except Exception as exc:
@@ -139,12 +186,29 @@ class StackAnalyzer_3D:
 
     @staticmethod
     def _parse_connectivity(value: int) -> int:
+        """Provide an internal helper for parse connectivity.
+        
+        Args:
+            value (int): Value for value interpreted by this routine.
+        
+        Returns:
+            int: Result object produced by the parse connectivity routine.
+        
+        Raises:
+            ValueError: If provided values violate validation or domain constraints."""
         out = StackAnalyzer_3D._parse_nonnegative_int(value, "connectivity")
         if out < 1 or out > 3:
             raise ValueError("connectivity must be in [1, 3] for 3D masks.")
         return out
 
     def _preprocess_binary_mask(self, binary_mask: np.ndarray) -> tuple[np.ndarray, Dict[str, Any]]:
+        """Provide an internal helper for preprocess binary mask.
+        
+        Args:
+            binary_mask (np.ndarray): Array-like data carrying binary mask values for analysis.
+        
+        Returns:
+            tuple[np.ndarray, Dict[str, Any]]: Array containing the preprocess binary mask output aligned with downstream expectations."""
         mask = np.asarray(binary_mask, dtype=bool)
         before_voxels = int(np.count_nonzero(mask))
         do_preprocess = any(
@@ -208,6 +272,15 @@ class StackAnalyzer_3D:
         min_len: int,
         max_iters: int = 2,
     ) -> np.ndarray:
+        """Provide an internal helper for prune short terminal branches.
+        
+        Args:
+            skeleton_mask (np.ndarray): Array-like data carrying skeleton mask values for analysis.
+            min_len (int): Value for min len interpreted by this routine.
+            max_iters (int): Numeric control parameter for max iters during computation.
+        
+        Returns:
+            np.ndarray: Array containing the prune short terminal branches output aligned with downstream expectations."""
         skel = np.asarray(skeleton_mask, dtype=bool).copy()
         if min_len <= 0 or max_iters <= 0 or not np.any(skel):
             return skel
@@ -296,6 +369,13 @@ class StackAnalyzer_3D:
 
     @staticmethod
     def _build_semantic_volume(frame_results: List[Frame]) -> Optional[np.ndarray]:
+        """Provide an internal helper for build semantic volume.
+        
+        Args:
+            frame_results (List[Frame]): Array-like data carrying frame results values for analysis.
+        
+        Returns:
+            Optional[np.ndarray]: Array containing the build semantic volume output aligned with downstream expectations."""
         if not frame_results:
             return None
 
@@ -331,6 +411,13 @@ class StackAnalyzer_3D:
 
     @staticmethod
     def _resolve_3d_skeletonizer() -> tuple[Callable[[np.ndarray], np.ndarray], str]:
+        """Provide an internal helper for resolve 3d skeletonizer.
+        
+        Returns:
+            tuple[Callable[[np.ndarray], np.ndarray], str]: Array containing the resolve 3d skeletonizer output aligned with downstream expectations.
+        
+        Raises:
+            RuntimeError: If runtime state prevents the operation from completing."""
         try:
             from skimage.morphology import skeletonize_3d as _skeletonize_3d
 
@@ -350,6 +437,13 @@ class StackAnalyzer_3D:
             probe_result = np.asarray(_skeletonize(probe, method="lee"), dtype=bool)
 
             def _skeletonize_lee(mask: np.ndarray) -> np.ndarray:
+                """Provide an internal helper for skeletonize lee.
+                
+                Args:
+                    mask (np.ndarray): Array-like data carrying mask values for analysis.
+                
+                Returns:
+                    np.ndarray: Array containing the skeletonize lee output aligned with downstream expectations."""
                 return np.asarray(_skeletonize(mask, method="lee"), dtype=bool)
 
             method = "skimage.morphology.skeletonize(method='lee')"
@@ -357,6 +451,13 @@ class StackAnalyzer_3D:
             probe_result = np.asarray(_skeletonize(probe), dtype=bool)
 
             def _skeletonize_lee(mask: np.ndarray) -> np.ndarray:
+                """Provide an internal helper for skeletonize lee.
+                
+                Args:
+                    mask (np.ndarray): Array-like data carrying mask values for analysis.
+                
+                Returns:
+                    np.ndarray: Array containing the skeletonize lee output aligned with downstream expectations."""
                 return np.asarray(_skeletonize(mask), dtype=bool)
 
             method = "skimage.morphology.skeletonize"

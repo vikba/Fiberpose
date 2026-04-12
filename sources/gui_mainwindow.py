@@ -1,3 +1,5 @@
+"""Main Qt window coordinating image IO, analysis workflows, and visualization state."""
+
 import os
 import math
 import json
@@ -53,6 +55,13 @@ CHECKPOINTS_DIR = os.path.join(PROJECT_ROOT, "checkpoints")
 # ------------------- Image helpers -------------------
 
 def labels_to_color(labels: np.ndarray) -> np.ndarray:
+    """Orchestrate labels to color within the current module workflow.
+    
+    Args:
+        labels (np.ndarray): Array-like data carrying labels values for analysis.
+    
+    Returns:
+        np.ndarray: Array containing the labels to color output aligned with downstream expectations."""
     if labels is None:
         return None
     labels = labels.astype(np.int64, copy=False)
@@ -82,6 +91,11 @@ class MainWindow(QMainWindow):
     - Tightened UI updates/enabling.
     """
     def __init__(self, ui_path: str = DEFAULT_UI_PATH, config_path: str = DEFAULT_CONFIG_PATH):
+        """Initialize main window with validated runtime dependencies and defaults.
+        
+        Args:
+            ui_path (str): Filesystem location used by this operation.
+            config_path (str): Filesystem location used by this operation."""
         super().__init__()
         loadUi(ui_path, self)
         self.setWindowTitle("Fiberpose — fiber segmentation and analysis tool")
@@ -299,6 +313,10 @@ class MainWindow(QMainWindow):
             self.le_voxeldepth.editingFinished.connect(self.sync_ui_to_sample_properties)
 
     def _init_checkpoint_selector(self) -> None:
+        """Provide an internal helper for init checkpoint selector.
+        
+        Returns:
+            None: Result object produced by the init checkpoint selector routine."""
         checkpoints = self._discover_checkpoint_files()
         rel_default = os.path.relpath(DEFAULT_CKPT_PATH, PROJECT_ROOT)
         self.cb_model.blockSignals(True)
@@ -319,6 +337,10 @@ class MainWindow(QMainWindow):
             self._ckpt_selector_connected = True
 
     def _on_checkpoint_selection_changed(self, index: int):
+        """Handle the heckpoint selection changed event and propagate UI state updates.
+        
+        Args:
+            index (int): Zero-based position used to select an item."""
         new_path = self._current_checkpoint_path()
         if not new_path:
             return
@@ -339,6 +361,10 @@ class MainWindow(QMainWindow):
             logger.info("Checkpoint selection stored for later init: %s", new_path)
 
     def _discover_checkpoint_files(self) -> list[str]:
+        """Provide an internal helper for discover checkpoint files.
+        
+        Returns:
+            list[str]: List of discover checkpoint files results produced for downstream iteration."""
         if not os.path.isdir(CHECKPOINTS_DIR):
             return []
         candidates = []
@@ -351,6 +377,10 @@ class MainWindow(QMainWindow):
         return candidates
 
     def _current_checkpoint_path(self) -> str | None:
+        """Provide an internal helper for current checkpoint path.
+        
+        Returns:
+            str | None: Result object produced by the current checkpoint path routine."""
         entry = self.cb_model.currentText().strip()
         if not entry:
             return None
@@ -362,6 +392,10 @@ class MainWindow(QMainWindow):
     # ------------------- Display helpers -------------------
 
     def _set_pixmap_from_array(self, img: np.ndarray | None):
+        """Provide an internal helper for set pixmap from array.
+        
+        Args:
+            img (np.ndarray | None): Value for img interpreted by this routine."""
         prev_shape = self._pixmap_source_shape
         if img is None:
             self._pixitem.setPixmap(QtGui.QPixmap())
@@ -386,6 +420,10 @@ class MainWindow(QMainWindow):
         self._update_reset_button_position()
 
     def resizeEvent(self, event):
+        """Handle the Qt resize event for this widget.
+        
+        Args:
+            event (Any): Value for event interpreted by this routine."""
         super().resizeEvent(event)
         self._update_reset_button_position()
         if not self._zoom_mode_active:
@@ -393,6 +431,13 @@ class MainWindow(QMainWindow):
 
     @staticmethod
     def _numpy_to_qimage(img: np.ndarray) -> QtGui.QImage:
+        """Provide an internal helper for numpy to qimage.
+        
+        Args:
+            img (np.ndarray): Value for img interpreted by this routine.
+        
+        Returns:
+            QtGui.QImage: Result object produced by the numpy to qimage routine."""
         if img.ndim == 2:
             u8 = np.ascontiguousarray(img.astype(np.uint8, copy=False))
             h, w = u8.shape
@@ -412,6 +457,10 @@ class MainWindow(QMainWindow):
 
         
     def _fit_view_to_pixmap(self, force: bool = False):
+        """Provide an internal helper for fit view to pixmap.
+        
+        Args:
+            force (bool): Boolean flag that toggles force behavior."""
         pm = self._pixitem.pixmap()
         if pm is not None and not pm.isNull():
             if self._zoom_mode_active and not force:
@@ -432,6 +481,16 @@ class MainWindow(QMainWindow):
         alpha: float = 0.5,
         labels_rgb: np.ndarray | None = None,
     ) -> np.ndarray | None:
+        """Provide an internal helper for create overlay.
+        
+        Args:
+            base_img (np.ndarray | None): Value for base img interpreted by this routine.
+            labels_img (np.ndarray | None): Array-like data carrying labels img values for analysis.
+            alpha (float): Numeric control parameter for alpha during computation.
+            labels_rgb (np.ndarray | None): Array-like data carrying labels rgb values for analysis.
+        
+        Returns:
+            np.ndarray | None: Array containing the create overlay output aligned with downstream expectations."""
         if base_img is None or labels_img is None:
             return None
         base_rgb = ensure_rgb_u8(base_img)
@@ -470,6 +529,10 @@ class MainWindow(QMainWindow):
         return out
 
     def _segmentation_outline_view(self) -> np.ndarray | None:
+        """Provide an internal helper for segmentation outline view.
+        
+        Returns:
+            np.ndarray | None: Array containing the segmentation outline view output aligned with downstream expectations."""
         labels = self.current_frame.labels_2d
         if labels is None:
             return None
@@ -510,6 +573,10 @@ class MainWindow(QMainWindow):
         return out
 
     def _labels_rgb(self) -> np.ndarray | None:
+        """Provide an internal helper for labels rgb.
+        
+        Returns:
+            np.ndarray | None: Array containing the labels rgb output aligned with downstream expectations."""
         if self.current_frame.labels_2d is None:
             return None
         cache_id, cache_img = self.current_frame.labels_rgb_cache
@@ -520,6 +587,10 @@ class MainWindow(QMainWindow):
         return cache_img
 
     def _ensure_dt_ready(self) -> bool:
+        """Provide an internal helper for ensure dt ready.
+        
+        Returns:
+            bool: True when the validation or availability check succeeds; otherwise False."""
         if self.current_frame.orig_img is None:
             self._show_info("Load original", "Load an image before using the profile tool.")
             return False
@@ -578,24 +649,43 @@ class MainWindow(QMainWindow):
         return True
 
     def _show_info(self, title: str, message: str):
+        """Provide an internal helper for show info.
+        
+        Args:
+            title (str): Value for title interpreted by this routine.
+            message (str): Value for message interpreted by this routine."""
         if self._suppress_batch_dialogs:
             logger.info("[Batch] %s: %s", title, message)
         else:
             QtWidgets.QMessageBox.information(self, title, message)
 
     def _show_warning(self, title: str, message: str):
+        """Provide an internal helper for show warning.
+        
+        Args:
+            title (str): Value for title interpreted by this routine.
+            message (str): Value for message interpreted by this routine."""
         if self._suppress_batch_dialogs:
             logger.warning("[Batch] %s: %s", title, message)
         else:
             QtWidgets.QMessageBox.warning(self, title, message)
 
     def _show_error(self, title: str, message: str):
+        """Provide an internal helper for show error.
+        
+        Args:
+            title (str): Value for title interpreted by this routine.
+            message (str): Value for message interpreted by this routine."""
         if self._suppress_batch_dialogs:
             logger.error("[Batch] %s: %s", title, message)
         else:
             QtWidgets.QMessageBox.critical(self, title, message)
 
     def _apply_runtime_after_config_change(self) -> None:
+        """Provide an internal helper for apply runtime after config change.
+        
+        Returns:
+            None: Result object produced by the apply runtime after config change routine."""
         checkpoint_entry = str(getattr(self.config, "checkpoint_path", "") or "").strip()
         if checkpoint_entry and self.cb_model.findText(checkpoint_entry) < 0:
             self.cb_model.addItem(checkpoint_entry)
@@ -610,6 +700,13 @@ class MainWindow(QMainWindow):
             self.analyzer.set_strict_centerline_filter(self.config.strict_centerlines)
 
     def _load_config_from_path(self, path: str) -> bool:
+        """Provide an internal helper for load config from path.
+        
+        Args:
+            path (str): Filesystem location describing where path is read or written.
+        
+        Returns:
+            bool: True when the validation or availability check succeeds; otherwise False."""
         selected_path = os.path.abspath(path)
         try:
             self.config = AppConfig.load_from_json(selected_path, strict=True)
@@ -622,6 +719,7 @@ class MainWindow(QMainWindow):
         return True
 
     def _on_load_config(self):
+        """Handle the oad config event and propagate UI state updates."""
         start_dir = os.path.dirname(self.config_filepath) if self.config_filepath else PROJECT_ROOT
         selected_path, _ = QFileDialog.getOpenFileName(
             self,
@@ -635,6 +733,7 @@ class MainWindow(QMainWindow):
             self.statusbar.showMessage(f"Config loaded: {self.config_filepath}", 5000)
 
     def _on_edit_config(self):
+        """Handle the dit config event and propagate UI state updates."""
         dialog = ConfigEditorDialog(self.config, self.config_filepath, self)
         if dialog.exec() != QtWidgets.QDialog.DialogCode.Accepted:
             return
@@ -645,6 +744,7 @@ class MainWindow(QMainWindow):
         self.statusbar.showMessage(f"Config updated: {self.config_filepath}", 5000)
 
     def _on_edit_save_options(self):
+        """Handle the dit save options event and propagate UI state updates."""
         current_options = self._normalize_save_options(getattr(self.config, "save_options", {}))
         dialog = SaveOptionsDialog(self, current_options)
         if dialog.exec() != QtWidgets.QDialog.DialogCode.Accepted:
@@ -657,12 +757,21 @@ class MainWindow(QMainWindow):
     # ------------------- Drag & drop -------------------
 
     def _install_drag_drop(self):
+        """Provide an internal helper for install drag drop."""
         v = self.graphicsView
         v.setAcceptDrops(True)
         v.viewport().setAcceptDrops(True)
         v.viewport().installEventFilter(self)
 
     def eventFilter(self, obj, event):
+        """Orchestrate event filter within the current module workflow.
+        
+        Args:
+            obj (Any): Value for obj interpreted by this routine.
+            event (Any): Value for event interpreted by this routine.
+        
+        Returns:
+            Any: Object containing the event filter outcome for downstream use."""
         if obj is self.graphicsView.viewport():
             et = event.type()
             if et == QEvent.Type.Resize:
@@ -700,13 +809,34 @@ class MainWindow(QMainWindow):
         return super().eventFilter(obj, event)
 
     def _is_image_path(self, path: str) -> bool:
+        """Provide an internal helper for is image path.
+        
+        Args:
+            path (str): Filesystem location describing where path is read or written.
+        
+        Returns:
+            bool: True when the validation or availability check succeeds; otherwise False."""
         ext = os.path.splitext(path)[1].lower()
         return ext in self._supported_image_extensions()
 
     def _is_loadable_path(self, path: str) -> bool:
+        """Provide an internal helper for is loadable path.
+        
+        Args:
+            path (str): Filesystem location describing where path is read or written.
+        
+        Returns:
+            bool: True when the validation or availability check succeeds; otherwise False."""
         return os.path.isdir(path) or self._is_image_path(path)
 
     def _urls_are_loadable(self, urls) -> bool:
+        """Provide an internal helper for urls are loadable.
+        
+        Args:
+            urls (Any): Value for urls interpreted by this routine.
+        
+        Returns:
+            bool: True when the validation or availability check succeeds; otherwise False."""
         return any(u.isLocalFile() and self._is_loadable_path(u.toLocalFile()) for u in urls)
 
     def _compute_orientation_stats(
@@ -741,6 +871,10 @@ class MainWindow(QMainWindow):
         return orientation_index, mean_angle_deg, std_angle_deg
 
     def _current_batch_measurement_signature(self) -> str | None:
+        """Provide an internal helper for current batch measurement signature.
+        
+        Returns:
+            str | None: Result object produced by the current batch measurement signature routine."""
         if self._image_batch is None:
             return None
 
@@ -779,6 +913,10 @@ class MainWindow(QMainWindow):
         return json.dumps(payload, sort_keys=True, default=str)
 
     def _batch_measurements_match_current_settings(self) -> bool:
+        """Provide an internal helper for batch measurements match current settings.
+        
+        Returns:
+            bool: True when the validation or availability check succeeds; otherwise False."""
         if self._batch_result is None or self._image_batch is None:
             return False
         if not self._batch_results_have_measurements:
@@ -791,6 +929,13 @@ class MainWindow(QMainWindow):
 
     @staticmethod
     def _collect_stack_diameter_samples(batch_result: BatchResult | None) -> np.ndarray:
+        """Provide an internal helper for collect stack diameter samples.
+        
+        Args:
+            batch_result (BatchResult | None): Value for batch result interpreted by this routine.
+        
+        Returns:
+            np.ndarray: Array containing the collect stack diameter samples output aligned with downstream expectations."""
         if batch_result is None:
             return np.array([], dtype=np.float32)
 
@@ -813,6 +958,13 @@ class MainWindow(QMainWindow):
 
     @staticmethod
     def _collect_stack_angle_samples(batch_result: BatchResult | None) -> np.ndarray:
+        """Provide an internal helper for collect stack angle samples.
+        
+        Args:
+            batch_result (BatchResult | None): Value for batch result interpreted by this routine.
+        
+        Returns:
+            np.ndarray: Array containing the collect stack angle samples output aligned with downstream expectations."""
         if batch_result is None:
             return np.array([], dtype=np.float32)
 
@@ -835,6 +987,10 @@ class MainWindow(QMainWindow):
     # ------------------- I/O -------------------
 
     def _set_image_batch(self, image_batch: ImageBatch):
+        """Provide an internal helper for set image batch.
+        
+        Args:
+            image_batch (ImageBatch): Array-like data carrying image batch values for analysis."""
         self._image_batch = image_batch
         self._batch_result = None
         self._batch_results_have_measurements = False
@@ -847,6 +1003,13 @@ class MainWindow(QMainWindow):
         self._set_current_slice(0, update_view=True)
 
     def _apply_sample_properties_from_batch(self, image_batch: ImageBatch) -> None:
+        """Provide an internal helper for apply sample properties from batch.
+        
+        Args:
+            image_batch (ImageBatch): Array-like data carrying image batch values for analysis.
+        
+        Returns:
+            None: Result object produced by the apply sample properties from batch routine."""
         source_path = str(image_batch.metadata.get("source_path", ""))
         self.sample_props = SampleProperties.from_image_metadata(
             image_batch.metadata,
@@ -875,6 +1038,14 @@ class MainWindow(QMainWindow):
             )
 
     def open_source(self, path: str | None = None, source_kind: str = "auto") -> ImageBatch | None:
+        """Orchestrate open source within the current module workflow.
+        
+        Args:
+            path (str | None): Filesystem location describing where path is read or written.
+            source_kind (str): Value for source kind interpreted by this routine.
+        
+        Returns:
+            ImageBatch | None: Result object produced by the open source routine."""
         selected_path = path
 
         if selected_path is None:
@@ -929,17 +1100,33 @@ class MainWindow(QMainWindow):
         return image_batch
 
     def load_original(self):
+        """Load original from persisted storage and normalize it for use."""
         self.open_source(source_kind="file")
 
     def load_original_from_path(self, path: str):
+        """Load original from path from persisted storage and normalize it for use.
+        
+        Args:
+            path (str): Filesystem location used by this operation."""
         self.open_source(path=path, source_kind="auto")
 
     @staticmethod
     def _default_save_options() -> Dict[str, Any]:
+        """Provide an internal helper for default save options.
+        
+        Returns:
+            Dict[str, Any]: Mapping containing named default save options outputs and metadata."""
         return dict(AppConfig().save_options)
 
     @classmethod
     def _normalize_save_options(cls, raw_options: Any) -> Dict[str, Any]:
+        """Normalize save options into a canonical representation.
+        
+        Args:
+            raw_options (Any): Configuration values controlling runtime behavior.
+        
+        Returns:
+            Dict[str, Any]: Mapping of computed keys and values."""
         defaults = cls._default_save_options()
         if not isinstance(raw_options, dict):
             return defaults
@@ -960,6 +1147,10 @@ class MainWindow(QMainWindow):
 
     @staticmethod
     def _save_artifact_keys() -> tuple[str, ...]:
+        """Provide an internal helper for save artifact keys.
+        
+        Returns:
+            tuple[str, ...]: Tuple grouping the save artifact keys outputs in a stable positional order."""
         return ("dt", "labels", "overlay", "debug", "outline", "tables", "style_vector")
 
     def _current_save_layout(self) -> str:
@@ -974,6 +1165,10 @@ class MainWindow(QMainWindow):
         return "single"
 
     def _current_source_base_name(self) -> str:
+        """Provide an internal helper for current source base name.
+        
+        Returns:
+            str: String value representing the normalized current source base name outcome."""
         if self._image_batch is not None:
             source_path = str((self._image_batch.metadata or {}).get("source_path", "")).strip()
             if source_path:
@@ -982,9 +1177,20 @@ class MainWindow(QMainWindow):
 
     @staticmethod
     def _artifact_exclude_from_save_options(options: Dict[str, Any]) -> list[str]:
+        """Provide an internal helper for artifact exclude from save options.
+        
+        Args:
+            options (Dict[str, Any]): Configuration values that control how options is processed.
+        
+        Returns:
+            list[str]: List of artifact exclude from save options results produced for downstream iteration."""
         return [name for name in MainWindow._save_artifact_keys() if not bool(options.get(name, False))]
 
     def _effective_batch_result_for_save(self) -> BatchResult | None:
+        """Provide an internal helper for effective batch result for save.
+        
+        Returns:
+            BatchResult | None: Result object produced by the effective batch result for save routine."""
         layout = self._current_save_layout()
         if layout != "single":
             if self._image_batch is None or self._batch_result is None:
@@ -1015,6 +1221,20 @@ class MainWindow(QMainWindow):
         base_name: str | None = None,
         image_format_override: str | None = None,
     ) -> Dict[str, Any]:
+        """Provide an internal helper for build export config.
+        
+        Args:
+            kind (str): Value for kind interpreted by this routine.
+            layout (str): Value for layout interpreted by this routine.
+            save_options (Dict[str, Any]): Configuration values that control how save options is processed.
+            base_name (str | None): Value for base name interpreted by this routine.
+            image_format_override (str | None): Array-like data carrying image format override values for analysis.
+        
+        Returns:
+            Dict[str, Any]: Mapping containing named build export config outputs and metadata.
+        
+        Raises:
+            ValueError: If provided values violate validation or domain constraints."""
         if kind not in {"results", "csv"}:
             raise ValueError(f"Unsupported save kind: {kind}")
         image_format = image_format_override or str(save_options.get("image_format", "png"))
@@ -1059,6 +1279,16 @@ class MainWindow(QMainWindow):
         default_base_name: str,
         image_format: str,
     ) -> tuple[str, str | None, str | None] | None:
+        """Provide an internal helper for prompt save destination.
+        
+        Args:
+            kind (str): Value for kind interpreted by this routine.
+            layout (str): Value for layout interpreted by this routine.
+            default_base_name (str): Value for default base name interpreted by this routine.
+            image_format (str): Array-like data carrying image format values for analysis.
+        
+        Returns:
+            tuple[str, str | None, str | None] | None: Tuple grouping the prompt save destination outputs in a stable positional order."""
         is_csv = kind == "csv"
         if layout == "single":
             ext = ".csv" if is_csv else (".tiff" if image_format == "tiff" else ".png")
@@ -1103,6 +1333,15 @@ class MainWindow(QMainWindow):
         dest_dir: str,
         export_config: Dict[str, Any],
     ) -> bool:
+        """Provide an internal helper for run export.
+        
+        Args:
+            batch_result (BatchResult): Value for batch result interpreted by this routine.
+            dest_dir (str): Filesystem location describing where dest dir is read or written.
+            export_config (Dict[str, Any]): Configuration values that control how export config is processed.
+        
+        Returns:
+            bool: True when the validation or availability check succeeds; otherwise False."""
         try:
             export_result = batch_result.save_all(dest_dir, export_config)
         except Exception as exc:
@@ -1127,6 +1366,14 @@ class MainWindow(QMainWindow):
 
     @staticmethod
     def _has_export_data(kind: str, batch_result: BatchResult | None) -> bool:
+        """Provide an internal helper for has export data.
+        
+        Args:
+            kind (str): Value for kind interpreted by this routine.
+            batch_result (BatchResult | None): Value for batch result interpreted by this routine.
+        
+        Returns:
+            bool: True when the validation or availability check succeeds; otherwise False."""
         if batch_result is None:
             return False
         if kind == "results":
@@ -1139,6 +1386,10 @@ class MainWindow(QMainWindow):
         return False
 
     def _refresh_save_actions(self) -> None:
+        """Provide an internal helper for refresh save actions.
+        
+        Returns:
+            None: Result object produced by the refresh save actions routine."""
         batch_result = self._effective_batch_result_for_save()
         has_results = self._has_export_data("results", batch_result)
         has_csv = self._has_export_data("csv", batch_result)
@@ -1146,6 +1397,13 @@ class MainWindow(QMainWindow):
         self.action_save_measurements.setEnabled(has_csv)
 
     def _save_by_kind(self, kind: str) -> None:
+        """Provide an internal helper for save by kind.
+        
+        Args:
+            kind (str): Value for kind interpreted by this routine.
+        
+        Returns:
+            None: Result object produced by the save by kind routine."""
         batch_result = self._effective_batch_result_for_save()
         if not self._has_export_data(kind, batch_result):
             message = "Run segmentation first." if kind == "results" else "Run Analyze fibers first."
@@ -1188,15 +1446,18 @@ class MainWindow(QMainWindow):
         )
 
     def save_predictions(self):
+        """Persist predictions using the configured export conventions."""
         self._save_by_kind("results")
 
     def save_measurements(self):
+        """Persist measurements using the configured export conventions."""
         self._save_by_kind("csv")
 
 
     # ------------------- Scalebar -------------------
 
     def _on_set_scalebar_clicked(self):
+        """Handle the et scalebar clicked event and propagate UI state updates."""
         if self.current_frame.orig_img is None:
             self._show_info("No image", "Load an image before setting the scalebar.")
             return
@@ -1252,6 +1513,10 @@ class MainWindow(QMainWindow):
         )
 
     def _handle_scalebar_mouse(self, event: QtGui.QMouseEvent):
+        """Provide an internal helper for handle scalebar mouse.
+        
+        Args:
+            event (QtGui.QMouseEvent): Value for event interpreted by this routine."""
         if event.button() == Qt.MouseButton.RightButton:
             self._cancel_scalebar_selection()
             return
@@ -1276,6 +1541,7 @@ class MainWindow(QMainWindow):
             self._finalize_scalebar_selection()
 
     def _finalize_scalebar_selection(self):
+        """Provide an internal helper for finalize scalebar selection."""
         if len(self._scalebar_points) < 2:
             return
         (x0, y0), (x1, y1) = self._scalebar_points[:2]
@@ -1299,6 +1565,11 @@ class MainWindow(QMainWindow):
         self._cancel_scalebar_selection()
 
     def _cancel_scalebar_selection(self, reset_cursor: bool = True, clear_points: bool = True):
+        """Provide an internal helper for cancel scalebar selection.
+        
+        Args:
+            reset_cursor (bool): Value for reset cursor interpreted by this routine.
+            clear_points (bool): Value for clear points interpreted by this routine."""
         self._scalebar_pending = False
         if clear_points:
             self._scalebar_points = []
@@ -1308,9 +1579,11 @@ class MainWindow(QMainWindow):
     # ------------------- Zoom helpers -------------------
 
     def reset_zoom(self):
+        """Orchestrate reset zoom within the current module workflow."""
         self._fit_view_to_pixmap(force=True)
 
     def _update_reset_button_position(self):
+        """Provide an internal helper for update reset button position."""
         viewport = self.graphicsView.viewport()
         if viewport is None:
             return
@@ -1321,9 +1594,17 @@ class MainWindow(QMainWindow):
         self.btn_reset_view.move(max(margin, x), y)
 
     def _update_reset_button_visibility(self):
+        """Provide an internal helper for update reset button visibility."""
         self.btn_reset_view.setVisible(self._zoom_mode_active)
 
     def _handle_wheel_zoom(self, event: QtGui.QWheelEvent) -> bool:
+        """Provide an internal helper for handle wheel zoom.
+        
+        Args:
+            event (QtGui.QWheelEvent): Value for event interpreted by this routine.
+        
+        Returns:
+            bool: True when the validation or availability check succeeds; otherwise False."""
         if self._pixitem.pixmap().isNull():
             return False
         angle = event.angleDelta().y()
@@ -1351,9 +1632,20 @@ class MainWindow(QMainWindow):
 
     @staticmethod
     def _supported_image_extensions() -> set[str]:
+        """Provide an internal helper for supported image extensions.
+        
+        Returns:
+            set[str]: Result object produced by the supported image extensions routine."""
         return {".tif", ".tiff", ".png", ".jpg", ".jpeg", ".bmp", ".webp"}
 
     def _set_progress_bar(self, sample_progress_percent: float) -> None:
+        """Provide an internal helper for set progress bar.
+        
+        Args:
+            sample_progress_percent (float): Value for sample progress percent interpreted by this routine.
+        
+        Returns:
+            None: Result object produced by the set progress bar routine."""
         progress = float(max(0.0, min(100.0, sample_progress_percent)))
         if self._is_batch_processing and self._batch_total_samples > 0:
             current_sample_progress = progress / 100.0
@@ -1373,6 +1665,18 @@ class MainWindow(QMainWindow):
         error_title: str | None = None,
     ) -> BatchResult | None:
         # Resolve the active batch source. Most callers use the currently loaded batch.
+        """Provide an internal helper for run batch analysis.
+        
+        Args:
+            compute_measurements (bool): Value for compute measurements interpreted by this routine.
+            image_batch (ImageBatch | None): Array-like data carrying image batch values for analysis.
+            error_title (str | None): Value for error title interpreted by this routine.
+        
+        Returns:
+            BatchResult | None: Result object produced by the run batch analysis routine.
+        
+        Raises:
+            RuntimeError: If runtime state prevents the operation from completing."""
         active_batch = image_batch if image_batch is not None else self._image_batch
         if active_batch is None or len(active_batch) == 0:
             self._show_info("Load original", "Please load an image or folder first.")
@@ -1405,6 +1709,15 @@ class MainWindow(QMainWindow):
             processed_images = 0
 
             def _process_frame(frame: np.ndarray, frame_id: str, z_index: int) -> Frame:
+                """Provide an internal helper for process frame.
+                
+                Args:
+                    frame (np.ndarray): Array-like data carrying frame values for analysis.
+                    frame_id (str): Array-like data carrying frame id values for analysis.
+                    z_index (int): Coordinate component representing the z index axis value.
+                
+                Returns:
+                    Frame: Result object produced by the process frame routine."""
                 nonlocal processed_images
                 self.statusbar.showMessage(f"Processing {processed_images + 1}/{total_images} images")
                 self._set_progress_bar(0.0)
@@ -1466,9 +1779,14 @@ class MainWindow(QMainWindow):
         return batch_result
 
     def _on_batch_processing(self):
+        """Handle the atch processing event and propagate UI state updates."""
         self._run_batch_processing_for_folder(None)
 
     def _run_batch_processing_for_folder(self, folder_path: str | None):
+        """Provide an internal helper for run batch processing for folder.
+        
+        Args:
+            folder_path (str | None): Filesystem location describing where folder path is read or written."""
         image_batch = self.open_source(path=folder_path, source_kind="folder")
         if image_batch is None:
             return
@@ -1531,6 +1849,7 @@ class MainWindow(QMainWindow):
             self._show_info("Batch processing complete", summary)
 
     def _on_open_3d_view(self):
+        """Handle the pen 3d view event and propagate UI state updates."""
         if self._batch_result is None:
             self._show_info("3D view", "Run segmentation or analysis on a stack first.")
             return
@@ -1563,6 +1882,7 @@ class MainWindow(QMainWindow):
         self._stack3d_window.activateWindow()
 
     def _on_analyze_3d_clicked(self):
+        """Handle the nalyze 3d clicked event and propagate UI state updates."""
         if self._image_batch is None or len(self._image_batch) == 0:
             self._show_info("Analyze 3D", "Load a stack first.")
             return
@@ -1686,6 +2006,10 @@ class MainWindow(QMainWindow):
     # ------------------- Profile plot tool -------------------
 
     def _ensure_profile_dialog(self) -> PlotProfileDialog:
+        """Provide an internal helper for ensure profile dialog.
+        
+        Returns:
+            PlotProfileDialog: Result object produced by the ensure profile dialog routine."""
         if self._profile_dialog is None:
             self._profile_dialog = PlotProfileDialog(self)
             self._profile_dialog.clearRequested.connect(self._on_profile_clear_requested)
@@ -1693,6 +2017,7 @@ class MainWindow(QMainWindow):
         return self._profile_dialog
 
     def _on_plot_profile_clicked(self):
+        """Handle the lot profile clicked event and propagate UI state updates."""
         if not self._ensure_dt_ready():
             return
         dialog = self._ensure_profile_dialog()
@@ -1705,14 +2030,20 @@ class MainWindow(QMainWindow):
         self._reset_profile_selection(keep_dialog=True)
 
     def _on_profile_clear_requested(self):
+        """Handle the rofile clear requested event and propagate UI state updates."""
         self._reset_profile_selection(keep_dialog=True)
 
     def _on_profile_dialog_closed(self):
+        """Handle the rofile dialog closed event and propagate UI state updates."""
         self._profile_mode_active = False
         self._profile_dialog = None
         self._reset_profile_selection()
 
     def _reset_profile_selection(self, keep_dialog: bool = False):
+        """Provide an internal helper for reset profile selection.
+        
+        Args:
+            keep_dialog (bool): Value for keep dialog interpreted by this routine."""
         self._profile_points_scene = []
         self._profile_points_img = []
         self._remove_profile_items()
@@ -1725,11 +2056,13 @@ class MainWindow(QMainWindow):
             self.graphicsView.viewport().unsetCursor()
 
     def _remove_profile_line(self):
+        """Provide an internal helper for remove profile line."""
         if self._profile_line_item is not None and self._profile_line_item.scene() is not None:
             self._scene.removeItem(self._profile_line_item)
         self._profile_line_item = None
 
     def _remove_profile_items(self):
+        """Provide an internal helper for remove profile items."""
         self._remove_profile_line()
         if not self._profile_point_items:
             self._profile_point_items = []
@@ -1740,6 +2073,11 @@ class MainWindow(QMainWindow):
         self._profile_point_items = []
 
     def _add_profile_marker(self, x: float, y: float):
+        """Provide an internal helper for add profile marker.
+        
+        Args:
+            x (float): Coordinate component representing the x axis value.
+            y (float): Coordinate component representing the y axis value."""
         if self._scene is None:
             return
         radius = 4.0
@@ -1753,6 +2091,7 @@ class MainWindow(QMainWindow):
         self._profile_point_items.append(marker)
 
     def _draw_profile_line(self):
+        """Provide an internal helper for draw profile line."""
         if len(self._profile_points_scene) < 2 or self._scene is None:
             return
         self._remove_profile_line()
@@ -1765,6 +2104,14 @@ class MainWindow(QMainWindow):
         self._profile_line_item = line_item
 
     def _scene_to_image_coords(self, scene_x: float, scene_y: float) -> tuple[float, float] | None:
+        """Provide an internal helper for scene to image coords.
+        
+        Args:
+            scene_x (float): Value for scene x interpreted by this routine.
+            scene_y (float): Value for scene y interpreted by this routine.
+        
+        Returns:
+            tuple[float, float] | None: Tuple grouping the scene to image coords outputs in a stable positional order."""
         if self._pixmap_source_shape is None:
             return None
         pix = self._pixitem.pixmap()
@@ -1780,6 +2127,10 @@ class MainWindow(QMainWindow):
         return scene_x * scale_x, scene_y * scale_y
 
     def _handle_profile_mouse(self, event: QtGui.QMouseEvent):
+        """Provide an internal helper for handle profile mouse.
+        
+        Args:
+            event (QtGui.QMouseEvent): Value for event interpreted by this routine."""
         if event.button() == Qt.MouseButton.RightButton:
             self._reset_profile_selection(keep_dialog=True)
             return
@@ -1819,12 +2170,14 @@ class MainWindow(QMainWindow):
             self._finalize_profile_selection()
 
     def _finalize_profile_selection(self):
+        """Provide an internal helper for finalize profile selection."""
         if len(self._profile_points_scene) < 2 or len(self._profile_points_img) < 2:
             return
         self._draw_profile_line()
         self._update_profile_plot()
 
     def _update_profile_plot(self):
+        """Provide an internal helper for update profile plot."""
         if not self.current_frame.has_prediction or len(self._profile_points_img) < 2:
             return
         (x0, y0), (x1, y1) = self._profile_points_img[:2]
@@ -1854,6 +2207,7 @@ class MainWindow(QMainWindow):
     # ------------------- Segmentation -------------------
 
     def segment(self):
+        """Orchestrate segment within the current module workflow."""
         fr = self.current_frame
 
         if self._image_batch is not None and not self._is_batch_processing:
@@ -2231,6 +2585,10 @@ class MainWindow(QMainWindow):
 
     # ---- single overlay renderer (kept once) ----
     def _render_vector_overlay(self):
+        """Provide an internal helper for render vector overlay.
+        
+        Returns:
+            Any: Object containing the render vector overlay outcome for downstream use."""
         if not self.current_frame.overlay_samples:
             return
         show_diam   = getattr(self, "rb_show_diam", None) and self.rb_show_diam.isChecked()
@@ -2281,6 +2639,13 @@ class MainWindow(QMainWindow):
         sample_colors: list[tuple[int, int, int]] = []
 
         def _angle_to_bgr(angle_deg: float) -> tuple[int, int, int]:
+            """Provide an internal helper for angle to bgr.
+            
+            Args:
+                angle_deg (float): Numeric control parameter for angle deg during computation.
+            
+            Returns:
+                tuple[int, int, int]: Tuple grouping the angle to bgr outputs in a stable positional order."""
             if not np.isfinite(angle_deg):
                 return (200, 200, 200)
             ang = float(np.clip(angle_deg, -90.0, 90.0))
@@ -2409,9 +2774,17 @@ class MainWindow(QMainWindow):
 
     @staticmethod
     def _default_grad_quality_points() -> tuple[float, float, float, float]:
+        """Provide an internal helper for default grad quality points.
+        
+        Returns:
+            tuple[float, float, float, float]: Tuple grouping the default grad quality points outputs in a stable positional order."""
         return (-0.35, -0.08, 0.08, 0.35)
 
     def _validated_grad_quality_points(self) -> tuple[float, float, float, float]:
+        """Provide an internal helper for validated grad quality points.
+        
+        Returns:
+            tuple[float, float, float, float]: Tuple grouping the validated grad quality points outputs in a stable positional order."""
         default = self._default_grad_quality_points()
         raw = getattr(self.config, "grad_quality_points", default)
         try:
@@ -2521,6 +2894,13 @@ class MainWindow(QMainWindow):
     # ------------------- Plotting -------------------
 
     def _style_plotwidget(self, pw: pg.PlotWidget, title: str, xlab: str, ylab: str):
+        """Provide an internal helper for style plotwidget.
+        
+        Args:
+            pw (pg.PlotWidget): Value for pw interpreted by this routine.
+            title (str): Value for title interpreted by this routine.
+            xlab (str): Value for xlab interpreted by this routine.
+            ylab (str): Value for ylab interpreted by this routine."""
         pw.setBackground("w")
         pw.clear()
         pw.setTitle(title, color="k", size="12pt")
@@ -2531,6 +2911,10 @@ class MainWindow(QMainWindow):
 
     def _update_distributions_pyqtgraph(self, units_label: str):
         # Thickness
+        """Provide an internal helper for update distributions pyqtgraph.
+        
+        Args:
+            units_label (str): Value for units label interpreted by this routine."""
         diameters = (
             self.current_frame.thickness_units
             if self.current_frame.thickness_units is not None
@@ -2595,6 +2979,7 @@ class MainWindow(QMainWindow):
     # ------------------- View & reset -------------------
 
     def refresh_view(self):
+        """Orchestrate refresh view within the current module workflow."""
         img = None
         # Use the combo box text to select appropriate view.
         view = self.cb_view.currentText()
@@ -2627,6 +3012,10 @@ class MainWindow(QMainWindow):
         self._set_pixmap_from_array(img)
 
     def _configure_z_scroll(self, frame_count: int):
+        """Provide an internal helper for configure z scroll.
+        
+        Args:
+            frame_count (int): Array-like data carrying frame count values for analysis."""
         total = max(1, int(frame_count))
         self.z_scroll.blockSignals(True)
         self.z_scroll.setMinimum(0)
@@ -2639,6 +3028,7 @@ class MainWindow(QMainWindow):
         self._update_slice_label()
 
     def _update_slice_label(self):
+        """Provide an internal helper for update slice label."""
         if self._image_batch is not None:
             total = len(self._image_batch)
             current = self._current_z_index + 1 if total > 0 else 0
@@ -2657,6 +3047,14 @@ class MainWindow(QMainWindow):
         self._slice_label.setText(f"{kind}: {name}  |  {unit_label}: {current}/{total}")
 
     def _frame_base_name(self, frame_id: str, z_index: int) -> str:
+        """Provide an internal helper for frame base name.
+        
+        Args:
+            frame_id (str): Array-like data carrying frame id values for analysis.
+            z_index (int): Coordinate component representing the z index axis value.
+        
+        Returns:
+            str: String value representing the normalized frame base name outcome."""
         base = os.path.splitext(str(frame_id))[0]
         if self._image_batch is None:
             return base
@@ -2666,6 +3064,10 @@ class MainWindow(QMainWindow):
         return base
 
     def _apply_frame_result(self, frame_result: Frame | None):
+        """Provide an internal helper for apply frame result.
+        
+        Args:
+            frame_result (Frame | None): Array-like data carrying frame result values for analysis."""
         current_orig = self.current_frame.orig_img
         current_frame_id = self.current_frame.frame_id
         current_z_index = self.current_frame.z_index
@@ -2710,6 +3112,11 @@ class MainWindow(QMainWindow):
             self.current_frame.segmentation_outline_cache = (None, None)
 
     def _set_current_slice(self, index: int, update_view: bool = True):
+        """Provide an internal helper for set current slice.
+        
+        Args:
+            index (int): Zero-based index selecting which index to operate on.
+            update_view (bool): Value for update view interpreted by this routine."""
         if self._image_batch is None:
             return
         frame_count = len(self._image_batch)
@@ -2740,6 +3147,10 @@ class MainWindow(QMainWindow):
             self.refresh_view()
 
     def _on_z_scroll_changed(self, value: int):
+        """Handle the z scroll changed event and propagate UI state updates.
+        
+        Args:
+            value (int): Value for value interpreted by this routine."""
         if self._image_batch is None:
             return
         self._set_current_slice(int(value), update_view=True)
@@ -2811,6 +3222,10 @@ class MainWindow(QMainWindow):
                 )
 
     def _on_usegpu_toggled(self, checked: bool):
+        """Handle the usegpu toggled event and propagate UI state updates.
+        
+        Args:
+            checked (bool): Value for checked interpreted by this routine."""
         cuda_ok = torch.cuda.is_available()
         if checked and not cuda_ok:
             QMessageBox.warning(self, "CUDA not available", "No CUDA GPU detected. Using CPU.")
@@ -2824,6 +3239,10 @@ class MainWindow(QMainWindow):
             self.analyzer.set_device(device)
 
     def _on_segmentation_mode_changed(self, checked: bool | None = None):
+        """Handle the segmentation mode changed event and propagate UI state updates.
+        
+        Args:
+            checked (bool | None): Value for checked interpreted by this routine."""
         if not checked: return # Ignore signals from the button being unchecked
         
         # Sync the radio button state to config
@@ -2836,10 +3255,18 @@ class MainWindow(QMainWindow):
             self.analyzer.set_strict_centerline_filter(self.config.strict_centerlines)
 
     def _on_strict_checkbox_toggled(self, checked: bool):
+        """Handle the strict checkbox toggled event and propagate UI state updates.
+        
+        Args:
+            checked (bool): Value for checked interpreted by this routine."""
         self._set_strict_mode(bool(checked))
 
     def _on_cluster_toggled(self, checked: bool):
         # Update the config flag immediately
+        """Handle the cluster toggled event and propagate UI state updates.
+        
+        Args:
+            checked (bool): Value for checked interpreted by this routine."""
         self.config.cluster_enabled = bool(checked)
         if self.analyzer is not None:
             # Safely pass cluster_params (now defined in AppConfig)
@@ -2851,6 +3278,7 @@ class MainWindow(QMainWindow):
     # ------------------- New default image loading -------------------
 
     def load_default_image(self):
+        """Load default image from persisted storage and normalize it for use."""
         default_img_path = os.path.join(PROJECT_ROOT, "resources", "test.png")
         if os.path.exists(default_img_path):
             self.open_source(path=default_img_path, source_kind="file")
@@ -2888,6 +3316,13 @@ class MainWindow(QMainWindow):
                 self.chb_strict.setEnabled(False)
 
     def _set_segmentation_mode(self, mode: str) -> None:
+        """Provide an internal helper for set segmentation mode.
+        
+        Args:
+            mode (str): Value for mode interpreted by this routine.
+        
+        Returns:
+            None: Result object produced by the set segmentation mode routine."""
         target = str(mode or "watershed").strip().lower()
         if target == "ridge":
             self.rb_ridge.setChecked(True)
@@ -2903,6 +3338,14 @@ class MainWindow(QMainWindow):
             self.sample_props = SampleProperties.defaults()
 
         def _parse_positive(text: str, fallback: float) -> float:
+            """Provide an internal helper for parse positive.
+            
+            Args:
+                text (str): Value for text interpreted by this routine.
+                fallback (float): Value for fallback interpreted by this routine.
+            
+            Returns:
+                float: Result object produced by the parse positive routine."""
             text = (text or "").strip()
             if not text:
                 return float(fallback)
@@ -2988,6 +3431,11 @@ class MainWindow(QMainWindow):
         cfg = self.config
 
         def set_combo_text(cb, text):
+            """Update combo text and synchronize dependent runtime state.
+            
+            Args:
+                cb (Any): Value for cb interpreted by this routine.
+                text (Any): Value for text interpreted by this routine."""
             cb.blockSignals(True)
             idx = cb.findText(text)
             if idx >= 0:

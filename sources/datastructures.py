@@ -1,3 +1,5 @@
+"""Core data models for configuration, batches, frame outputs, and fiber geometry."""
+
 from __future__ import annotations
 
 import json
@@ -14,6 +16,7 @@ logger = logging.getLogger(__name__)
 @dataclass
 class AppConfig:
     # --- Model & Hardware ---
+    """Store configuration values for app."""
     checkpoint_path: str = ""
     use_gpu: bool = True
     scale_label: str = "1x"
@@ -61,11 +64,26 @@ class AppConfig:
     )
 
     def save_to_json(self, filepath: str):
+        """Persist to json using the configured export conventions.
+        
+        Args:
+            filepath (str): Filesystem location used by this operation."""
         with open(filepath, 'w') as f:
             json.dump(asdict(self), f, indent=4)
 
     @classmethod
     def load_from_json(cls, filepath: str, *, strict: bool = False) -> "AppConfig":
+        """Load from json from storage and normalize it for use.
+        
+        Args:
+            filepath (str): Filesystem location describing where filepath is read or written.
+            strict (bool): Boolean flag that toggles strict behavior.
+        
+        Returns:
+            'AppConfig': Result object produced by the load from json routine.
+        
+        Raises:
+            ValueError: If provided values violate validation or domain constraints."""
         try:
             with open(filepath, "r", encoding="utf-8") as f:
                 data = json.load(f)
@@ -104,6 +122,14 @@ class SampleProperties:
 
     @staticmethod
     def _as_positive(value: Any, default: float = 1.0) -> float:
+        """Provide an internal helper for as positive.
+        
+        Args:
+            value (Any): Value for value interpreted by this routine.
+            default (float): Value for default interpreted by this routine.
+        
+        Returns:
+            float: Result object produced by the as positive routine."""
         if isinstance(value, (tuple, list)) and len(value) == 2:
             try:
                 value = float(value[0]) / float(value[1])
@@ -119,6 +145,10 @@ class SampleProperties:
 
     @classmethod
     def defaults(cls) -> "SampleProperties":
+        """Orchestrate defaults within the current module workflow.
+        
+        Returns:
+            'SampleProperties': Result object produced by the defaults routine."""
         return cls(
             pixel_size_x=1.0,
             pixel_size_y=1.0,
@@ -135,6 +165,14 @@ class SampleProperties:
         *,
         source_path: str = "",
     ) -> "SampleProperties":
+        """Construct an instance from image metadata while validating inputs.
+        
+        Args:
+            metadata (Optional[Dict[str, Any]]): Value for metadata interpreted by this routine.
+            source_path (str): Filesystem location describing where source path is read or written.
+        
+        Returns:
+            'SampleProperties': Result object produced by the from image metadata routine."""
         meta = metadata or {}
         px_raw = meta.get("pixel_width")
         py_raw = meta.get("pixel_height")
@@ -171,11 +209,19 @@ class SampleProperties:
         )
 
     def effective_pixel_size_xy(self) -> float:
+        """Orchestrate effective pixel size xy within the current module workflow.
+        
+        Returns:
+            float: Result object produced by the effective pixel size xy routine."""
         x = self._as_positive(self.pixel_size_x)
         y = self._as_positive(self.pixel_size_y)
         return 0.5 * (x + y)
 
     def spacing_zyx(self) -> tuple[float, float, float]:
+        """Orchestrate spacing zyx within the current module workflow.
+        
+        Returns:
+            tuple[float, float, float]: Tuple grouping the spacing zyx outputs in a stable positional order."""
         return (
             self._as_positive(self.voxel_size_z),
             self._as_positive(self.pixel_size_y),
@@ -189,6 +235,10 @@ class ImageBatch:
     metadata: Dict[str, Any] = field(default_factory=dict)
 
     def __len__(self) -> int:
+        """Report how many items are currently tracked by this container.
+        
+        Returns:
+            int: Number of items currently available in the container."""
         return len(self.frames)
 
     @property
@@ -210,6 +260,13 @@ class ImageBatch:
         sizes = {"pixel_width": None, "pixel_height": None, "voxel_depth": None, "unit": None}
 
         def _positive(value: Any) -> Optional[float]:
+            """Provide an internal helper for positive.
+            
+            Args:
+                value (Any): Value for value interpreted by this routine.
+            
+            Returns:
+                Optional[float]: Result object produced by the positive routine."""
             if value is None:
                 return None
             if isinstance(value, (tuple, list)) and len(value) == 2:
@@ -226,6 +283,13 @@ class ImageBatch:
             return out
 
         def _unit_scale_to_um(unit_value: Any) -> Optional[float]:
+            """Provide an internal helper for unit scale to um.
+            
+            Args:
+                unit_value (Any): Value for unit value interpreted by this routine.
+            
+            Returns:
+                Optional[float]: Result object produced by the unit scale to um routine."""
             if unit_value is None:
                 return None
             token = str(getattr(unit_value, "name", unit_value)).strip().lower()
@@ -321,6 +385,16 @@ class ImageBatch:
 
     @staticmethod
     def _normalize_stack(data: np.ndarray) -> List[np.ndarray]:
+        """Provide an internal helper for normalize stack.
+        
+        Args:
+            data (np.ndarray): Value for data interpreted by this routine.
+        
+        Returns:
+            List[np.ndarray]: Array containing the normalize stack output aligned with downstream expectations.
+        
+        Raises:
+            ValueError: If provided values violate validation or domain constraints."""
         if data.ndim == 2:
             return [data]
         if data.ndim == 3:
@@ -333,6 +407,13 @@ class ImageBatch:
 
     @classmethod
     def from_path(cls, path: str) -> "ImageBatch":
+        """Construct an instance from path while validating inputs.
+        
+        Args:
+            path (str): Filesystem location describing where path is read or written.
+        
+        Returns:
+            'ImageBatch': Result object produced by the from path routine."""
         data = iio.imread(path)
         frames = cls._normalize_stack(data)
         source_type = "Image" if len(frames) == 1 else "Stack"
@@ -354,6 +435,14 @@ class ImageBatch:
     def from_folder(
         cls, folder: str, extensions: Optional[Iterable[str]] = None
     ) -> "ImageBatch":
+        """Construct an instance from folder while validating inputs.
+        
+        Args:
+            folder (str): Filesystem location describing where folder is read or written.
+            extensions (Optional[Iterable[str]]): Value for extensions interpreted by this routine.
+        
+        Returns:
+            'ImageBatch': Result object produced by the from folder routine."""
         entries = sorted(os.listdir(folder))
         ext_set = {ext.lower() for ext in extensions} if extensions else None
         frames: List[np.ndarray] = []
@@ -401,6 +490,17 @@ class ImageBatch:
     def from_source(
         cls, path: str, extensions: Optional[Iterable[str]] = None
     ) -> "ImageBatch":
+        """Construct an instance from source while validating inputs.
+        
+        Args:
+            path (str): Filesystem location describing where path is read or written.
+            extensions (Optional[Iterable[str]]): Value for extensions interpreted by this routine.
+        
+        Returns:
+            'ImageBatch': Result object produced by the from source routine.
+        
+        Raises:
+            FileNotFoundError: If an expected file or directory cannot be located."""
         if os.path.isdir(path):
             return cls.from_folder(path, extensions=extensions)
         if os.path.isfile(path):
@@ -409,26 +509,50 @@ class ImageBatch:
     
 @dataclass
 class BatchResult:
+    """Capture outputs and metadata produced by batch."""
     frame_results: List[Frame]
     semantic_volume: Optional[np.ndarray] = None
     semantic_skeleton_volume: Optional[np.ndarray] = None
     stack3d_meta: Optional[Dict[str, Any]] = None
 
     def frame_at(self, index: int) -> Frame:
+        """Orchestrate frame at within the current module workflow.
+        
+        Args:
+            index (int): Zero-based index selecting which index to operate on.
+        
+        Returns:
+            Frame: Result object produced by the frame at routine."""
         return self.frame_results[index]
 
     @property
     def has_3d_input(self) -> bool:
+        """Check whether 3d input is available for downstream processing.
+        
+        Returns:
+            bool: True when the requested condition is satisfied; otherwise False."""
         return len(self.frame_results) > 1
 
     @property
     def has_3d_outputs(self) -> bool:
+        """Check whether 3d outputs is available for downstream processing.
+        
+        Returns:
+            bool: True when the requested condition is satisfied; otherwise False."""
         return (
             self.semantic_volume is not None
             or self.semantic_skeleton_volume is not None
         )
 
     def save_all(self, output_dir: str, export_config: Dict[str, Any] | None = None) -> Dict[str, Any]:
+        """Persist all using the configured export conventions.
+        
+        Args:
+            output_dir (str): Filesystem location used by this operation.
+            export_config (Dict[str, Any] | None): Configuration values controlling runtime behavior.
+        
+        Returns:
+            Dict[str, Any]: Mapping of computed keys and values."""
         from .exporter import BatchResultExporter
 
         exporter = BatchResultExporter(export_config=export_config)
@@ -437,10 +561,21 @@ class BatchResult:
     # Backward compatibility for callers still using the previous name.
     @property
     def merge_meta(self) -> Optional[Dict[str, Any]]:
+        """Orchestrate merge meta within the current module workflow.
+        
+        Returns:
+            Optional[Dict[str, Any]]: Result object produced by the merge meta routine."""
         return self.stack3d_meta
 
     @merge_meta.setter
     def merge_meta(self, value: Optional[Dict[str, Any]]) -> None:
+        """Orchestrate merge meta within the current module workflow.
+        
+        Args:
+            value (Optional[Dict[str, Any]]): Value for value interpreted by this routine.
+        
+        Returns:
+            None: Result object produced by the merge meta routine."""
         self.stack3d_meta = value
 
 
@@ -508,9 +643,22 @@ class Frame:
         z_index: int = 0,
         orig_img: Optional[np.ndarray] = None,
     ) -> "Frame":
+        """Orchestrate empty within the current module workflow.
+        
+        Args:
+            frame_id (str): Array-like data carrying frame id values for analysis.
+            z_index (int): Coordinate component representing the z index axis value.
+            orig_img (Optional[np.ndarray]): Value for orig img interpreted by this routine.
+        
+        Returns:
+            'Frame': Result object produced by the empty routine."""
         return cls(frame_id=str(frame_id), z_index=int(z_index), orig_img=orig_img)
 
     def clear_prediction(self) -> None:
+        """Clear cached prediction state that is no longer valid.
+        
+        Returns:
+            None: Result object produced by the clear prediction routine."""
         self.has_prediction = False
         self.dt = None
         self.dt_u8 = None
@@ -524,6 +672,10 @@ class Frame:
         self.error_message = None
 
     def clear_segmentation(self) -> None:
+        """Clear cached segmentation state that is no longer valid.
+        
+        Returns:
+            None: Result object produced by the clear segmentation routine."""
         self.has_segmentation = False
         self.labels_2d = None
         self.centerlines_overlay_img = None
@@ -534,6 +686,10 @@ class Frame:
         self.segmentation_outline_cache = (None, None)
 
     def clear_measurements(self) -> None:
+        """Clear cached measurements state that is no longer valid.
+        
+        Returns:
+            None: Result object produced by the clear measurements routine."""
         self.has_measurements = False
         self.samples_table = None
         self.fiber_summary = None
@@ -547,6 +703,15 @@ class Frame:
         self.pores = None
 
     def begin_frame(self, orig_img: Optional[np.ndarray], frame_id: str, z_index: int) -> None:
+        """Start frame and initialize per-run state tracking.
+        
+        Args:
+            orig_img (Optional[np.ndarray]): Value for orig img interpreted by this routine.
+            frame_id (str): Array-like data carrying frame id values for analysis.
+            z_index (int): Coordinate component representing the z index axis value.
+        
+        Returns:
+            None: Result object produced by the begin frame routine."""
         self.frame_id = str(frame_id)
         self.z_index = int(z_index)
         self.orig_img = orig_img
@@ -569,6 +734,22 @@ class Frame:
         scale_factor: float,
         invalidate_downstream: bool = True,
     ) -> None:
+        """Update prediction outputs and synchronize dependent runtime state.
+        
+        Args:
+            dt (Optional[np.ndarray]): Value for dt interpreted by this routine.
+            gx (Optional[np.ndarray]): Value for gx interpreted by this routine.
+            gy (Optional[np.ndarray]): Value for gy interpreted by this routine.
+            dt_u8 (Optional[np.ndarray]): Value for dt u8 interpreted by this routine.
+            dt_normalized (Optional[np.ndarray]): Value for dt normalized interpreted by this routine.
+            lapl_img (Optional[np.ndarray]): Value for lapl img interpreted by this routine.
+            style_vec (Optional[np.ndarray]): Value for style vec interpreted by this routine.
+            orig_img_scaled (Optional[np.ndarray]): Numeric control parameter for orig img scaled during computation.
+            scale_factor (float): Numeric control parameter for scale factor during computation.
+            invalidate_downstream (bool): Value for invalidate downstream interpreted by this routine.
+        
+        Returns:
+            None: Result object produced by the set prediction outputs routine."""
         self.dt = dt
         self.gx = gx
         self.gy = gy
@@ -596,6 +777,20 @@ class Frame:
         segmentation_outline_cache: Optional[tuple[Optional[int], Optional[np.ndarray]]] = None,
         invalidate_measurements: bool = True,
     ) -> None:
+        """Update segmentation outputs and synchronize dependent runtime state.
+        
+        Args:
+            labels_2d (Optional[np.ndarray]): Array-like data carrying labels 2d values for analysis.
+            centerlines_overlay_img (Optional[np.ndarray]): Value for centerlines overlay img interpreted by this routine.
+            overlay_img (Optional[np.ndarray]): Value for overlay img interpreted by this routine.
+            sampling_overlay (Optional[np.ndarray]): Value for sampling overlay interpreted by this routine.
+            measurements_overlay (Optional[np.ndarray]): Value for measurements overlay interpreted by this routine.
+            labels_rgb_cache (Optional[tuple[Optional[int], Optional[np.ndarray]]]): Array-like data carrying labels rgb cache values for analysis.
+            segmentation_outline_cache (Optional[tuple[Optional[int], Optional[np.ndarray]]]): Value for segmentation outline cache interpreted by this routine.
+            invalidate_measurements (bool): Value for invalidate measurements interpreted by this routine.
+        
+        Returns:
+            None: Result object produced by the set segmentation outputs routine."""
         self.labels_2d = labels_2d
         self.centerlines_overlay_img = centerlines_overlay_img
         self.overlay_img = overlay_img
@@ -630,6 +825,24 @@ class Frame:
         measurements_overlay: Optional[np.ndarray],
         sampling_overlay: Optional[np.ndarray],
     ) -> None:
+        """Update measurement outputs and synchronize dependent runtime state.
+        
+        Args:
+            samples_table (Optional[Any]): Value for samples table interpreted by this routine.
+            fiber_summary (Optional[Dict[str, Any]]): Value for fiber summary interpreted by this routine.
+            overlay_samples (Optional[Any]): Value for overlay samples interpreted by this routine.
+            angles_samples_deg (Optional[np.ndarray]): Numeric control parameter for angles samples deg during computation.
+            thickness_units (Optional[np.ndarray]): Value for thickness units interpreted by this routine.
+            porosity (Optional[float]): Value for porosity interpreted by this routine.
+            pore_diams_units (Optional[np.ndarray]): Value for pore diams units interpreted by this routine.
+            void_mask (Optional[np.ndarray]): Array-like data carrying void mask values for analysis.
+            pore_dt (Optional[np.ndarray]): Value for pore dt interpreted by this routine.
+            pores (Optional[Any]): Value for pores interpreted by this routine.
+            measurements_overlay (Optional[np.ndarray]): Value for measurements overlay interpreted by this routine.
+            sampling_overlay (Optional[np.ndarray]): Value for sampling overlay interpreted by this routine.
+        
+        Returns:
+            None: Result object produced by the set measurement outputs routine."""
         self.samples_table = samples_table
         self.fiber_summary = fiber_summary
         self.overlay_samples = overlay_samples
@@ -646,6 +859,13 @@ class Frame:
         self.error_message = None
 
     def fail(self, message: str) -> None:
+        """Orchestrate fail within the current module workflow.
+        
+        Args:
+            message (str): Value for message interpreted by this routine.
+        
+        Returns:
+            None: Result object produced by the fail routine."""
         self.error_message = str(message)
 
     def snapshot(
@@ -655,6 +875,15 @@ class Frame:
         frame_id: Optional[str] = None,
         z_index: Optional[int] = None,
     ) -> "Frame":
+        """Orchestrate snapshot within the current module workflow.
+        
+        Args:
+            include_measurements (bool): Value for include measurements interpreted by this routine.
+            frame_id (Optional[str]): Array-like data carrying frame id values for analysis.
+            z_index (Optional[int]): Coordinate component representing the z index axis value.
+        
+        Returns:
+            'Frame': Result object produced by the snapshot routine."""
         clone: Frame = copy(self)
         if clone.fiber_summary is not None:
             clone.fiber_summary = dict(clone.fiber_summary)
@@ -678,6 +907,13 @@ class FiberFragment:
     _endpoints: Tuple["FragmentEndpoint", "FragmentEndpoint"] = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
+        """Normalize and validate dataclass fields after instance construction.
+        
+        Returns:
+            None: Result object produced by the post init routine.
+        
+        Raises:
+            ValueError: If provided values violate validation or domain constraints."""
         pts = np.asarray(self.centerline_xy, dtype=np.float32)
         if pts.ndim != 2 or pts.shape[1] != 2:
             raise ValueError("centerline_xy must be an array of shape (N, 2).")
@@ -700,13 +936,25 @@ class FiberFragment:
         )
 
     def endpoints(self) -> Tuple["FragmentEndpoint", "FragmentEndpoint"]:
+        """Orchestrate endpoints within the current module workflow.
+        
+        Returns:
+            Tuple['FragmentEndpoint', 'FragmentEndpoint']: Tuple grouping the endpoints outputs in a stable positional order."""
         return self._endpoints
 
     @property
     def points_xy(self) -> np.ndarray:
+        """Orchestrate points xy within the current module workflow.
+        
+        Returns:
+            np.ndarray: Array containing the points xy output aligned with downstream expectations."""
         return self.centerline_xy
 
     def length(self) -> float:
+        """Orchestrate length within the current module workflow.
+        
+        Returns:
+            float: Result object produced by the length routine."""
         if len(self.centerline_xy) < 2:
             return 0.0
         diffs = np.diff(self.centerline_xy, axis=0)
@@ -719,6 +967,18 @@ class FragmentEndpoint:
     __slots__ = ("fragment", "end", "connected_to", "dir", "_fit_N")
 
     def __init__(self, fragment: FiberFragment, end: str, fit_N: int = 100) -> None:
+        """Initialize fragment endpoint and establish required runtime state.
+        
+        Args:
+            fragment (FiberFragment): Value for fragment interpreted by this routine.
+            end (str): Value for end interpreted by this routine.
+            fit_N (int): Value for fit n interpreted by this routine.
+        
+        Returns:
+            None: Result object produced by the init routine.
+        
+        Raises:
+            ValueError: If provided values violate validation or domain constraints."""
         self.fragment = fragment
         if end not in ("a", "b"):
             raise ValueError("Endpoint end must be either 'a' or 'b'.")
@@ -728,6 +988,10 @@ class FragmentEndpoint:
         self.dir = self._estimate_direction()
 
     def _points_for_fit(self) -> np.ndarray:
+        """Provide an internal helper for points for fit.
+        
+        Returns:
+            np.ndarray: Array containing the points for fit output aligned with downstream expectations."""
         pts = self.fragment.centerline_xy
         n = min(len(pts), self._fit_N)
         if self.end == "a":
@@ -735,6 +999,10 @@ class FragmentEndpoint:
         return pts[-n:][::-1].copy()
 
     def _estimate_direction(self) -> np.ndarray:
+        """Provide an internal helper for estimate direction.
+        
+        Returns:
+            np.ndarray: Array containing the estimate direction output aligned with downstream expectations."""
         pts = self._points_for_fit()
         mu = pts.mean(axis=0)
         centered = pts - mu
@@ -750,9 +1018,17 @@ class FragmentEndpoint:
         return direction.astype(np.float32)
 
     def index(self) -> int:
+        """Orchestrate index within the current module workflow.
+        
+        Returns:
+            int: Result object produced by the index routine."""
         return 0 if self.end == "a" else len(self.fragment.centerline_xy) - 1
 
     def pos(self) -> np.ndarray:
+        """Orchestrate pos within the current module workflow.
+        
+        Returns:
+            np.ndarray: Array containing the pos output aligned with downstream expectations."""
         return self.fragment.centerline_xy[self.index()]
 
     def shifted_pos(self, offset_px: float = 0.0) -> np.ndarray:
@@ -788,15 +1064,33 @@ class FragmentEndpoint:
         return walk_pts[-1]
 
     def radius(self) -> float:
+        """Orchestrate radius within the current module workflow.
+        
+        Returns:
+            float: Result object produced by the radius routine."""
         return float(self.fragment.radii[self.index()])
 
     def last_n_points(self, n: int) -> np.ndarray:
+        """Orchestrate last n points within the current module workflow.
+        
+        Args:
+            n (int): Value for n interpreted by this routine.
+        
+        Returns:
+            np.ndarray: Array containing the last n points output aligned with downstream expectations."""
         pts = self.fragment.centerline_xy
         if self.end == "a":
             return pts[: min(n, len(pts))].copy()
         return pts[-min(n, len(pts)) :][::-1].copy()
 
     def same_fragment(self, other: "FragmentEndpoint") -> bool:
+        """Orchestrate same fragment within the current module workflow.
+        
+        Args:
+            other ('FragmentEndpoint'): Value for other interpreted by this routine.
+        
+        Returns:
+            bool: True when the validation or availability check succeeds; otherwise False."""
         return self.fragment.fragment_id == other.fragment.fragment_id
 
     def is_facing(
@@ -805,6 +1099,14 @@ class FragmentEndpoint:
         *,
         cos_min: float = 0.95,
     ) -> bool:
+        """Return whether facing satisfies the required condition.
+        
+        Args:
+            other ('FragmentEndpoint'): Value for other interpreted by this routine.
+            cos_min (float): Value for cos min interpreted by this routine.
+        
+        Returns:
+            bool: True when the validation or availability check succeeds; otherwise False."""
         p1 = self.pos().astype(np.float32)
         p2 = other.pos().astype(np.float32)
         v = p2 - p1
@@ -818,6 +1120,10 @@ class FragmentEndpoint:
         return (float(np.dot(d1, u12)) >= cos_min) and (float(np.dot(d2, u21)) >= cos_min)
 
     def disconnect(self) -> None:
+        """Orchestrate disconnect within the current module workflow.
+        
+        Returns:
+            None: Result object produced by the disconnect routine."""
         if self.connected_to is not None:
             other = self.connected_to
             self.connected_to = None
@@ -825,6 +1131,13 @@ class FragmentEndpoint:
                 other.connected_to = None
 
     def connect(self, other: "FragmentEndpoint") -> None:
+        """Orchestrate connect within the current module workflow.
+        
+        Args:
+            other ('FragmentEndpoint'): Value for other interpreted by this routine.
+        
+        Returns:
+            None: Result object produced by the connect routine."""
         if other is self or self.same_fragment(other):
             return
         if self.connected_to is other and other.connected_to is self:

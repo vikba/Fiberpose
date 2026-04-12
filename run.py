@@ -1,3 +1,5 @@
+"""Application entry point for launching the Fiberpose GUI."""
+
 # run.py
 import sys, os
 from sources.gui_mainwindow import MainWindow
@@ -5,6 +7,10 @@ from PyQt6.QtWidgets import QApplication
 from PyQt6.QtGui import QPalette, QColor
 
 def apply_dark_palette(app):
+    """Apply dark palette to update runtime behavior or presentation.
+    
+    Args:
+        app (Any): Value for app interpreted by this routine."""
     app.setStyle("Fusion")
 
     dark_palette = QPalette()
@@ -33,12 +39,18 @@ def apply_dark_palette(app):
 
 
 def load_stylesheet(app, filename: str):
+    """Load stylesheet from storage and normalize it for use.
+    
+    Args:
+        app (Any): Value for app interpreted by this routine.
+        filename (str): Filesystem location describing where filename is read or written."""
     base_dir = os.path.dirname(os.path.abspath(__file__))
     qss_path = os.path.join(base_dir, filename)
     with open(qss_path, "r", encoding="utf-8") as f:
         app.setStyleSheet(f.read())
 
 def main():
+    """Run the module entry point and orchestrate command-line execution."""
     app = QApplication(sys.argv)
     #load_stylesheet(app, "resources/dark_theme.qss")
     apply_dark_palette(app)
@@ -50,4 +62,3 @@ def main():
   
 if __name__ == "__main__":
     main()
-

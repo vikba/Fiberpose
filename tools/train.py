@@ -107,11 +107,28 @@ def read_image_any(path: Path) -> np.ndarray:
 
 
 def _template_to_regex(template: str) -> re.Pattern:
+    """Provide an internal helper for template to regex.
+    
+    Args:
+        template (str): Value for template interpreted by this routine.
+    
+    Returns:
+        re.Pattern: Result object produced by the template to regex routine."""
     escaped = re.escape(template)
     pattern = escaped.replace(r"\{stem\}", r"(?P<stem>.+)")
     return re.compile(f"^{pattern}$")
 
 def _load_u16_png(path: Path) -> np.ndarray:
+    """Provide an internal helper for load u16 png.
+    
+    Args:
+        path (Path): Filesystem location describing where path is read or written.
+    
+    Returns:
+        np.ndarray: Array containing the load u16 png output aligned with downstream expectations.
+    
+    Raises:
+        FileNotFoundError: If an expected file or directory cannot be located."""
     import cv2
     arr = cv2.imread(str(path), cv2.IMREAD_UNCHANGED)
     if arr is None:
@@ -122,6 +139,15 @@ def _load_u16_png(path: Path) -> np.ndarray:
 
 
 def _denormalize_u16(arr_u16: np.ndarray, vmin: float, vmax: float) -> np.ndarray:
+    """Provide an internal helper for denormalize u16.
+    
+    Args:
+        arr_u16 (np.ndarray): Array-like data carrying arr u16 values for analysis.
+        vmin (float): Value for vmin interpreted by this routine.
+        vmax (float): Value for vmax interpreted by this routine.
+    
+    Returns:
+        np.ndarray: Array containing the denormalize u16 output aligned with downstream expectations."""
     if vmax <= vmin:
         return np.zeros_like(arr_u16, dtype=np.float32)
     scaled = arr_u16.astype(np.float32) / 65535.0
@@ -129,6 +155,13 @@ def _denormalize_u16(arr_u16: np.ndarray, vmin: float, vmax: float) -> np.ndarra
 
 
 def _load_float_tif(path: Path) -> np.ndarray:
+    """Provide an internal helper for load float tif.
+    
+    Args:
+        path (Path): Filesystem location describing where path is read or written.
+    
+    Returns:
+        np.ndarray: Array containing the load float tif output aligned with downstream expectations."""
     arr = tiff.imread(str(path))
     arr = np.asarray(arr)
     if arr.ndim == 3:
@@ -137,6 +170,13 @@ def _load_float_tif(path: Path) -> np.ndarray:
 
 
 def _to_01(t: torch.Tensor) -> torch.Tensor:
+    """Provide an internal helper for to 01.
+    
+    Args:
+        t (torch.Tensor): Value for t interpreted by this routine.
+    
+    Returns:
+        torch.Tensor: Result object produced by the to 01 routine."""
     t = t.detach().float()
     vmin = float(t.min())
     vmax = float(t.max())
@@ -204,6 +244,17 @@ def random_crop(
     crop: int,
     rng: np.random.Generator
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Orchestrate random crop within the current module workflow.
+    
+    Args:
+        x (np.ndarray): Coordinate component representing the x axis value.
+        flows (np.ndarray): Array-like data carrying flows values for analysis.
+        dt (np.ndarray): Value for dt interpreted by this routine.
+        crop (int): Value for crop interpreted by this routine.
+        rng (np.random.Generator): Value for rng interpreted by this routine.
+    
+    Returns:
+        Tuple[np.ndarray, np.ndarray, np.ndarray]: Array containing the random crop output aligned with downstream expectations."""
     H, W = x.shape
     if crop <= 0 or (H <= crop and W <= crop):
         return x, flows, dt
@@ -223,6 +274,7 @@ def random_crop(
 # Dataset
 # -------------------------
 class OmniTargetsDataset(Dataset):
+    """Expose indexed training samples with deterministic metadata handling."""
     def __init__(
         self,
         images_dir: Path,
@@ -233,6 +285,19 @@ class OmniTargetsDataset(Dataset):
         augment: bool = True,
         seed: int = 0,
     ):
+        """Initialize omni targets dataset and establish required runtime state.
+        
+        Args:
+            images_dir (Path): Filesystem location describing where images dir is read or written.
+            targets_dir (Path): Filesystem location describing where targets dir is read or written.
+            target_template (str): Array-like data carrying target template values for analysis.
+            image_template (str | None): Array-like data carrying image template values for analysis.
+            crop (int): Value for crop interpreted by this routine.
+            augment (bool): Value for augment interpreted by this routine.
+            seed (int): Value for seed interpreted by this routine.
+        
+        Raises:
+            FileNotFoundError: If an expected file or directory cannot be located."""
         self.images_dir = images_dir
         self.targets_dir = targets_dir
         self.target_template = target_template
@@ -283,9 +348,20 @@ class OmniTargetsDataset(Dataset):
             raise FileNotFoundError(msg)
 
     def __len__(self) -> int:
+        """Report how many items are currently tracked by this container.
+        
+        Returns:
+            int: Number of items currently available in the container."""
         return len(self.image_paths)
 
     def __getitem__(self, idx: int):
+        """Provide an internal helper for getitem.
+        
+        Args:
+            idx (int): Zero-based index selecting which idx to operate on.
+        
+        Returns:
+            Any: Object containing the getitem outcome for downstream use."""
         ip = self.image_paths[idx]
         stem = self.target_stems[idx]
         float_paths = self.target_float_paths[idx]
@@ -332,13 +408,27 @@ class OmniTargetsDataset(Dataset):
 # Loss
 # -------------------------
 class WeightedSmoothL1(nn.Module):
+    """Represent weighted smooth l1 state used across processing and visualization workflows."""
     def __init__(self, beta: float = 1.0):
+        """Initialize weighted smooth l1 and establish required runtime state.
+        
+        Args:
+            beta (float): Numeric control parameter for beta during computation."""
         super().__init__()
         self.beta = beta
 
     def forward(self, pred: torch.Tensor, target: torch.Tensor, weight: torch.Tensor) -> torch.Tensor:
         # SmoothL1 with per-pixel weights
         # pred/target: (B,C,H,W) or (B,H,W)
+        """Orchestrate forward within the current module workflow.
+        
+        Args:
+            pred (torch.Tensor): Array-like data carrying pred values for analysis.
+            target (torch.Tensor): Array-like data carrying target values for analysis.
+            weight (torch.Tensor): Numeric control parameter for weight during computation.
+        
+        Returns:
+            torch.Tensor: Result object produced by the forward routine."""
         diff = torch.abs(pred - target)
         loss = torch.where(diff < self.beta, 0.5 * diff * diff / self.beta, diff - 0.5 * self.beta)
         return (loss * weight).mean()
@@ -370,6 +460,7 @@ def get_spatial_gradient(image):
 # -------------------------
 @dataclass
 class TrainCfg:
+    """Represent train cfg state used across processing and visualization workflows."""
     nbase: List[int] = None
     nout: int = 3
     lr: float = 1e-3
@@ -390,6 +481,10 @@ class TrainCfg:
 
 
 def main():
+    """Run the module entry point for command-line execution.
+    
+    Returns:
+        Any: Object containing the main outcome for downstream use."""
     ap = argparse.ArgumentParser()
     ap.add_argument("--data", type=str, required=True, help="dataset root with images/ and targets/")
     ap.add_argument("--out", type=str, required=True, help="output .pt (state_dict) path")
@@ -506,6 +601,13 @@ def main():
         writer = SummaryWriter(log_dir=str(logdir))
 
     def _fmt_seconds(sec: float) -> str:
+        """Provide an internal helper for fmt seconds.
+        
+        Args:
+            sec (float): Value for sec interpreted by this routine.
+        
+        Returns:
+            str: String value representing the normalized fmt seconds outcome."""
         sec = max(0.0, float(sec))
         m, s = divmod(int(sec + 0.5), 60)
         h, m = divmod(m, 60)

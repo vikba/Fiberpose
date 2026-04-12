@@ -1,3 +1,5 @@
+"""Qt dialog widgets for plotting, configuration editing, and 3D preview controls."""
+
 import json
 import os
 from dataclasses import fields
@@ -17,10 +19,15 @@ from .utils import label_to_rgb
 
 
 class PlotProfileDialog(QtWidgets.QDialog):
+    """Render and manage the plot profile dialog workflow."""
     closed = pyqtSignal()
     clearRequested = pyqtSignal()
 
     def __init__(self, parent: QtWidgets.QWidget | None = None):
+        """Initialize plot profile dialog and establish required runtime state.
+        
+        Args:
+            parent (QtWidgets.QWidget | None): Value for parent interpreted by this routine."""
         super().__init__(parent)
         self.setWindowTitle("Distance Transform Profile")
         self.setModal(False)
@@ -49,6 +56,7 @@ class PlotProfileDialog(QtWidgets.QDialog):
         layout.addLayout(button_row)
 
     def _style_plot(self):
+        """Provide an internal helper for style plot."""
         self.plot_widget.setBackground("w")
         self.plot_widget.showGrid(x=True, y=True, alpha=0.25)
         self.plot_widget.setTitle("Distance transform profile", color="k", size="12pt")
@@ -56,11 +64,18 @@ class PlotProfileDialog(QtWidgets.QDialog):
         self.plot_widget.setLabel("left", "DT value")
 
     def reset_plot(self):
+        """Orchestrate reset plot within the current module workflow."""
         self.plot_widget.clear()
         self._style_plot()
         self.info_label.setText(self._empty_text)
 
     def update_profile(self, distances_px: np.ndarray, values: np.ndarray, summary: str):
+        """Refresh profile after upstream state changes.
+        
+        Args:
+            distances_px (np.ndarray): Value for distances px interpreted by this routine.
+            values (np.ndarray): Value for values interpreted by this routine.
+            summary (str): Value for summary interpreted by this routine."""
         self.plot_widget.clear()
         self._style_plot()
         pen = pg.mkPen(color="#D9534F", width=2)
@@ -68,9 +83,14 @@ class PlotProfileDialog(QtWidgets.QDialog):
         self.info_label.setText(summary)
 
     def _on_clear_clicked(self):
+        """Handle the lear clicked event and propagate UI state updates."""
         self.clearRequested.emit()
 
     def closeEvent(self, event: QtGui.QCloseEvent):
+        """Handle the Qt close event for this widget.
+        
+        Args:
+            event (QtGui.QCloseEvent): Value for event interpreted by this routine."""
         self.closed.emit()
         super().closeEvent(event)
 
@@ -83,6 +103,11 @@ class SaveOptionsDialog(QtWidgets.QDialog):
         parent: QtWidgets.QWidget | None = None,
         initial_options: Dict[str, Any] | None = None,
     ):
+        """Initialize save options dialog and establish required runtime state.
+        
+        Args:
+            parent (QtWidgets.QWidget | None): Value for parent interpreted by this routine.
+            initial_options (Dict[str, Any] | None): Configuration values that control how initial options is processed."""
         super().__init__(parent)
         self.setWindowTitle("Save options")
         self.setModal(True)
@@ -150,6 +175,10 @@ class SaveOptionsDialog(QtWidgets.QDialog):
         layout.addWidget(button_box)
 
     def options(self) -> Dict[str, Any]:
+        """Orchestrate options within the current module workflow.
+        
+        Returns:
+            Dict[str, Any]: Mapping containing named options outputs and metadata."""
         options: Dict[str, Any] = {key: checkbox.isChecked() for key, checkbox in self._checkboxes.items()}
         options["image_format"] = self.cb_image_format.currentText().strip().lower() or "png"
         options["collision"] = self.cb_collision.currentText().strip().lower() or "suffix"
@@ -221,6 +250,12 @@ class ConfigEditorDialog(QtWidgets.QDialog):
         config_path: str,
         parent: QtWidgets.QWidget | None = None,
     ):
+        """Initialize config editor dialog and establish required runtime state.
+        
+        Args:
+            config (AppConfig): Configuration values that control how config is processed.
+            config_path (str): Filesystem location describing where config path is read or written.
+            parent (QtWidgets.QWidget | None): Value for parent interpreted by this routine."""
         super().__init__(parent)
         self.setWindowTitle("Edit configuration")
         self.setModal(True)
@@ -274,12 +309,24 @@ class ConfigEditorDialog(QtWidgets.QDialog):
         self.btn_save_as.clicked.connect(self._on_save_as_clicked)
 
     def result_config(self) -> AppConfig:
+        """Orchestrate result config within the current module workflow.
+        
+        Returns:
+            AppConfig: Result object produced by the result config routine."""
         return AppConfig(**vars(self._result_config))
 
     def result_config_path(self) -> str:
+        """Orchestrate result config path within the current module workflow.
+        
+        Returns:
+            str: String value representing the normalized result config path outcome."""
         return str(self._config_path)
 
     def _build_form(self) -> None:
+        """Provide an internal helper for build form.
+        
+        Returns:
+            None: Result object produced by the build form routine."""
         for key in self._field_order:
             spec = self._FIELD_SPEC.get(key, {})
             template_value = getattr(self._initial_config, key, None)
@@ -299,6 +346,15 @@ class ConfigEditorDialog(QtWidgets.QDialog):
         spec: Dict[str, Any],
         template_value: Any,
     ) -> QtWidgets.QWidget | None:
+        """Provide an internal helper for create widget for field.
+        
+        Args:
+            key (str): Value for key interpreted by this routine.
+            spec (Dict[str, Any]): Value for spec interpreted by this routine.
+            template_value (Any): Value for template value interpreted by this routine.
+        
+        Returns:
+            QtWidgets.QWidget | None: Result object produced by the create widget for field routine."""
         kind = spec.get("kind")
         if not kind:
             if isinstance(template_value, bool):
@@ -345,6 +401,13 @@ class ConfigEditorDialog(QtWidgets.QDialog):
         return QtWidgets.QLineEdit()
 
     def _set_widgets_from_config(self, cfg: AppConfig) -> None:
+        """Provide an internal helper for set widgets from config.
+        
+        Args:
+            cfg (AppConfig): Value for cfg interpreted by this routine.
+        
+        Returns:
+            None: Result object produced by the set widgets from config routine."""
         for key, widget in self._widgets.items():
             value = getattr(cfg, key, None)
             if isinstance(widget, QtWidgets.QCheckBox):
@@ -377,6 +440,13 @@ class ConfigEditorDialog(QtWidgets.QDialog):
                 widget.setText("" if value is None else str(value))
 
     def _read_config_from_widgets(self) -> AppConfig:
+        """Provide an internal helper for read config from widgets.
+        
+        Returns:
+            AppConfig: Result object produced by the read config from widgets routine.
+        
+        Raises:
+            ValueError: If provided values violate validation or domain constraints."""
         data: Dict[str, Any] = {}
         for key in self._field_order:
             widget = self._widgets.get(key)
@@ -409,10 +479,24 @@ class ConfigEditorDialog(QtWidgets.QDialog):
         return AppConfig(**data)
 
     def _set_config_path(self, path: str) -> None:
+        """Provide an internal helper for set config path.
+        
+        Args:
+            path (str): Filesystem location describing where path is read or written.
+        
+        Returns:
+            None: Result object produced by the set config path routine."""
         self._config_path = os.path.abspath(path) if path else ""
         self.lbl_path.setText(self._config_path or "(not set)")
 
     def _on_load_clicked(self) -> None:
+        """Handle the load clicked event and propagate UI state updates.
+        
+        Returns:
+            None: Result object produced by the on load clicked routine.
+        
+        Raises:
+            ValueError: If provided values violate validation or domain constraints."""
         start_dir = os.path.dirname(self._config_path) if self._config_path else os.getcwd()
         selected_path, _ = QtWidgets.QFileDialog.getOpenFileName(
             self,
@@ -438,6 +522,10 @@ class ConfigEditorDialog(QtWidgets.QDialog):
         self._set_config_path(selected_path)
 
     def _on_save_as_clicked(self) -> None:
+        """Handle the save as clicked event and propagate UI state updates.
+        
+        Returns:
+            None: Result object produced by the on save as clicked routine."""
         try:
             cfg = self._read_config_from_widgets()
         except Exception as exc:
@@ -468,6 +556,10 @@ class ConfigEditorDialog(QtWidgets.QDialog):
         QtWidgets.QMessageBox.information(self, "Saved", f"Config saved to:\n{selected_path}")
 
     def _on_accept(self) -> None:
+        """Handle the accept event and propagate UI state updates.
+        
+        Returns:
+            None: Result object produced by the on accept routine."""
         try:
             cfg = self._read_config_from_widgets()
         except Exception as exc:
@@ -501,6 +593,10 @@ class RangeSlider(QtWidgets.QWidget):
     rangeChanged = pyqtSignal(float, float)
 
     def __init__(self, parent=None):
+        """Initialize range slider and establish required runtime state.
+        
+        Args:
+            parent (Any): Value for parent interpreted by this routine."""
         super().__init__(parent)
         self.setMouseTracking(True)
         self.setFixedHeight(56)
@@ -518,6 +614,10 @@ class RangeSlider(QtWidgets.QWidget):
         self.active_handle: str | None = None
 
     def set_histogram(self, hist):
+        """Update histogram and synchronize dependent runtime state.
+        
+        Args:
+            hist (Any): Value for hist interpreted by this routine."""
         if hist is None or len(hist) == 0:
             self._hist_data = None
             self.hist_polygon = QPolygonF()
@@ -528,6 +628,11 @@ class RangeSlider(QtWidgets.QWidget):
         self.update()
 
     def set_bounds(self, min_val: float, max_val: float):
+        """Update bounds and keep dependent state synchronized.
+        
+        Args:
+            min_val (float): Numeric bound applied during filtering or validation.
+            max_val (float): Numeric bound applied during filtering or validation."""
         if max_val <= min_val:
             return
         self._min_val = float(min_val)
@@ -535,6 +640,12 @@ class RangeSlider(QtWidgets.QWidget):
         self.set_range(self._low, self._high, emit_signal=False)
 
     def set_range(self, low: float, high: float, emit_signal: bool = False):
+        """Update range and synchronize dependent runtime state.
+        
+        Args:
+            low (float): Value for low interpreted by this routine.
+            high (float): Value for high interpreted by this routine.
+            emit_signal (bool): Value for emit signal interpreted by this routine."""
         self._low = float(low)
         self._high = float(high)
         self._enforce_constraints()
@@ -543,13 +654,25 @@ class RangeSlider(QtWidgets.QWidget):
             self.rangeChanged.emit(self._low, self._high)
 
     def get_range(self) -> tuple[float, float]:
+        """Return range in the format expected by downstream consumers.
+        
+        Returns:
+            tuple[float, float]: Tuple with values ordered for downstream processing."""
         return self._low, self._high
 
     def resizeEvent(self, event):
+        """Handle the Qt resize event for this widget.
+        
+        Args:
+            event (Any): Value for event interpreted by this routine."""
         super().resizeEvent(event)
         self._rebuild_hist_polygon()
 
     def paintEvent(self, event):
+        """Handle the Qt paint event for this widget.
+        
+        Args:
+            event (Any): Value for event interpreted by this routine."""
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         w = self.width()
@@ -573,6 +696,13 @@ class RangeSlider(QtWidgets.QWidget):
         self._draw_handle(painter, x_high, y_center, self.active_handle == "high")
 
     def _draw_handle(self, painter: QPainter, x: float, y: float, is_active: bool):
+        """Provide an internal helper for draw handle.
+        
+        Args:
+            painter (QPainter): Value for painter interpreted by this routine.
+            x (float): Coordinate component representing the x axis value.
+            y (float): Coordinate component representing the y axis value.
+            is_active (bool): Boolean flag that toggles is active behavior."""
         radius = self.handle_radius + (2 if is_active else 0)
         color = QColor(255, 255, 255) if is_active else QColor(210, 210, 210)
         painter.setBrush(color)
@@ -580,6 +710,10 @@ class RangeSlider(QtWidgets.QWidget):
         painter.drawEllipse(QPointF(x, y), radius, radius)
 
     def mousePressEvent(self, event):
+        """Handle the Qt mouse press event for this widget.
+        
+        Args:
+            event (Any): Value for event interpreted by this routine."""
         val = self._x_to_val(event.position().x())
         if abs(self._low - val) < abs(self._high - val):
             self.active_handle = "low"
@@ -592,6 +726,10 @@ class RangeSlider(QtWidgets.QWidget):
         self.rangeChanged.emit(self._low, self._high)
 
     def mouseMoveEvent(self, event):
+        """Handle the Qt mouse move event for this widget.
+        
+        Args:
+            event (Any): Value for event interpreted by this routine."""
         if self.active_handle is None:
             return
         val = self._x_to_val(event.position().x())
@@ -604,10 +742,15 @@ class RangeSlider(QtWidgets.QWidget):
         self.rangeChanged.emit(self._low, self._high)
 
     def mouseReleaseEvent(self, event):
+        """Handle the Qt mouse release event for this widget.
+        
+        Args:
+            event (Any): Value for event interpreted by this routine."""
         self.active_handle = None
         self.update()
 
     def _enforce_constraints(self):
+        """Provide an internal helper for enforce constraints."""
         self._low = max(self._min_val, min(self._low, self._max_val))
         self._high = max(self._min_val, min(self._high, self._max_val))
         if self._low > self._high:
@@ -617,6 +760,13 @@ class RangeSlider(QtWidgets.QWidget):
                 self._low = self._high
 
     def _val_to_x(self, val: float) -> float:
+        """Provide an internal helper for val to x.
+        
+        Args:
+            val (float): Value for val interpreted by this routine.
+        
+        Returns:
+            float: Result object produced by the val to x routine."""
         denom = self._max_val - self._min_val
         if denom <= 0:
             return 0.0
@@ -625,11 +775,19 @@ class RangeSlider(QtWidgets.QWidget):
         return ratio * max(self.width(), 1)
 
     def _x_to_val(self, x: float) -> float:
+        """Provide an internal helper for x to val.
+        
+        Args:
+            x (float): Coordinate component representing the x axis value.
+        
+        Returns:
+            float: Result object produced by the x to val routine."""
         width = max(self.width(), 1)
         ratio = max(0.0, min(1.0, x / width))
         return self._min_val + ratio * (self._max_val - self._min_val)
 
     def _rebuild_hist_polygon(self):
+        """Provide an internal helper for rebuild hist polygon."""
         if self._hist_data is None or self._hist_data.size == 0:
             self.hist_polygon = QPolygonF()
             return
@@ -656,6 +814,7 @@ class RangeSlider(QtWidgets.QWidget):
 
 
 class Stack3DWindow(QtWidgets.QDialog):
+    """Coordinate UI state and rendering for the stack3 d window."""
     def __init__(
         self,
         batch_result: BatchResult,
@@ -664,6 +823,14 @@ class Stack3DWindow(QtWidgets.QDialog):
         max_display_voxels: int = 8_000_000,
         max_display_edge: int = 320,
     ):
+        """Initialize stack3 d window and establish required runtime state.
+        
+        Args:
+            batch_result (BatchResult): Value for batch result interpreted by this routine.
+            parent (QtWidgets.QWidget | None): Value for parent interpreted by this routine.
+            voxel_spacing_zyx (tuple[float, float, float] | None): Value for voxel spacing zyx interpreted by this routine.
+            max_display_voxels (int): Value for max display voxels interpreted by this routine.
+            max_display_edge (int): Value for max display edge interpreted by this routine."""
         super().__init__(parent)
         self.setWindowTitle("3D Stack Viewer")
         self.resize(900, 700)
@@ -696,10 +863,19 @@ class Stack3DWindow(QtWidgets.QDialog):
         self.update_batch_result(batch_result, voxel_spacing_zyx=voxel_spacing_zyx)
 
     def set_display_limits(self, max_display_voxels: int, max_display_edge: int) -> None:
+        """Update display limits and synchronize dependent runtime state.
+        
+        Args:
+            max_display_voxels (int): Value for max display voxels interpreted by this routine.
+            max_display_edge (int): Value for max display edge interpreted by this routine.
+        
+        Returns:
+            None: Result object produced by the set display limits routine."""
         self._max_display_voxels = max(1, int(max_display_voxels))
         self._max_display_edge = max(1, int(max_display_edge))
 
     def _build_ui(self):
+        """Provide an internal helper for build ui."""
         layout = QtWidgets.QVBoxLayout(self)
 
         controls = QtWidgets.QHBoxLayout()
@@ -767,6 +943,7 @@ class Stack3DWindow(QtWidgets.QDialog):
         self._on_imaging_mode_changed()
 
     def _on_imaging_mode_changed(self):
+        """Handle the maging mode changed event and propagate UI state updates."""
         semantic_mode = self.cb_imaging.currentText() == "Semantic segmentation"
         self.cb_semantic_centerlines.setEnabled(semantic_mode)
         self.cb_semantic_junctions.setEnabled(semantic_mode)
@@ -784,6 +961,16 @@ class Stack3DWindow(QtWidgets.QDialog):
     def _parse_voxel_spacing(
         voxel_spacing_zyx: tuple[float, float, float] | list[float] | np.ndarray,
     ) -> tuple[float, float, float]:
+        """Provide an internal helper for parse voxel spacing.
+        
+        Args:
+            voxel_spacing_zyx (tuple[float, float, float] | list[float] | np.ndarray): Value for voxel spacing zyx interpreted by this routine.
+        
+        Returns:
+            tuple[float, float, float]: Tuple grouping the parse voxel spacing outputs in a stable positional order.
+        
+        Raises:
+            ValueError: If provided values violate validation or domain constraints."""
         if len(voxel_spacing_zyx) != 3:
             raise ValueError("voxel_spacing_zyx must contain exactly 3 values.")
         spacing = tuple(float(v) for v in voxel_spacing_zyx)
@@ -796,6 +983,11 @@ class Stack3DWindow(QtWidgets.QDialog):
         batch_result: BatchResult,
         voxel_spacing_zyx: tuple[float, float, float] | None = None,
     ):
+        """Refresh batch result after upstream state changes.
+        
+        Args:
+            batch_result (BatchResult): Value for batch result interpreted by this routine.
+            voxel_spacing_zyx (tuple[float, float, float] | None): Value for voxel spacing zyx interpreted by this routine."""
         self._batch_result = batch_result
         if voxel_spacing_zyx is not None:
             try:
@@ -813,6 +1005,13 @@ class Stack3DWindow(QtWidgets.QDialog):
         self._update_view()
 
     def _collect_stack(self, selector) -> np.ndarray | None:
+        """Provide an internal helper for collect stack.
+        
+        Args:
+            selector (Any): Value for selector interpreted by this routine.
+        
+        Returns:
+            np.ndarray | None: Array containing the collect stack output aligned with downstream expectations."""
         if self._batch_result is None:
             return None
         arrays = []
@@ -842,6 +1041,13 @@ class Stack3DWindow(QtWidgets.QDialog):
         self,
         method: str,
     ) -> np.ndarray | None:
+        """Provide an internal helper for stack for method.
+        
+        Args:
+            method (str): Value for method interpreted by this routine.
+        
+        Returns:
+            np.ndarray | None: Array containing the stack for method output aligned with downstream expectations."""
         if method == "Original":
             return self._collect_stack(lambda fr: fr.orig_img)
         if method == "DT":
@@ -858,6 +1064,7 @@ class Stack3DWindow(QtWidgets.QDialog):
         return None
 
     def _update_view(self):
+        """Provide an internal helper for update view."""
         if self._batch_result is None:
             return
         method = self.cb_imaging.currentText()
@@ -1090,6 +1297,11 @@ class Stack3DWindow(QtWidgets.QDialog):
         self.gl_view.setCameraPosition(distance=max_dim * 2.0)
 
     def _set_intensity_controls_enabled(self, enabled: bool, projection_enabled: bool | None = None):
+        """Provide an internal helper for set intensity controls enabled.
+        
+        Args:
+            enabled (bool): Value for enabled interpreted by this routine.
+            projection_enabled (bool | None): Value for projection enabled interpreted by this routine."""
         if projection_enabled is None:
             projection_enabled = enabled
         self.cb_projection.setEnabled(bool(projection_enabled))
@@ -1098,6 +1310,13 @@ class Stack3DWindow(QtWidgets.QDialog):
         self.lbl_high.setEnabled(enabled)
 
     def _apply_window_levels(self, vol_u8: np.ndarray) -> np.ndarray:
+        """Provide an internal helper for apply window levels.
+        
+        Args:
+            vol_u8 (np.ndarray): Value for vol u8 interpreted by this routine.
+        
+        Returns:
+            np.ndarray: Array containing the apply window levels output aligned with downstream expectations."""
         low, high = self.range_slider.get_range()
         low = max(0.0, min(255.0, float(low)))
         high = max(low + 1.0, min(255.0, float(high)))
@@ -1107,11 +1326,17 @@ class Stack3DWindow(QtWidgets.QDialog):
         return np.rint(data * 255.0).astype(np.ubyte)
 
     def _update_level_labels(self):
+        """Provide an internal helper for update level labels."""
         low, high = self.range_slider.get_range()
         self.lbl_low.setText(f"{int(round(low))}")
         self.lbl_high.setText(f"{int(round(high))}")
 
     def _on_range_slider_changed(self, low: float, high: float):
+        """Handle the range slider changed event and propagate UI state updates.
+        
+        Args:
+            low (float): Value for low interpreted by this routine.
+            high (float): Value for high interpreted by this routine."""
         self._update_level_labels()
         if self._volume_source_u8 is None or self._gl is None:
             return
@@ -1127,6 +1352,14 @@ class Stack3DWindow(QtWidgets.QDialog):
         self.gl_view.addItem(self._volume_item)
 
     def _make_rgba_for_projection(self, vol_u8: np.ndarray, projection: str) -> np.ndarray:
+        """Provide an internal helper for make rgba for projection.
+        
+        Args:
+            vol_u8 (np.ndarray): Value for vol u8 interpreted by this routine.
+            projection (str): Value for projection interpreted by this routine.
+        
+        Returns:
+            np.ndarray: Array containing the make rgba for projection output aligned with downstream expectations."""
         rgba = np.zeros(vol_u8.shape + (4,), dtype=np.ubyte)
         rgba[..., 0] = vol_u8
         rgba[..., 1] = vol_u8
@@ -1167,6 +1400,15 @@ class Stack3DWindow(QtWidgets.QDialog):
         steps_zyx: tuple[int, int, int],
         preserve_nonzero: bool = False,
     ) -> np.ndarray:
+        """Provide an internal helper for downsample with steps.
+        
+        Args:
+            stack_zyx (np.ndarray): Array-like data carrying stack zyx values for analysis.
+            steps_zyx (tuple[int, int, int]): Numeric control parameter for steps zyx during computation.
+            preserve_nonzero (bool): Value for preserve nonzero interpreted by this routine.
+        
+        Returns:
+            np.ndarray: Array containing the downsample with steps output aligned with downstream expectations."""
         arr = np.asarray(stack_zyx)
         if arr.ndim != 3:
             return arr
@@ -1200,6 +1442,14 @@ class Stack3DWindow(QtWidgets.QDialog):
         stack_zyx: np.ndarray,
         preserve_nonzero: bool = False,
     ) -> np.ndarray:
+        """Provide an internal helper for downsample for display.
+        
+        Args:
+            stack_zyx (np.ndarray): Array-like data carrying stack zyx values for analysis.
+            preserve_nonzero (bool): Value for preserve nonzero interpreted by this routine.
+        
+        Returns:
+            np.ndarray: Array containing the downsample for display output aligned with downstream expectations."""
         arr = np.asarray(stack_zyx)
         if arr.ndim != 3:
             self._display_shape_zyx = None
@@ -1214,6 +1464,10 @@ class Stack3DWindow(QtWidgets.QDialog):
         ]
 
         def reduced_dims() -> tuple[int, int, int]:
+            """Orchestrate reduced dims within the current module workflow.
+            
+            Returns:
+                tuple[int, int, int]: Tuple grouping the reduced dims outputs in a stable positional order."""
             return (
                 int(np.ceil(z / steps[0])),
                 int(np.ceil(y / steps[1])),
@@ -1251,6 +1505,11 @@ class Stack3DWindow(QtWidgets.QDialog):
         return reduced.astype(arr.dtype, copy=False)
 
     def _update_render_info(self, method: str, dataset_info: str | None = None):
+        """Provide an internal helper for update render info.
+        
+        Args:
+            method (str): Value for method interpreted by this routine.
+            dataset_info (str | None): Value for dataset info interpreted by this routine."""
         if self._display_shape_zyx is None:
             text = ""
         else:
@@ -1268,6 +1527,10 @@ class Stack3DWindow(QtWidgets.QDialog):
         self.lbl_render_info.setText(text)
 
     def _display_scale_xyz(self) -> tuple[float, float, float]:
+        """Provide an internal helper for display scale xyz.
+        
+        Returns:
+            tuple[float, float, float]: Tuple grouping the display scale xyz outputs in a stable positional order."""
         sz, sy, sx = self._display_step_zyx
         vz, vy, vx = self._voxel_spacing_zyx
         return (
@@ -1277,6 +1540,13 @@ class Stack3DWindow(QtWidgets.QDialog):
         )
 
     def _scaled_extent_max(self, shape_xyz: tuple[int, int, int]) -> float:
+        """Provide an internal helper for scaled extent max.
+        
+        Args:
+            shape_xyz (tuple[int, int, int]): Value for shape xyz interpreted by this routine.
+        
+        Returns:
+            float: Result object produced by the scaled extent max routine."""
         scale_x, scale_y, scale_z = self._display_scale_xyz()
         return float(
             max(
@@ -1287,6 +1557,14 @@ class Stack3DWindow(QtWidgets.QDialog):
         )
 
     def _center_and_scale_volume_item(self, volume_item, shape_xyz: tuple[int, int, int]) -> None:
+        """Provide an internal helper for center and scale volume item.
+        
+        Args:
+            volume_item (Any): Array-like data carrying volume item values for analysis.
+            shape_xyz (tuple[int, int, int]): Value for shape xyz interpreted by this routine.
+        
+        Returns:
+            None: Result object produced by the center and scale volume item routine."""
         scale_x, scale_y, scale_z = self._display_scale_xyz()
         try:
             volume_item.scale(scale_x, scale_y, scale_z)
@@ -1300,6 +1578,14 @@ class Stack3DWindow(QtWidgets.QDialog):
 
     @staticmethod
     def _labels_to_rgba(label_values: np.ndarray, alpha: float = 0.85) -> np.ndarray:
+        """Provide an internal helper for labels to rgba.
+        
+        Args:
+            label_values (np.ndarray): Value for label values interpreted by this routine.
+            alpha (float): Numeric control parameter for alpha during computation.
+        
+        Returns:
+            np.ndarray: Array containing the labels to rgba output aligned with downstream expectations."""
         labels = np.asarray(label_values, dtype=np.int32).reshape(-1)
         if labels.size == 0:
             return np.zeros((0, 4), dtype=np.float32)
@@ -1397,6 +1683,20 @@ class Stack3DWindow(QtWidgets.QDialog):
         lam: float = 0.4,
         mu: float = -0.42,
     ) -> np.ndarray:
+        """Provide an internal helper for taubin smooth polyline.
+        
+        Args:
+            points_xyz (np.ndarray): Value for points xyz interpreted by this routine.
+            fixed_mask (np.ndarray): Array-like data carrying fixed mask values for analysis.
+            iters (int): Numeric control parameter for iters during computation.
+            lam (float): Value for lam interpreted by this routine.
+            mu (float): Value for mu interpreted by this routine.
+        
+        Returns:
+            np.ndarray: Array containing the taubin smooth polyline output aligned with downstream expectations.
+        
+        Raises:
+            ValueError: If provided values violate validation or domain constraints."""
         pts = np.asarray(points_xyz, dtype=np.float32)
         fixed = np.asarray(fixed_mask, dtype=bool).reshape(-1)
         if pts.ndim != 2 or pts.shape[1] != 3 or pts.shape[0] < 3:
@@ -1426,6 +1726,18 @@ class Stack3DWindow(QtWidgets.QDialog):
         max_segments: int = 350000,
         connectivity: int = 6,
     ) -> Tuple[np.ndarray, np.ndarray]:
+        """Provide an internal helper for build centerline segments xyz.
+        
+        Args:
+            skeleton (np.ndarray): Value for skeleton interpreted by this routine.
+            max_segments (int): Value for max segments interpreted by this routine.
+            connectivity (int): Value for connectivity interpreted by this routine.
+        
+        Returns:
+            Tuple[np.ndarray, np.ndarray]: Array containing the build centerline segments xyz output aligned with downstream expectations.
+        
+        Raises:
+            ValueError: If provided values violate validation or domain constraints."""
         skel = np.asarray(skeleton, dtype=np.int32)
         if skel.ndim != 3 or skel.size == 0:
             return np.zeros((0, 3), dtype=np.float32), np.zeros((0, 4), dtype=np.float32)
@@ -1581,6 +1893,10 @@ class Stack3DWindow(QtWidgets.QDialog):
 
     def _dominant_view_axis(self) -> int:
         # GLVolumeItem selects slices from the dominant camera axis (x=0, y=1, z=2).
+        """Provide an internal helper for dominant view axis.
+        
+        Returns:
+            int: Result object produced by the dominant view axis routine."""
         if self._gl is None or not hasattr(self, "gl_view"):
             return 2
         try:
@@ -1603,6 +1919,11 @@ class Stack3DWindow(QtWidgets.QDialog):
 
     def _apply_projection_mode(self, volume_item, projection: str):
         # Approximate ImageJ-like volume compositing with GL blending modes.
+        """Provide an internal helper for apply projection mode.
+        
+        Args:
+            volume_item (Any): Array-like data carrying volume item values for analysis.
+            projection (str): Value for projection interpreted by this routine."""
         try:
             from OpenGL import GL
         except Exception:

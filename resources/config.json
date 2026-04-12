@@ -1,5 +1,5 @@
 {
-    "checkpoint_path": "checkpoints/fiber_2000_epoch.pt",
+    "checkpoint_path": "checkpoints/fiber_epoch_4500.pt",
     "use_gpu": true,
     "scale_label": "1x",
     "max_angle_deg": 30.0,
@@ -18,15 +18,15 @@
         0.35
     ],
     "save_options": {
-        "collision": "suffix",
-        "debug": true,
-        "dt": true,
-        "image_format": "png",
+        "dt": false,
         "labels": true,
-        "outline": false,
-        "overlay": true,
-        "style_vector": false,
+        "overlay": false,
+        "debug": false,
+        "outline": true,
         "tables": true,
+        "style_vector": true,
+        "image_format": "png",
+        "collision": "suffix",
         "write_manifest": true
     }
 }

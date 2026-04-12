@@ -1,3 +1,5 @@
+"""Fastest-ascend segmentation over distance maps with optional numba acceleration."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -9,11 +11,16 @@ from numba import njit, prange
 
 @dataclass(frozen=True)
 class FastestAscendConfig:
+    """Store configuration values for fastest ascend."""
     sigma: float = 1.0
     dist_thresh: float = 0.2
     flux_merge_thresh: float = 5.0
 
     def normalized(self) -> "FastestAscendConfig":
+        """Orchestrate normalized within the current module workflow.
+        
+        Returns:
+            'FastestAscendConfig': Result object produced by the normalized routine."""
         sigma = max(0.0, float(self.sigma))
         dist_thresh = float(np.clip(float(self.dist_thresh), 0.0, 1.0))
         flux_merge_thresh = max(0.0, float(self.flux_merge_thresh))
@@ -152,6 +159,13 @@ def _merge_regions_numba(
     parent = np.arange(n_pixels + 1, dtype=np.int32)
 
     def find(i):
+        """Orchestrate find within the current module workflow.
+        
+        Args:
+            i (Any): Value for i interpreted by this routine.
+        
+        Returns:
+            Any: Object containing the find outcome for downstream use."""
         root = i
         while root != parent[root]:
             root = parent[root]
@@ -164,6 +178,11 @@ def _merge_regions_numba(
         return root
 
     def union(i, j):
+        """Orchestrate union within the current module workflow.
+        
+        Args:
+            i (Any): Value for i interpreted by this routine.
+            j (Any): Value for j interpreted by this routine."""
         root_i = find(i)
         root_j = find(j)
         if root_i != root_j:
@@ -210,6 +229,14 @@ class FluxSegmentor:
     """Distance-transform segmentation via steepest-ascent flow and flux-based merging."""
 
     def __init__(self, dist_map: np.ndarray, sigma: float = 1.0):
+        """Initialize flux segmentor and establish required runtime state.
+        
+        Args:
+            dist_map (np.ndarray): Value for dist map interpreted by this routine.
+            sigma (float): Numeric control parameter for sigma during computation.
+        
+        Raises:
+            ValueError: If provided values violate validation or domain constraints."""
         dist_arr = np.asarray(dist_map, dtype=np.float32)
         if dist_arr.ndim != 2:
             raise ValueError("dist_map must be a 2D array")
@@ -226,6 +253,14 @@ class FluxSegmentor:
 
     @staticmethod
     def _prepare_distance_map(dist_map: np.ndarray, sigma: float) -> np.ndarray:
+        """Provide an internal helper for prepare distance map.
+        
+        Args:
+            dist_map (np.ndarray): Value for dist map interpreted by this routine.
+            sigma (float): Numeric control parameter for sigma during computation.
+        
+        Returns:
+            np.ndarray: Array containing the prepare distance map output aligned with downstream expectations."""
         safe_map = np.nan_to_num(dist_map, copy=False, nan=0.0, posinf=0.0, neginf=0.0)
         min_val = float(np.min(safe_map))
         max_val = float(np.max(safe_map))
@@ -272,6 +307,14 @@ class FluxSegmentor:
         return self.labels
 
     def _post_process_labels(self, dests_flat: np.ndarray, is_bg_flat: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """Provide an internal helper for post process labels.
+        
+        Args:
+            dests_flat (np.ndarray): Value for dests flat interpreted by this routine.
+            is_bg_flat (np.ndarray): Boolean flag that toggles is bg flat behavior.
+        
+        Returns:
+            tuple[np.ndarray, np.ndarray]: Array containing the post process labels output aligned with downstream expectations."""
         labels_2d = np.zeros((self.h, self.w), dtype=np.int32)
         attractors_2d = np.zeros((self.h, self.w), dtype=np.int32)
 
@@ -293,6 +336,10 @@ class FluxSegmentor:
         return labels_2d, attractors_2d
 
     def get_results(self) -> dict[str, np.ndarray | None]:
+        """Return results in the format expected by downstream consumers.
+        
+        Returns:
+            dict[str, np.ndarray | None]: Array containing the transformed or derived data."""
         flux_2d = None
         if self.flux_map is not None:
             flux_2d = self.flux_map.reshape(self.h, self.w)

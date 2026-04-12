@@ -17,7 +17,13 @@ INF = float("inf")
 
 
 class EndpointIndex:
+    """Represent endpoint index state used across processing and visualization workflows."""
     def __init__(self, endpoints: Iterable[FragmentEndpoint], skip_endpoint_px: float = 0.0):
+        """Initialize endpoint index and establish required runtime state.
+        
+        Args:
+            endpoints (Iterable[FragmentEndpoint]): Value for endpoints interpreted by this routine.
+            skip_endpoint_px (float): Value for skip endpoint px interpreted by this routine."""
         self.eps = list(endpoints)
         self.pos = np.vstack([e.shifted_pos(skip_endpoint_px) for e in self.eps]).astype(np.float32)
         self.fid = np.array([e.fragment.fragment_id for e in self.eps], np.int32)
@@ -30,6 +36,16 @@ class EndpointIndex:
         exclude_same_fragment: bool = True,
         max_neighbors: int | None = None,
     ) -> List[FragmentEndpoint]:
+        """Orchestrate query neighbors within the current module workflow.
+        
+        Args:
+            ep (FragmentEndpoint): Value for ep interpreted by this routine.
+            d_max (float): Value for d max interpreted by this routine.
+            exclude_same_fragment (bool): Value for exclude same fragment interpreted by this routine.
+            max_neighbors (int | None): Value for max neighbors interpreted by this routine.
+        
+        Returns:
+            List[FragmentEndpoint]: List of query neighbors results produced for downstream iteration."""
         i0 = self.idx_of[ep]
         p = self.pos[i0]
         diff = self.pos - p
@@ -49,11 +65,20 @@ class EndpointIndex:
 
 
 class UnionFind:
+    """Represent union find state used across processing and visualization workflows."""
     def __init__(self):
+        """Initialize union find with validated runtime dependencies and defaults."""
         self.parent = {}
         self.rank = {}
 
     def find(self, x: int) -> int:
+        """Orchestrate find within the current module workflow.
+        
+        Args:
+            x (int): Coordinate component representing the x axis value.
+        
+        Returns:
+            int: Result object produced by the find routine."""
         if x not in self.parent:
             self.parent[x] = x
             self.rank[x] = 0
@@ -62,6 +87,14 @@ class UnionFind:
         return self.parent[x]
 
     def union(self, a: int, b: int) -> None:
+        """Orchestrate union within the current module workflow.
+        
+        Args:
+            a (int): Value for a interpreted by this routine.
+            b (int): Value for b interpreted by this routine.
+        
+        Returns:
+            None: Result object produced by the union routine."""
         ra, rb = self.find(a), self.find(b)
         if ra == rb:
             return
@@ -87,6 +120,21 @@ def line_to_line_rms_cost(
     radius_weight: float = 0.0,
     skip_endpoint_px: float = 0.0,
 ) -> float:
+    """Orchestrate line to line rms cost within the current module workflow.
+    
+    Args:
+        ep1 (FragmentEndpoint): Value for ep1 interpreted by this routine.
+        ep2 (FragmentEndpoint): Value for ep2 interpreted by this routine.
+        step_px (float): Numeric control parameter for step px during computation.
+        max_samples (int): Value for max samples interpreted by this routine.
+        require_facing (bool): Value for require facing interpreted by this routine.
+        cos_min (float): Value for cos min interpreted by this routine.
+        length_weight (float): Numeric control parameter for length weight during computation.
+        radius_weight (float): Numeric control parameter for radius weight during computation.
+        skip_endpoint_px (float): Value for skip endpoint px interpreted by this routine.
+    
+    Returns:
+        float: Result object produced by the line to line rms cost routine."""
     if hasattr(ep1, "same_fragment") and ep1.same_fragment(ep2):
         return INF
 
@@ -137,6 +185,19 @@ def stitch_and_cluster(
     radius_weight: float = 0.0,
     skip_endpoint_px: float = 0.0,
 ) -> None:
+    """Orchestrate stitch and cluster within the current module workflow.
+    
+    Args:
+        fragments (Sequence[FiberFragment]): Value for fragments interpreted by this routine.
+        d_max (float): Value for d max interpreted by this routine.
+        threshold (float): Numeric control parameter for threshold during computation.
+        max_neighbors (int | None): Value for max neighbors interpreted by this routine.
+        length_weight (float): Numeric control parameter for length weight during computation.
+        radius_weight (float): Numeric control parameter for radius weight during computation.
+        skip_endpoint_px (float): Value for skip endpoint px interpreted by this routine.
+    
+    Returns:
+        None: Result object produced by the stitch and cluster routine."""
     endpoints = [ep for f in fragments for ep in f.endpoints()]
     index = EndpointIndex(endpoints, skip_endpoint_px=skip_endpoint_px)
 
@@ -194,10 +255,24 @@ def stitch_and_cluster(
 # Diagnostics + visualization helpers
 # ---------------------------------------------------------------------------
 def endpoint_label(ep: FragmentEndpoint) -> str:
+    """Orchestrate endpoint label within the current module workflow.
+    
+    Args:
+        ep (FragmentEndpoint): Value for ep interpreted by this routine.
+    
+    Returns:
+        str: String value representing the normalized endpoint label outcome."""
     return f"{ep.fragment.fragment_id}{ep.end}"
 
 
 def load_fragments_from_txt(path: str) -> List[FiberFragment]:
+    """Load fragments from txt from persisted storage and normalize it for use.
+    
+    Args:
+        path (str): Filesystem location used by this operation.
+    
+    Returns:
+        List[FiberFragment]: List of computed elements in processing order."""
     seg_pts = defaultdict(list)
     with open(path, "r", encoding="utf-8") as f:
         for line in f:
@@ -224,6 +299,14 @@ def load_fragments_from_txt(path: str) -> List[FiberFragment]:
 def compute_canvas_size(
     fragments: Sequence[FiberFragment], margin: int = 20
 ) -> Tuple[int, int, np.ndarray]:
+    """Compute canvas size required by later pipeline stages.
+    
+    Args:
+        fragments (Sequence[FiberFragment]): Value for fragments interpreted by this routine.
+        margin (int): Value for margin interpreted by this routine.
+    
+    Returns:
+        Tuple[int, int, np.ndarray]: Array containing the compute canvas size output aligned with downstream expectations."""
     xs = np.concatenate([f.centerline_xy[:, 0] for f in fragments])
     ys = np.concatenate([f.centerline_xy[:, 1] for f in fragments])
     minx, maxx = np.floor(xs.min()), np.ceil(xs.max())
@@ -235,6 +318,11 @@ def compute_canvas_size(
 
 
 def draw_debug(fragments: Sequence[FiberFragment], window_name: str = "Clustering Debug"):
+    """Orchestrate draw debug within the current module workflow.
+    
+    Args:
+        fragments (Sequence[FiberFragment]): Value for fragments interpreted by this routine.
+        window_name (str): Value for window name interpreted by this routine."""
     width, height, origin = compute_canvas_size(fragments, margin=20)
     canvas = np.full((height, width, 3), 255, np.uint8)
 
@@ -280,6 +368,15 @@ def draw_debug(fragments: Sequence[FiberFragment], window_name: str = "Clusterin
 
 
 def _perp_mean_to_line(anchor: np.ndarray, dir_unit: np.ndarray, pts: np.ndarray) -> float:
+    """Provide an internal helper for perp mean to line.
+    
+    Args:
+        anchor (np.ndarray): Value for anchor interpreted by this routine.
+        dir_unit (np.ndarray): Filesystem location describing where dir unit is read or written.
+        pts (np.ndarray): Value for pts interpreted by this routine.
+    
+    Returns:
+        float: Result object produced by the perp mean to line routine."""
     n = np.array([-dir_unit[1], dir_unit[0]], dtype=np.float32)
     v = pts - anchor[None, :]
     d = np.abs(v @ n)
@@ -297,6 +394,20 @@ def build_pairs_table(
     length_weight: float = 0.0,
     radius_weight: float = 0.0,
 ) -> List[dict]:
+    """Build pairs table from currently available inputs.
+    
+    Args:
+        endpoints (Sequence[FragmentEndpoint]): Value for endpoints interpreted by this routine.
+        index (EndpointIndex): Zero-based index selecting which index to operate on.
+        d_max (float): Value for d max interpreted by this routine.
+        topk (int): Value for topk interpreted by this routine.
+        n_eval (int): Value for n eval interpreted by this routine.
+        cos_min (float): Value for cos min interpreted by this routine.
+        length_weight (float): Numeric control parameter for length weight during computation.
+        radius_weight (float): Numeric control parameter for radius weight during computation.
+    
+    Returns:
+        List[dict]: List of build pairs table results produced for downstream iteration."""
     rows = []
     for ep in endpoints:
         nbrs = index.query_neighbors(ep, d_max, exclude_same_fragment=True, max_neighbors=topk)
@@ -345,6 +456,13 @@ def build_pairs_table(
 # Main entry point
 # ---------------------------------------------------------------------------
 def main(argv: Sequence[str] | None = None) -> int:
+    """Run the module entry point for command-line execution.
+    
+    Args:
+        argv (Sequence[str] | None): Value for argv interpreted by this routine.
+    
+    Returns:
+        int: Result object produced by the main routine."""
     parser = argparse.ArgumentParser(description="Minimal debugger for fiber clustering")
     parser.add_argument("txt", help="Path to centerlines .txt")
     parser.add_argument("--dmax", type=float, default=150.0, help="Neighbor search radius (pixels)")

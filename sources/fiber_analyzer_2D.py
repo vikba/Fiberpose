@@ -1,3 +1,5 @@
+"""2D fiber analysis pipeline combining inference, centerlines, and measurements."""
+
 from __future__ import annotations
 
 import logging
@@ -46,6 +48,13 @@ class FiberAnalyzer_2D:
         model_kwargs: Optional[Dict[str, Any]] = None,
         strict: bool | None = None,
     ):
+        """Initialize fiber analyzer 2 d and establish required runtime state.
+        
+        Args:
+            ckpt_path (str): Filesystem location describing where ckpt path is read or written.
+            device (Any): Execution target device (for example CPU or CUDA).
+            model_kwargs (Optional[Dict[str, Any]]): Value for model kwargs interpreted by this routine.
+            strict (bool | None): Boolean flag that toggles strict behavior."""
         self.ckpt_path = ckpt_path
         self.device = device
 
@@ -95,11 +104,16 @@ class FiberAnalyzer_2D:
     # Internal helpers / state
 
     def dt_predicted(self):
+        """Orchestrate dt predicted within the current module workflow.
+        
+        Returns:
+            Any: Object containing the dt predicted outcome for downstream use."""
         if self._dt is not None:
             return True
         return False
 
     def reset_prediction_state(self):
+        """Orchestrate reset prediction state within the current module workflow."""
         self._dt: Optional[np.ndarray] = None
         self._dt_u8: Optional[np.ndarray] = None
         self._dt_norm: Optional[np.ndarray] = None
@@ -118,6 +132,10 @@ class FiberAnalyzer_2D:
 
     @staticmethod
     def _default_centerline_kwargs() -> Dict[str, Any]:
+        """Provide an internal helper for default centerline kwargs.
+        
+        Returns:
+            Dict[str, Any]: Mapping containing named default centerline kwargs outputs and metadata."""
         return {
             "sigma": 1.0,
             "low": 0.01,
@@ -130,6 +148,10 @@ class FiberAnalyzer_2D:
         }
 
     def set_strict_centerline_filter(self, strict: bool):
+        """Update strict centerline filter and synchronize dependent runtime state.
+        
+        Args:
+            strict (bool): Boolean flag that toggles strict behavior."""
         self._strict_centerlines = bool(strict)
 
     def enable_fiber_clustering(self, enabled: bool, **cluster_kwargs: Any) -> None:
@@ -145,6 +167,10 @@ class FiberAnalyzer_2D:
         return dict(self._cluster_config)
 
     def set_device(self, device: Any):
+        """Update device and keep dependent state synchronized.
+        
+        Args:
+            device (Any): Execution device identifier (for example CPU or CUDA)."""
         if device == self.device:
             return
         self.device = device
@@ -162,6 +188,10 @@ class FiberAnalyzer_2D:
         logger.info("FiberAnalyzer_2D checkpoint switched to %s", ckpt_path)
 
     def _ensure_predictor(self) -> FiberposeModel:
+        """Provide an internal helper for ensure predictor.
+        
+        Returns:
+            FiberposeModel: Result object produced by the ensure predictor routine."""
         if self._predictor is not None:
             return self._predictor
         kwargs = dict(self._model_kwargs)
@@ -173,6 +203,10 @@ class FiberAnalyzer_2D:
         return self._predictor
 
     def _infer_model_stride(self) -> int:
+        """Provide an internal helper for infer model stride.
+        
+        Returns:
+            int: Result object produced by the infer model stride routine."""
         stride = 16
         predictor = self._ensure_predictor()
         try:
@@ -190,6 +224,13 @@ class FiberAnalyzer_2D:
 
     def _run_model(self, image: np.ndarray) -> Tuple[np.ndarray, Optional[np.ndarray]]:
 
+        """Provide an internal helper for run model.
+        
+        Args:
+            image (np.ndarray): Array-like data carrying image values for analysis.
+        
+        Returns:
+            Tuple[np.ndarray, Optional[np.ndarray]]: Array containing the run model output aligned with downstream expectations."""
         predictor = self._ensure_predictor()
         stride = self._infer_model_stride()
         H, W = image.shape[:2]
@@ -208,6 +249,15 @@ class FiberAnalyzer_2D:
         return np.asarray(dt, dtype=np.float32), style_vec
 
     def _set_dt_and_gradients(self, dt: np.ndarray, gx: np.ndarray, gy: np.ndarray):
+        """Provide an internal helper for set dt and gradients.
+        
+        Args:
+            dt (np.ndarray): Value for dt interpreted by this routine.
+            gx (np.ndarray): Value for gx interpreted by this routine.
+            gy (np.ndarray): Value for gy interpreted by this routine.
+        
+        Raises:
+            ValueError: If provided values violate validation or domain constraints."""
         self._dt = np.asarray(dt, dtype=np.float32)
         self._dt_u8 = np.clip(self._dt, 0, 255).astype(np.uint8)
         self._dt_norm = self._dt / 255.0
@@ -438,6 +488,15 @@ class FiberAnalyzer_2D:
         segments: List[FiberFragment],
         cluster_connections: List[Tuple[np.ndarray, np.ndarray]] | None = None,
     ) -> np.ndarray:
+        """Provide an internal helper for render centerlines rgb.
+        
+        Args:
+            dt_u8 (np.ndarray): Value for dt u8 interpreted by this routine.
+            segments (List[FiberFragment]): Value for segments interpreted by this routine.
+            cluster_connections (List[Tuple[np.ndarray, np.ndarray]] | None): Value for cluster connections interpreted by this routine.
+        
+        Returns:
+            np.ndarray: Array containing the render centerlines rgb output aligned with downstream expectations."""
         base_dt = to_uint8_for_view(dt_u8)
         centerlines_rgb = cv2.cvtColor(base_dt, cv2.COLOR_GRAY2BGR)
 
@@ -691,6 +750,14 @@ class FiberAnalyzer_2D:
         segments: List[FiberFragment],
         cluster_config: Dict[str, Any],
     ) -> List[Tuple[np.ndarray, np.ndarray]]:
+        """Provide an internal helper for cluster segments.
+        
+        Args:
+            segments (List[FiberFragment]): Value for segments interpreted by this routine.
+            cluster_config (Dict[str, Any]): Configuration values that control how cluster config is processed.
+        
+        Returns:
+            List[Tuple[np.ndarray, np.ndarray]]: Array containing the cluster segments output aligned with downstream expectations."""
         if not segments:
             return []
 
@@ -719,6 +786,13 @@ class FiberAnalyzer_2D:
 
     @staticmethod
     def _normalize_parent_ids(segments: List[FiberFragment]) -> Dict[int, int]:
+        """Provide an internal helper for normalize parent ids.
+        
+        Args:
+            segments (List[FiberFragment]): Value for segments interpreted by this routine.
+        
+        Returns:
+            Dict[int, int]: Mapping containing named normalize parent ids outputs and metadata."""
         remap: Dict[int, int] = {}
         next_id = 1
         for seg in segments:
@@ -733,6 +807,14 @@ class FiberAnalyzer_2D:
 
     @staticmethod
     def _render_markers(shape: Tuple[int, int], segments: List[FiberFragment]) -> np.ndarray:
+        """Provide an internal helper for render markers.
+        
+        Args:
+            shape (Tuple[int, int]): Value for shape interpreted by this routine.
+            segments (List[FiberFragment]): Value for segments interpreted by this routine.
+        
+        Returns:
+            np.ndarray: Array containing the render markers output aligned with downstream expectations."""
         markers = np.zeros(shape, dtype=np.int32)
         for seg in segments:
             pts = np.asarray(seg.points_xy, dtype=np.float32)
@@ -783,24 +865,52 @@ class FiberAnalyzer_2D:
     # Accessors
 
     def get_dt(self) -> Optional[np.ndarray]:
+        """Return dt in the format expected by downstream consumers.
+        
+        Returns:
+            Optional[np.ndarray]: Array containing the transformed or derived data."""
         return self._dt
 
     def get_dt_u8(self) -> Optional[np.ndarray]:
+        """Return dt u8 in the format expected by downstream consumers.
+        
+        Returns:
+            Optional[np.ndarray]: Array containing the transformed or derived data."""
         return self._dt_u8
 
     def get_dt_norm(self) -> Optional[np.ndarray]:
+        """Return dt norm in the format expected by downstream consumers.
+        
+        Returns:
+            Optional[np.ndarray]: Array containing the transformed or derived data."""
         return self._dt_norm
 
     def get_style_vector(self) -> Optional[np.ndarray]:
+        """Return style vector in the format expected by downstream consumers.
+        
+        Returns:
+            Optional[np.ndarray]: Array containing the transformed or derived data."""
         return self._style_vec
 
     def get_gradients(self) -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]:
+        """Return gradients in the format expected by downstream consumers.
+        
+        Returns:
+            Tuple[Optional[np.ndarray], Optional[np.ndarray]]: Array containing the transformed or derived data."""
         return self._gx, self._gy
 
     def get_laplacian(self) -> Optional[np.ndarray]:
+        """Return laplacian in the format expected by downstream consumers.
+        
+        Returns:
+            Optional[np.ndarray]: Array containing the transformed or derived data."""
         return self._laplacian
 
     def get_centerlines_image(self) -> Optional[np.ndarray]:
+        """Return centerlines image in the format expected by downstream consumers.
+        
+        Returns:
+            Optional[np.ndarray]: Array containing the transformed or derived data."""
         return self._centerlines_rgb
 
     def get_cluster_connections(self) -> List[Tuple[np.ndarray, np.ndarray]]:
@@ -810,17 +920,33 @@ class FiberAnalyzer_2D:
         return [(p.copy(), q.copy()) for p, q in self._cluster_connection_pairs]
 
     def get_centerline_segments(self) -> List[np.ndarray]:
+        """Return centerline segments in the format expected by downstream consumers.
+        
+        Returns:
+            List[np.ndarray]: Array containing the transformed or derived data."""
         if not self._constant_segments:
             return []
         return [seg.points_xy.reshape(-1, 1, 2) for seg in self._constant_segments]
 
     def get_centerline_normals(self) -> List[np.ndarray]:
+        """Return centerline normals in the format expected by downstream consumers.
+        
+        Returns:
+            List[np.ndarray]: Array containing the transformed or derived data."""
         return self._normals_xy or []
 
     def get_markers(self) -> Optional[np.ndarray]:
+        """Return markers in the format expected by downstream consumers.
+        
+        Returns:
+            Optional[np.ndarray]: Array containing the transformed or derived data."""
         return self._markers
 
     def get_labels(self) -> Optional[np.ndarray]:
+        """Return labels in the format expected by downstream consumers.
+        
+        Returns:
+            Optional[np.ndarray]: Array containing the transformed or derived data."""
         return self._labels
 
     # ------------------------------------------------------------------ #
@@ -912,6 +1038,18 @@ class FiberAnalyzer_2D:
         peak_footprint: int = 3,
         max_pores: int | None = None,
     ) -> List[dict]:
+        """Orchestrate sample inscribed circles within the current module workflow.
+        
+        Args:
+            pore_dt (np.ndarray): Value for pore dt interpreted by this routine.
+            void_mask (np.ndarray): Array-like data carrying void mask values for analysis.
+            min_radius_px (float): Numeric control parameter for min radius px during computation.
+            min_peak_px (float): Value for min peak px interpreted by this routine.
+            peak_footprint (int): Value for peak footprint interpreted by this routine.
+            max_pores (int | None): Value for max pores interpreted by this routine.
+        
+        Returns:
+            List[dict]: List of sample inscribed circles results produced for downstream iteration."""
         if pore_dt is None or void_mask is None:
             return []
 
@@ -998,6 +1136,14 @@ class FiberAnalyzer_2D:
             # Convert tangent direction to canonical orientation angle in image coords:
             # - use clockwise-positive convention via leading minus
             # - fold 180-degree equivalent directions into (-90, 90]
+            """Provide an internal helper for canon angle.
+            
+            Args:
+                ty (float): Value for ty interpreted by this routine.
+                tx (float): Value for tx interpreted by this routine.
+            
+            Returns:
+                Any: Object containing the canon angle outcome for downstream use."""
             n = float(np.hypot(ty, tx))
             if n == 0.0 or not np.isfinite(n):
                 return None
@@ -1112,6 +1258,16 @@ class FiberAnalyzer_2D:
         trim: int = 3,
         tol: float = 3.0,
     ) -> List[np.ndarray]:
+        """Provide an internal helper for split and trim contour.
+        
+        Args:
+            contour (np.ndarray): Array-like data carrying contour values for analysis.
+            junction_points (List[Tuple[int, int]]): Value for junction points interpreted by this routine.
+            trim (int): Value for trim interpreted by this routine.
+            tol (float): Value for tol interpreted by this routine.
+        
+        Returns:
+            List[np.ndarray]: Array containing the split and trim contour output aligned with downstream expectations."""
         pts_xy = contour.reshape(-1, 2)
         split_indices: List[int] = []
         for (jx, jy) in junction_points:
@@ -1149,6 +1305,27 @@ class FiberAnalyzer_2D:
         radius_rel_tol: float = 0.25,
         min_valid_fraction: float = 0.7,
     ) -> List[np.ndarray]:
+        """Provide an internal helper for sliding window filter.
+        
+        Args:
+            seg_xy (np.ndarray): Value for seg xy interpreted by this routine.
+            image (np.ndarray): Array-like data carrying image values for analysis.
+            dt (np.ndarray | None): Value for dt interpreted by this routine.
+            grad_x (np.ndarray | None): Value for grad x interpreted by this routine.
+            grad_y (np.ndarray | None): Value for grad y interpreted by this routine.
+            win_len (float): Value for win len interpreted by this routine.
+            std_thresh (float): Value for std thresh interpreted by this routine.
+            max_angle (float): Numeric control parameter for max angle during computation.
+            strict (bool): Boolean flag that toggles strict behavior.
+            grad_alignment_cos (float): Value for grad alignment cos interpreted by this routine.
+            radius_rel_tol (float): Numeric control parameter for radius rel tol during computation.
+            min_valid_fraction (float): Value for min valid fraction interpreted by this routine.
+        
+        Returns:
+            List[np.ndarray]: Array containing the sliding window filter output aligned with downstream expectations.
+        
+        Raises:
+            ValueError: If provided values violate validation or domain constraints."""
         if strict and (dt is None or grad_x is None or grad_y is None):
             raise ValueError("Strict centerline filtering requires dt, grad_x, and grad_y.")
 
@@ -1171,6 +1348,13 @@ class FiberAnalyzer_2D:
         h, w = gray.shape[:2]
 
         def sample_intensity(p_xy: np.ndarray) -> float:
+            """Orchestrate sample intensity within the current module workflow.
+            
+            Args:
+                p_xy (np.ndarray): Value for p xy interpreted by this routine.
+            
+            Returns:
+                float: Result object produced by the sample intensity routine."""
             x, y = int(round(p_xy[0])), int(round(p_xy[1]))
             x = min(max(x, 0), w - 1)
             y = min(max(y, 0), h - 1)
@@ -1318,6 +1502,19 @@ class FiberAnalyzer_2D:
         angle_thresh_deg: float = 60.0,
         side: str = "left",
     ) -> np.ndarray:
+        """Provide an internal helper for polyline normals.
+        
+        Args:
+            pts_xy (np.ndarray): Value for pts xy interpreted by this routine.
+            window (int): Value for window interpreted by this routine.
+            angle_thresh_deg (float): Numeric control parameter for angle thresh deg during computation.
+            side (str): Value for side interpreted by this routine.
+        
+        Returns:
+            np.ndarray: Array containing the polyline normals output aligned with downstream expectations.
+        
+        Raises:
+            ValueError: If provided values violate validation or domain constraints."""
         pts_xy = np.asarray(pts_xy, dtype=np.float32).reshape(-1, 2)
         n = len(pts_xy)
         if n < 2:
@@ -1329,9 +1526,23 @@ class FiberAnalyzer_2D:
         u = seg / seg_norm
 
         def rot90(v: np.ndarray) -> np.ndarray:
+            """Orchestrate rot90 within the current module workflow.
+            
+            Args:
+                v (np.ndarray): Value for v interpreted by this routine.
+            
+            Returns:
+                np.ndarray: Array containing the rot90 output aligned with downstream expectations."""
             return np.stack([-v[:, 1], v[:, 0]], axis=1)
 
         def unit(v: np.ndarray) -> np.ndarray:
+            """Orchestrate unit within the current module workflow.
+            
+            Args:
+                v (np.ndarray): Value for v interpreted by this routine.
+            
+            Returns:
+                np.ndarray: Array containing the unit output aligned with downstream expectations."""
             nrm = np.linalg.norm(v, axis=1, keepdims=True) + eps
             return v / nrm
 

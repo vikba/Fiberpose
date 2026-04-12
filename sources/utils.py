@@ -1,3 +1,5 @@
+"""Shared numeric and image helper utilities used across Fiberpose modules."""
+
 import colorsys
 import numpy as np
 from numba import njit
@@ -16,6 +18,13 @@ def label_to_rgb(label: int) -> tuple[int, int, int]:
 
 # ------------- image helpers -------------
 def to_uint8_for_view(img: np.ndarray | None) -> np.ndarray | None:
+    """Convert values into uint8 for view for downstream compatibility.
+    
+    Args:
+        img (np.ndarray | None): Value for img interpreted by this routine.
+    
+    Returns:
+        np.ndarray | None: Array containing the to uint8 for view output aligned with downstream expectations."""
     if img is None:
         return None
     arr = img.astype(np.float32, copy=False)
@@ -29,6 +38,13 @@ def to_uint8_for_view(img: np.ndarray | None) -> np.ndarray | None:
 
 
 def ensure_rgb_u8(img: np.ndarray | None) -> np.ndarray | None:
+    """Ensure rgb u8 is initialized and ready before use.
+    
+    Args:
+        img (np.ndarray | None): Value for img interpreted by this routine.
+    
+    Returns:
+        np.ndarray | None: Array containing the ensure rgb u8 output aligned with downstream expectations."""
     if img is None:
         return None
     if img.ndim == 2:
@@ -46,6 +62,14 @@ def ensure_rgb_u8(img: np.ndarray | None) -> np.ndarray | None:
 # ------------- core math helpers -------------
 @njit(cache=True)
 def _normalize(v, eps=1e-12):
+    """Provide an internal helper for normalize.
+    
+    Args:
+        v (Any): Value for v interpreted by this routine.
+        eps (Any): Value for eps interpreted by this routine.
+    
+    Returns:
+        Any: Object containing the normalize outcome for downstream use."""
     n = np.sqrt(np.sum(v * v))
     return v / (n + eps)
 
