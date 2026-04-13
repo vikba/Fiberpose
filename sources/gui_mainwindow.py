@@ -129,6 +129,10 @@ class MainWindow(QMainWindow):
         self.working_dir = os.path.dirname(ui_path)
         self.current_frame: Frame = Frame.empty()
         self.analyzer: FiberAnalyzer_2D | None = None
+        self._prediction_sig: str | None = None
+        self._centerline_sig: str | None = None
+        self._segmentation_sig: str | None = None
+        self._measurement_sig: str | None = None
         self.current_image_name: str | None = None
         self._scalebar_pending: bool = False
         self._scalebar_points: list[tuple[float, float]] = []
@@ -303,12 +307,14 @@ class MainWindow(QMainWindow):
             self.rb_fastest_ascend.toggled.connect(self.sync_ui_to_config)
 
         # Spinboxes
-        # `sp_max_cent_angle` is config-only (not read from main panel).
+        if hasattr(self, "sp_max_cent_angle"):
+            self.sp_max_cent_angle.valueChanged.connect(self.sync_ui_to_config)
         self.sp_segm_threshold.valueChanged.connect(self.sync_ui_to_config)
 
         # Line Edits (Text boxes)
         # Note: We use `editingFinished` instead of `textChanged`.
-        # `le_samspacing` is config-only (not read from main panel).
+        if hasattr(self, "le_samspacing"):
+            self.le_samspacing.editingFinished.connect(self.sync_ui_to_config)
         self.le_pixelsize.editingFinished.connect(self.sync_ui_to_sample_properties)
         if hasattr(self, "le_voxeldepth"):
             self.le_voxeldepth.editingFinished.connect(self.sync_ui_to_sample_properties)
@@ -360,6 +366,7 @@ class MainWindow(QMainWindow):
             self.analyzer.set_checkpoint_path(new_path)
         else:
             logger.info("Checkpoint selection stored for later init: %s", new_path)
+        self._invalidate_prediction()
 
     def _discover_checkpoint_files(self) -> list[str]:
         """Provide an internal helper for discover checkpoint files.
@@ -587,66 +594,510 @@ class MainWindow(QMainWindow):
             self.current_frame.labels_rgb_cache = (current_id, cache_img)
         return cache_img
 
-    def _ensure_dt_ready(self) -> bool:
-        """Provide an internal helper for ensure dt ready.
-        
-        Returns:
-            bool: True when the validation or availability check succeeds; otherwise False."""
+    def _effective_scale_factor(self) -> float:
+        token = str(getattr(self.config, "scale_label", "1x") or "1x").strip().lower().replace("×", "x")
+        if token.endswith("x"):
+            token = token[:-1]
+        try:
+            scale = float(token)
+        except Exception:
+            scale = 1.0
+        if not np.isfinite(scale) or scale <= 0:
+            return 1.0
+        return float(scale)
+
+    def _processing_image(self) -> np.ndarray | None:
+        fr = self.current_frame
+        image = fr.orig_img
+        if image is None:
+            return None
+
+        scale = self._effective_scale_factor()
+        if math.isclose(scale, 1.0, rel_tol=1e-9, abs_tol=1e-9):
+            fr.scale_factor = 1.0
+            fr.orig_img_scaled = None
+            if self.analyzer is not None:
+                self.analyzer.scale_factor = 1.0
+            return image
+
+        needs_rescale = (
+            fr.orig_img_scaled is None
+            or not math.isclose(float(fr.scale_factor), float(scale), rel_tol=1e-9, abs_tol=1e-9)
+        )
+        if needs_rescale:
+            interp = cv2.INTER_AREA if scale < 1.0 else cv2.INTER_CUBIC
+            fr.orig_img_scaled = cv2.resize(
+                image,
+                None,
+                fx=float(scale),
+                fy=float(scale),
+                interpolation=interp,
+            )
+        fr.scale_factor = float(scale)
+        if self.analyzer is not None:
+            self.analyzer.scale_factor = float(scale)
+        return fr.orig_img_scaled
+
+    def _segmentation_params(self) -> tuple[str, dict[str, Any]]:
+        mode = str(getattr(self.config, "segmentation_mode", "watershed") or "watershed")
+        thr_u8 = int(getattr(self.config, "seg_threshold", 1))
+
+        if mode == "ridge":
+            current_scale = self.current_frame.scale_factor if np.isfinite(self.current_frame.scale_factor) else 1.0
+            radius_val = (thr_u8 / 255.0) * 25.0
+            params = {
+                "radius_thresh_px": float(radius_val) * float(current_scale),
+                "dilate_extra_px": 0.0,
+                "min_run_points": 1,
+            }
+        elif mode == "fastest_ascend":
+            params = {"sigma": 1.0, "dist_thresh": 0.2, "flux_merge_thresh": 5.0}
+        else:
+            params = {"threshold_u8": thr_u8}
+
+        return mode, params
+
+    def _prediction_signature(self) -> str | None:
+        image = self.current_frame.orig_img
+        if image is None:
+            return None
+        payload = {
+            "image_id": int(id(image)),
+            "shape": tuple(int(v) for v in image.shape),
+            "dtype": str(image.dtype),
+            "checkpoint_path": str(getattr(self.config, "checkpoint_path", "")),
+            "invert_input": bool(self.chb_invert.isChecked()),
+            "scale_factor": float(self._effective_scale_factor()),
+        }
+        return json.dumps(payload, sort_keys=True, default=str)
+
+    def _centerline_signature(self) -> str | None:
+        prediction_sig = self._prediction_signature()
+        if prediction_sig is None:
+            return None
+        centerline_kwargs = {}
+        if self.analyzer is not None:
+            centerline_kwargs = dict(
+                getattr(self.analyzer, "_centerline_kwargs", None)
+                or FiberAnalyzer_2D._default_centerline_kwargs()
+            )
+        payload = {
+            "prediction_sig": prediction_sig,
+            "max_angle_deg": float(getattr(self.config, "max_angle_deg", 30.0)),
+            "strict_centerlines": bool(getattr(self.config, "strict_centerlines", False)),
+            "cluster_enabled": bool(getattr(self.config, "cluster_enabled", False)),
+            "cluster_params": dict(getattr(self.config, "cluster_params", {}) or {}),
+            "centerline_kwargs": centerline_kwargs,
+        }
+        return json.dumps(payload, sort_keys=True, default=str)
+
+    def _segmentation_signature(self) -> str | None:
+        centerline_sig = self._centerline_signature()
+        if centerline_sig is None:
+            return None
+        payload = {
+            "centerline_sig": centerline_sig,
+            "segmentation_mode": str(getattr(self.config, "segmentation_mode", "watershed")),
+            "seg_threshold": int(getattr(self.config, "seg_threshold", 1)),
+        }
+        return json.dumps(payload, sort_keys=True, default=str)
+
+    def _measurement_signature(self) -> str | None:
+        segmentation_sig = self._segmentation_signature()
+        if segmentation_sig is None:
+            return None
+        props = self.sample_props if self.sample_props is not None else SampleProperties.defaults()
+        payload = {
+            "segmentation_sig": segmentation_sig,
+            "sample_spacing": float(getattr(self.config, "sample_spacing", 5.0)),
+            "pixel_size_x": float(props.pixel_size_x),
+            "pixel_size_y": float(props.pixel_size_y),
+            "voxel_size_z": float(props.voxel_size_z),
+            "unit": str(props.unit),
+        }
+        return json.dumps(payload, sort_keys=True, default=str)
+
+    def _invalidate_prediction(self) -> None:
+        if self.analyzer is not None:
+            self.analyzer._reset_prediction_state()
+        self.current_frame.clear_prediction()
+        self.current_frame.clear_segmentation()
+        self._invalidate_measurements()
+        self._prediction_sig = None
+        self._centerline_sig = None
+        self._segmentation_sig = None
+        self._measurement_sig = None
+
+    def _invalidate_segmentation(self, invalidate_centerlines: bool = False) -> None:
+        self.current_frame.clear_segmentation()
+        self._invalidate_measurements()
+        if invalidate_centerlines:
+            self._centerline_sig = None
+        self._segmentation_sig = None
+        self._measurement_sig = None
+
+    def _invalidate_measurements(self) -> None:
+        self.current_frame.clear_measurements()
+        self._measurement_sig = None
+        self.text_edit2.clear()
+        self.graph_diameters.clear()
+        self.graph_angles.clear()
+        self._refresh_save_actions()
+
+    def _invalidate_from_signature_mismatch(self) -> None:
         if self.current_frame.orig_img is None:
+            return
+
+        prediction_sig = self._prediction_signature()
+        if self._prediction_sig is not None and self._prediction_sig != prediction_sig:
+            self._invalidate_prediction()
+            return
+
+        centerline_sig = self._centerline_signature()
+        segmentation_sig = self._segmentation_signature()
+        if self._segmentation_sig is not None and self._segmentation_sig != segmentation_sig:
+            self._invalidate_segmentation(
+                invalidate_centerlines=(
+                    self._centerline_sig is not None and self._centerline_sig != centerline_sig
+                )
+            )
+            return
+
+        measurement_sig = self._measurement_signature()
+        if self._measurement_sig is not None and self._measurement_sig != measurement_sig:
+            self._invalidate_measurements()
+
+    def _ensure_prediction_ready(self) -> bool:
+        fr = self.current_frame
+        if fr.orig_img is None:
             self._show_info("Load original", "Load an image before using the profile tool.")
             return False
-            
-        # 1. ADD THIS CHECK: If current_frame already has its DT, we are ready.
-        if self.current_frame.dt is not None:
-            return True
-
         if self.analyzer is None:
             self._show_error("Analyzer unavailable", "Fiber analyzer has not been initialized.")
             return False
 
         self.sync_ui_to_config()
-        max_angle = self.config.max_angle_deg
-        centerline_kwargs = getattr(self.analyzer, "_centerline_kwargs", FiberAnalyzer_2D._default_centerline_kwargs())
+        target_sig = self._prediction_signature()
+        if target_sig is None:
+            return False
 
-    
-        # If we reach here, current_frame.dt is None, so we MUST predict 
-        # specifically for this frame's original image.
+        same_prediction_cache = (
+            fr.has_prediction
+            and fr.dt is not None
+            and self._prediction_sig == target_sig
+        )
+        if (
+            same_prediction_cache
+            and self.analyzer._has_dt_prediction()
+        ):
+            return True
+
+        invalidate_downstream = not same_prediction_cache
+        if invalidate_downstream:
+            self._invalidate_prediction()
+        try:
+            processing_img = self._processing_image()
+        except Exception as exc:
+            self._show_error("Scaling failed", f"Unable to scale image:\n{exc}")
+            logger.error("Scaling failed: %s", exc)
+            return False
+        if processing_img is None:
+            self._show_error("Prediction failed", "Missing input image.")
+            return False
+
+        centerline_kwargs = dict(
+            getattr(self.analyzer, "_centerline_kwargs", None)
+            or FiberAnalyzer_2D._default_centerline_kwargs()
+        )
+        max_angle = float(getattr(self.config, "max_angle_deg", 30.0))
+
         try:
             self.analyzer.predict_dt(
-                image=self._image_for_inference(self.current_frame.orig_img),
+                image=self._image_for_inference(processing_img),
                 max_angle_deg=max_angle,
-                centerline_kwargs=centerline_kwargs or None,
+                centerline_kwargs=centerline_kwargs,
             )
         except Exception as exc:
-            self.current_frame.fail(str(exc))
+            fr.fail(str(exc))
             self._show_error("Prediction failed", str(exc))
-            logger.error("Profile DT ensure failed: %s", exc)
+            logger.error("Prediction ensure failed: %s", exc)
             return False
 
         dt = self.analyzer.get_dt()
-        if dt is None:
-            self.current_frame.fail("Distance transform could not be computed.")
-            self._show_error("DT unavailable", "Distance transform could not be computed.")
+        gx, gy = self.analyzer.get_gradients()
+        if dt is None or gx is None or gy is None:
+            fr.fail("Distance transform or gradients unavailable.")
+            self._show_error("Prediction failed", "Distance transform or gradients unavailable.")
             return False
 
-        gx, gy = self.analyzer.get_gradients()
         dt_u8 = self.analyzer.get_dt_u8()
         dt_norm = self.analyzer.get_dt_norm()
         lapl = self.analyzer.get_laplacian()
         style_vec = self.analyzer.get_style_vector()
-        
-        self.current_frame.set_prediction_outputs(
+        fr.set_prediction_outputs(
             dt=np.asarray(dt, dtype=np.float32, copy=False),
-            gx=np.asarray(gx, dtype=np.float32, copy=False) if gx is not None else None,
-            gy=np.asarray(gy, dtype=np.float32, copy=False) if gy is not None else None,
+            gx=np.asarray(gx, dtype=np.float32, copy=False),
+            gy=np.asarray(gy, dtype=np.float32, copy=False),
             dt_u8=np.asarray(dt_u8, dtype=np.uint8, copy=False) if dt_u8 is not None else None,
             dt_normalized=np.asarray(dt_norm, dtype=np.float32, copy=False) if dt_norm is not None else None,
             lapl_img=np.asarray(lapl, dtype=np.float32, copy=False) if lapl is not None else None,
             style_vec=np.asarray(style_vec, dtype=np.float32, copy=False) if style_vec is not None else None,
-            orig_img_scaled=self.current_frame.orig_img_scaled,
-            scale_factor=self.current_frame.scale_factor,
-            invalidate_downstream=False,
+            orig_img_scaled=fr.orig_img_scaled,
+            scale_factor=fr.scale_factor,
+            invalidate_downstream=invalidate_downstream,
         )
+        self._prediction_sig = target_sig
+        if invalidate_downstream:
+            self._centerline_sig = None
+            self._segmentation_sig = None
+            self._measurement_sig = None
+        return True
+
+    def _ensure_centerlines_ready(self) -> bool:
+        if not self._ensure_prediction_ready():
+            return False
+        if self.analyzer is None:
+            return False
+
+        target_sig = self._centerline_signature()
+        if target_sig is None:
+            return False
+        if self._centerline_sig == target_sig and self.analyzer.get_centerline_segments():
+            return True
+
+        self.analyzer.set_strict_centerline_filter(bool(self.config.strict_centerlines))
+        self.analyzer.enable_fiber_clustering(
+            bool(self.config.cluster_enabled),
+            **(getattr(self.config, "cluster_params", {}) or {}),
+        )
+        centerline_params = dict(
+            getattr(self.analyzer, "_centerline_kwargs", None)
+            or FiberAnalyzer_2D._default_centerline_kwargs()
+        )
+        max_angle = float(getattr(self.config, "max_angle_deg", 30.0))
+        try:
+            self.analyzer.process_centerlines(
+                max_angle_deg=max_angle,
+                **centerline_params,
+            )
+        except Exception as exc:
+            self.current_frame.fail(str(exc))
+            self._show_error("Centerline computation failed", str(exc))
+            logger.error("Centerline computation failed: %s", exc)
+            return False
+
+        self.current_frame.centerlines_overlay_img = self.analyzer.get_centerlines_image()
+        self._centerline_sig = target_sig
+        self._segmentation_sig = None
+        self._measurement_sig = None
+        return True
+
+    def _ensure_segmentation_ready(self) -> bool:
+        fr = self.current_frame
+        if fr.orig_img is None:
+            self._show_info("Load original", "Please load an original image first.")
+            logger.info("Segmentation skipped: No original image loaded.")
+            return False
+        if self.analyzer is None:
+            self._show_error("Analyzer unavailable", "Fiber analyzer has not been initialized.")
+            logger.error("Segmentation failed: analyzer not initialized.")
+            return False
+
+        self.sync_ui_to_config()
+        fr.error_message = None
+        if not self._ensure_centerlines_ready():
+            return False
+
+        target_sig = self._segmentation_signature()
+        if target_sig is None:
+            return False
+        if fr.has_segmentation and fr.labels_2d is not None and self._segmentation_sig == target_sig:
+            return True
+
+        self._invalidate_segmentation(invalidate_centerlines=False)
+        mode, seg_params = self._segmentation_params()
+        try:
+            labels = self.analyzer.segment(mode=mode, params=seg_params)
+        except Exception as exc:
+            self._show_error("Segmentation failed", str(exc))
+            fr.fail(str(exc))
+            logger.error("Segmentation failed: %s", exc)
+            return False
+
+        base_img = fr.orig_img if fr.scale_factor == 1.0 or fr.orig_img_scaled is None else fr.orig_img_scaled
+        if labels is not None:
+            labels_rgb = labels_to_color(labels)
+            labels_cache = (id(labels), labels_rgb)
+            outline_cache = (id(labels), self._build_segmentation_outline_image(base_img, labels))
+        else:
+            labels_rgb = None
+            labels_cache = (None, None)
+            outline_cache = (None, None)
+
+        fr.set_segmentation_outputs(
+            labels_2d=labels,
+            centerlines_overlay_img=self.analyzer.get_centerlines_image(),
+            overlay_img=self._create_overlay(base_img, labels, alpha=0.5, labels_rgb=labels_rgb),
+            sampling_overlay=fr.sampling_overlay,
+            measurements_overlay=fr.measurements_overlay,
+            labels_rgb_cache=labels_cache,
+            segmentation_outline_cache=outline_cache,
+            invalidate_measurements=True,
+        )
+        self._segmentation_sig = target_sig
+        self._measurement_sig = None
+        return True
+
+    def _build_measurement_outputs(
+        self,
+        *,
+        radius_samples: list[Any],
+        angles_samples_deg: list[float],
+        pores: list[dict[str, Any]],
+        porosity: float,
+        pixel_size: float,
+        units_label: str,
+        pore_scale: float,
+    ) -> dict[str, Any]:
+        if radius_samples:
+            radii_px = np.array([c[2] for c in radius_samples], dtype=np.float32)
+            thickness_px = 2.0 * radii_px
+            thickness_units = thickness_px * float(pixel_size)
+            xs = np.array([c[1] for c in radius_samples], dtype=np.int32)
+            ys = np.array([c[0] for c in radius_samples], dtype=np.int32)
+            samples_table = np.column_stack(
+                [xs, ys, thickness_px, np.array(angles_samples_deg, dtype=np.float32)]
+            ).astype(object)
+        else:
+            thickness_units = np.array([], dtype=np.float32)
+            samples_table = None
+
+        angles_arr = np.array([a for a in angles_samples_deg if np.isfinite(a)], dtype=np.float32)
+        safe_scale = float(pore_scale) if np.isfinite(pore_scale) and pore_scale > 0 else 1.0
+        pore_diams_units = np.array(
+            [2.0 * p.get("r_px_orig", p["r_px"] / safe_scale) * float(pixel_size) for p in pores],
+            dtype=np.float32,
+        )
+
+        if thickness_units.size:
+            mean_thickness = float(np.mean(thickness_units))
+            std_thickness = float(np.std(thickness_units))
+        else:
+            mean_thickness = float("nan")
+            std_thickness = float("nan")
+        orientation_index, mean_angle_deg, std_angle_deg = self._compute_orientation_stats(angles_arr)
+        info_text = (
+            f"Mean diameter: {mean_thickness:.2f} {units_label}\n"
+            f"Std diameter: {std_thickness:.2f} {units_label}\n"
+            f"Orientation index: {orientation_index:.2f}\n"
+            f"Mean angle: {mean_angle_deg:.2f} deg\n"
+            f"Std angle: {std_angle_deg:.2f} deg\n"
+            f"Porosity (area fraction): {porosity*100:.1f} %"
+        )
+        fiber_summary = {
+            "mean_diameter": mean_thickness,
+            "std_diameter": std_thickness,
+            "orientation_index": float(orientation_index),
+            "mean_angle_deg": float(mean_angle_deg),
+            "std_angle_deg": float(std_angle_deg),
+            "porosity": float(porosity),
+            "sample_count": len(radius_samples),
+            "units": units_label,
+        }
+        return {
+            "samples_table": samples_table,
+            "angles_arr": angles_arr,
+            "thickness_units": thickness_units,
+            "pore_diams_units": pore_diams_units,
+            "fiber_summary": fiber_summary,
+            "info_text": info_text,
+            "mean_thickness": mean_thickness,
+            "std_thickness": std_thickness,
+            "orientation_index": float(orientation_index),
+            "mean_angle_deg": float(mean_angle_deg),
+            "std_angle_deg": float(std_angle_deg),
+        }
+
+    def _ensure_measurements_ready(self) -> bool:
+        fr = self.current_frame
+        self.sync_ui_to_config()
+        self.sync_ui_to_sample_properties()
+        if not self._ensure_segmentation_ready():
+            return False
+        if self.analyzer is None:
+            self._show_info("No analyzer", "Segmentation data unavailable.")
+            return False
+
+        target_sig = self._measurement_signature()
+        if target_sig is None:
+            return False
+        if fr.has_measurements and fr.fiber_summary is not None and self._measurement_sig == target_sig:
+            return True
+
+        self._invalidate_measurements()
+        if not self.analyzer.get_centerline_segments():
+            if not self._ensure_centerlines_ready() or not self.analyzer.get_centerline_segments():
+                self._show_info("No centerlines", "No centerlines available. Run segmentation first.")
+                return False
+
+        fr.error_message = None
+        fr.overlay_samples = []
+        spacing_px_input = max(1.0, float(self.config.sample_spacing))
+        current_scale = fr.scale_factor if fr.scale_factor and np.isfinite(fr.scale_factor) else 1.0
+        spacing_px_scaled = max(1.0, spacing_px_input * current_scale)
+        pixel_size = self.sample_props.effective_pixel_size_xy()
+        units_label = self.sample_props.unit if self.sample_props.unit else "px"
+
+        try:
+            self.analyzer.scale_factor = fr.scale_factor
+            radius_samples, angles_samples_deg, overlay_samples = self.analyzer.analyze(
+                spacing_px=spacing_px_scaled
+            )
+            self._set_progress_bar(80.0)
+            thr_u8 = int(self.config.seg_threshold)
+            void_mask, pore_dt = self.analyzer.void_mask_and_pore_dt(thr_u8)
+            porosity = float(void_mask.mean()) if void_mask is not None else float("nan")
+            pores = self.analyzer.sample_inscribed_circles(
+                pore_dt=pore_dt,
+                void_mask=void_mask,
+                min_radius_px=1.5 * current_scale,
+                min_peak_px=3.0 * current_scale,
+                peak_footprint=5,
+                max_pores=None,
+            )
+        except Exception as exc:
+            self._show_error("Analysis failed", str(exc))
+            fr.fail(str(exc))
+            logger.error("Fiber analysis failed: %s", exc)
+            return False
+
+        outputs = self._build_measurement_outputs(
+            radius_samples=radius_samples,
+            angles_samples_deg=angles_samples_deg,
+            pores=pores,
+            porosity=porosity,
+            pixel_size=pixel_size,
+            units_label=units_label,
+            pore_scale=fr.scale_factor,
+        )
+        fr.set_measurement_outputs(
+            samples_table=outputs["samples_table"],
+            fiber_summary=outputs["fiber_summary"],
+            overlay_samples=overlay_samples,
+            angles_samples_deg=outputs["angles_arr"],
+            thickness_units=outputs["thickness_units"],
+            porosity=porosity,
+            pore_diams_units=outputs["pore_diams_units"],
+            void_mask=void_mask,
+            pore_dt=pore_dt,
+            pores=pores,
+            measurements_overlay=fr.measurements_overlay,
+            sampling_overlay=fr.sampling_overlay,
+        )
+        self.text_edit2.setPlainText(outputs["info_text"])
+        self._render_vector_overlay()
+        self._update_distributions_pyqtgraph(units_label)
+        self._measurement_sig = target_sig
         return True
 
     def _show_info(self, title: str, message: str):
@@ -707,6 +1158,7 @@ class MainWindow(QMainWindow):
             self._on_usegpu_toggled(self.chb_usegpu.isChecked())
             self._on_cluster_toggled(self.chb_cluster.isChecked())
             self.analyzer.set_strict_centerline_filter(self.config.strict_centerlines)
+        self._invalidate_from_signature_mismatch()
 
     def _load_config_from_path(self, path: str) -> bool:
         """Provide an internal helper for load config from path.
@@ -2023,7 +2475,7 @@ class MainWindow(QMainWindow):
 
     def _on_plot_profile_clicked(self):
         """Handle the lot profile clicked event and propagate UI state updates."""
-        if not self._ensure_dt_ready():
+        if not self._ensure_prediction_ready():
             return
         dialog = self._ensure_profile_dialog()
         if not dialog.isVisible():
@@ -2213,189 +2665,17 @@ class MainWindow(QMainWindow):
 
     def segment(self):
         """Run the segmentation workflow for the current frame or active batch."""
-        fr = self.current_frame
-
         if self._image_batch is not None and not self._is_batch_processing:
             self._run_batch_analysis(compute_measurements=False)
             return
-        if fr.orig_img is None:
-            self._show_info("Load original", "Please load an original image first.")
-            logger.info("Segment: No original image loaded.")
-            return
-        if self.analyzer is None:
-            self._show_error("Analyzer unavailable", "Fiber analyzer has not been initialized.")
-            logger.error("Segmentation failed: analyzer not initialized.")
-            return
-
-        fr.error_message = None
-        fr.clear_segmentation()
-        fr.clear_measurements()
-
-        # Ensure config is up to date first
-        self.sync_ui_to_config()
-        
-        previous_scale = float(fr.scale_factor)
-        # Parse the string (e.g., "1x" -> 1.0)
-        try:
-            target_scale = float(self.config.scale_label.lower().replace("x", "").replace("×", ""))
-        except ValueError:
-            target_scale = 1.0
-            
-        scale_changed = not (previous_scale == target_scale)
-
-        if scale_changed:
-            self.analyzer._reset_prediction_state()
-            fr.clear_prediction()
-
-        
-        processing_img = fr.orig_img
-        if 1 == target_scale:
-            fr.scale_factor = 1.0
-            fr.orig_img_scaled = None
-        else:
-            if fr.orig_img_scaled is None or scale_changed:
-                interp = cv2.INTER_AREA if target_scale < 1.0 else cv2.INTER_CUBIC
-                try:
-                    fr.orig_img_scaled = cv2.resize(
-                        fr.orig_img,
-                        None,
-                        fx=target_scale,
-                        fy=target_scale,
-                        interpolation=interp,
-                    )
-                except Exception as e:
-                    self._show_error("Scaling failed", f"Unable to scale image:\n{e}")
-                    logger.error("Scaling failed: %s", e)
-                    return
-            processing_img = fr.orig_img_scaled
-        fr.scale_factor = float(target_scale)
-        self.analyzer.scale_factor = fr.scale_factor
-
-        # We already called sync_ui_to_config() above, so self.config is ready.
-        max_angle = self.config.max_angle_deg
-        
-        # Centerline kwargs aren't exposed in the basic UI, so we just use the analyzer's defaults
-        centerline_params = getattr(self.analyzer, "_centerline_kwargs", None)
-        if not centerline_params:
-            centerline_params = FiberAnalyzer_2D._default_centerline_kwargs()
-
         self._set_progress_bar(0.0)
-
-        if not self.analyzer._has_dt_prediction():
-            logger.info("Starting Distance transform prediction.")
-            try:
-                self.analyzer.predict_dt(
-                    image=self._image_for_inference(processing_img),
-                    max_angle_deg=max_angle,
-                    centerline_kwargs=centerline_params,
-                )
-            except Exception as e:
-                self._show_error("Prediction failed", str(e))
-                fr.fail(str(e))
-                logger.error("Segmentation failed: %s", e)
-                return
-
-        self._set_progress_bar(40.0)
-
-        try:
-            self.analyzer.process_centerlines(
-                max_angle_deg=max_angle,
-                **centerline_params,
-            )
-        except Exception as e:
-            self._show_error("Centerline computation failed", str(e))
-            fr.fail(str(e))
-            logger.error("Centerline computation failed: %s", e)
+        if not self._ensure_segmentation_ready():
             return
-
-        self._set_progress_bar(50.0)
-
-        dt = self.analyzer.get_dt()
-        gx, gy = self.analyzer.get_gradients()
-        if dt is None or gx is None or gy is None:
-            self._show_error("Segmentation failed", "Distance transform or gradients unavailable.")
-            fr.fail("Distance transform or gradients unavailable.")
-            logger.error("Segmentation failed: DT or gradients unavailable.")
-            return
-
-        dt_norm = self.analyzer.get_dt_norm()
-        lapl = self.analyzer.get_laplacian()
-        style_vec = self.analyzer.get_style_vector()
-        fr.set_prediction_outputs(
-            dt=np.asarray(dt, dtype=np.float32, copy=False),
-            gx=np.asarray(gx, dtype=np.float32, copy=False),
-            gy=np.asarray(gy, dtype=np.float32, copy=False),
-            dt_u8=self.analyzer.get_dt_u8(),
-            dt_normalized=dt_norm,
-            lapl_img=lapl,
-            style_vec=style_vec,
-            orig_img_scaled=fr.orig_img_scaled,
-            scale_factor=fr.scale_factor,
-            invalidate_downstream=True,
-        )
-
-        mode = self.config.segmentation_mode
-        thr_u8 = self.config.seg_threshold
-
-        if mode == "ridge":
-            current_scale = fr.scale_factor if fr.scale_factor and np.isfinite(fr.scale_factor) else 1.0
-            # If the user is in Ridge mode, they likely expect a small radius (e.g., 2-10px)
-            # We can map the 0-255 threshold to a 0-25px radius for better UI feel
-            radius_val = (thr_u8 / 255.0) * 25.0 
-            
-            seg_params = {
-                "radius_thresh_px": float(radius_val) * current_scale,
-                "dilate_extra_px": 0.0,
-                "min_run_points": 1,
-            }
-        elif mode == "fastest_ascend":
-            seg_params = {
-                "sigma": 1.0,               # Default
-                "dist_thresh": 0.2,         # Default
-                "flux_merge_thresh": 5.0,   # Default
-            }
-        else:
-            seg_params = {"threshold_u8": thr_u8}
-
-
-        labels = None
-
-        try:
-            labels = self.analyzer.segment(mode=mode, params=seg_params)
-        except Exception as e:
-            self._show_error("Segmentation failed", str(e))
-            fr.fail(str(e))
-            logger.error("Segmentation failed: %s", e)
-            return
-
-        base_img = fr.orig_img if fr.scale_factor == 1.0 or fr.orig_img_scaled is None else fr.orig_img_scaled
-
-        if labels is not None:
-            labels_rgb = labels_to_color(labels)
-            labels_cache = (id(labels), labels_rgb)
-            outline_img = self._build_segmentation_outline_image(base_img, labels)
-            outline_cache = (id(labels), outline_img)
-        else:
-            labels_rgb = None
-            labels_cache = (None, None)
-            outline_cache = (None, None)
-
-        fr.set_segmentation_outputs(
-            labels_2d=labels,
-            centerlines_overlay_img=self.analyzer.get_centerlines_image(),
-            overlay_img=self._create_overlay(base_img, labels, alpha=0.5, labels_rgb=labels_rgb),
-            sampling_overlay=fr.sampling_overlay,
-            measurements_overlay=fr.measurements_overlay,
-            labels_rgb_cache=labels_cache,
-            segmentation_outline_cache=outline_cache,
-            invalidate_measurements=True,
-        )
 
         if self.cb_view.currentText() == "Original":
             self.cb_view.setCurrentText("Overlay")
 
         self._refresh_save_actions()
-
         self.refresh_view()
         if self._is_batch_processing and not self._batch_collects_measurements:
             self._set_progress_bar(100.0)
@@ -2407,184 +2687,37 @@ class MainWindow(QMainWindow):
         """
         Computes thickness samples via analyzer and renders overlays/plots.
         """
-        fr = self.current_frame
         if self._image_batch is not None and not self._is_batch_processing:
             if self._batch_result is not None and self._batch_results_have_measurements:
                 self._set_current_slice(self._current_z_index, update_view=True)
                 return
             self._run_batch_analysis(compute_measurements=True)
             return
-        
-        self.sync_ui_to_config()
-        self.sync_ui_to_sample_properties()
-        fr.error_message = None
-        fr.clear_measurements()
-        
-        # We need a quick way to convert the config's "1x" string to a float 
-        try:
-            target_scale = float(self.config.scale_label.lower().replace("x", "").replace("×", ""))
-        except ValueError:
-            target_scale = 1.0
-    
-        current_scale = float(fr.scale_factor)
-        scale_mismatch = (
-            self.analyzer is not None
-            and fr.has_segmentation
-            and self.analyzer._has_dt_prediction()
-            and not math.isclose(current_scale, target_scale, rel_tol=1e-6, abs_tol=1e-6)
-        )
 
-        if scale_mismatch or not fr.has_segmentation:
-            if scale_mismatch:
-                logger.info(
-                    "Scale factor changed from %.3f to %.3f; rerunning segmentation for analysis.",
-                    current_scale,
-                    target_scale,
-                )
-            self.segment()
-            if not fr.has_segmentation:
-                self._show_info("No segmentation", "Segmentation could not be performed.")
-                return
-        logger.info("Starting fiber analysis.")
-        fr.overlay_samples = []
-
-        # Params
-        spacing_px_input = max(1.0, self.config.sample_spacing)
-        current_scale = fr.scale_factor if fr.scale_factor and np.isfinite(fr.scale_factor) else 1.0
-        spacing_px_scaled = max(1.0, spacing_px_input * current_scale)
-        
-        pixel_size = self.sample_props.effective_pixel_size_xy()
-        units_label = self.sample_props.unit if self.sample_props.unit else "px"
-
-        # compute via analyzer
-        if self.analyzer is None:
-            self._show_info("No analyzer", "Segmentation data unavailable.")
+        self._set_progress_bar(70.0)
+        if not self._ensure_measurements_ready():
             return
-
-        if not self.analyzer.get_centerline_segments():
-            self._show_info("No centerlines", "No centerlines available. Run segmentation first.")
-            return
-
-        self.analyzer.scale_factor = fr.scale_factor
-
-        radius_samples, angles_samples_deg, overlay_samples = self.analyzer.analyze(
-            spacing_px=spacing_px_scaled
-        )
-        fr.overlay_samples = overlay_samples
-
-        self._set_progress_bar(80.0)
-
-        # Build sample table and stats (keep in GUI)
-        if radius_samples:
-            radii_px        = np.array([c[2] for c in radius_samples], dtype=np.float32)
-            thickness_px    = 2.0 * radii_px
-            thickness_units = thickness_px * pixel_size
-            xs = np.array([c[1] for c in radius_samples], dtype=np.int32)
-            ys = np.array([c[0] for c in radius_samples], dtype=np.int32)
-            samples_table = np.column_stack([xs, ys, thickness_px, np.array(angles_samples_deg, dtype=np.float32)]).astype(object)
-        else:
-            thickness_units = np.array([], dtype=np.float32)
-            samples_table = None
-
-        angles_arr = np.array([a for a in angles_samples_deg if np.isfinite(a)], dtype=np.float32)
-
-        # --- pore splitting + sampling ------------------------------------------
-        thr_u8 = self.config.seg_threshold
-
-        # Build void mask from your chosen source (DT or grayscale-based threshold).
-        if fr.void_mask is None:
-            fr.void_mask, fr.pore_dt = self.analyzer.void_mask_and_pore_dt(thr_u8)
-
-        porosity = float(fr.void_mask.mean()) if fr.void_mask is not None else float("nan")
-
-        # --- NEW: sample pores as inscribed circles from DT peaks ---------------------
-        min_radius_px = 1.5 * current_scale   # tweakable; ignores tiny specks
-        peak_footprint     = 5     # local-max window; 3..7 works; larger -> fewer peaks
-        max_pores     = None  # or set an upper cap for speed/UI clarity
-        min_peak_px = 3.0 * current_scale
-
-        pores = self.analyzer.sample_inscribed_circles(
-            pore_dt=fr.pore_dt,
-            void_mask=fr.void_mask,
-            min_radius_px=min_radius_px,
-            min_peak_px=min_peak_px,          # <- NEW param
-            peak_footprint=peak_footprint,
-            max_pores=max_pores,
-        )
-
-        # convenience arrays for hist/units
-        # pixel_size is loaded from per-sample properties above
-        pore_scale = fr.scale_factor if fr.scale_factor and np.isfinite(fr.scale_factor) else 1.0
-
-        if pore_scale == 0:
-            pore_scale = 1.0
-        pore_diams_units = np.array(
-            [2.0 * p.get('r_px_orig', p['r_px'] / pore_scale) * pixel_size for p in pores],
-            dtype=np.float32,
-        )
-
-
-
-
-        # Summary text
-        if thickness_units.size:
-            mean_thickness = np.mean(thickness_units)
-            std_thickness  = np.std(thickness_units)
-        else:
-            mean_thickness = float('nan')
-            std_thickness  = float('nan')
-        orientation_index, mean_angle_deg, std_angle_deg = self._compute_orientation_stats(angles_arr)
-
-        info_text = (
-            f"Mean diameter: {mean_thickness:.2f} {units_label}\n"
-            f"Std diameter: {std_thickness:.2f} {units_label}\n"
-            f"Orientation index: {orientation_index:.2f}\n"
-            f"Mean angle: {mean_angle_deg:.2f} deg\n"
-            f"Std angle: {std_angle_deg:.2f} deg\n"
-            f"Porosity (area fraction): {porosity*100:.1f} %"
-        )
-        fiber_summary = {
-            "mean_diameter": float(mean_thickness),
-            "std_diameter": float(std_thickness),
-            "orientation_index": float(orientation_index),
-            "mean_angle_deg": float(mean_angle_deg),
-            "std_angle_deg": float(std_angle_deg),
-            "porosity": float(porosity),
-            "sample_count": len(radius_samples) if radius_samples else 0,
-            "units": units_label,
-        }
-        fr.set_measurement_outputs(
-            samples_table=samples_table,
-            fiber_summary=fiber_summary,
-            overlay_samples=overlay_samples,
-            angles_samples_deg=angles_arr,
-            thickness_units=thickness_units,
-            porosity=porosity,
-            pore_diams_units=pore_diams_units,
-            void_mask=fr.void_mask,
-            pore_dt=fr.pore_dt,
-            pores=pores,
-            measurements_overlay=fr.measurements_overlay,
-            sampling_overlay=fr.sampling_overlay,
-        )
-        self.text_edit2.setPlainText(info_text)
-
-        # Overlay + plots
-        self._render_vector_overlay()
-        self._update_distributions_pyqtgraph(units_label)
         self._set_progress_bar(100.0)
 
+        fr = self.current_frame
+        summary = fr.fiber_summary or {}
+        units_label = str(summary.get("units", "px"))
+        mean_thickness = float(summary.get("mean_diameter", float("nan")))
+        std_thickness = float(summary.get("std_diameter", float("nan")))
+        orientation_index = float(summary.get("orientation_index", float("nan")))
+        mean_angle_deg = float(summary.get("mean_angle_deg", float("nan")))
+        std_angle_deg = float(summary.get("std_angle_deg", float("nan")))
+        spacing_px_input = max(1.0, float(getattr(self.config, "sample_spacing", 5.0)))
         self._show_info(
             "Analysis complete",
-            f"Radius samples: {len(radius_samples)} (spacing={int(spacing_px_input)} px)\n"
-            f"Stored overlay samples: {len(fr.overlay_samples)}\n"
+            f"Radius samples: {int(summary.get('sample_count', 0))} (spacing={int(spacing_px_input)} px)\n"
+            f"Stored overlay samples: {len(fr.overlay_samples) if fr.overlay_samples is not None else 0}\n"
             f"Mean diameter: {mean_thickness:.2f} {units_label}\n"
             f"Std diameter: {std_thickness:.2f} {units_label}\n"
             f"Orientation index: {orientation_index:.2f}\n"
             f"Mean angle: {mean_angle_deg:.2f} deg\n"
             f"Std angle: {std_angle_deg:.2f} deg"
         )
-
         self._refresh_save_actions()
         logger.info("Fiber analysis completed successfully.")
 
@@ -3068,6 +3201,25 @@ class MainWindow(QMainWindow):
             return f"{base}_z{z_index:03d}"
         return base
 
+    def _sync_stage_signatures_from_frame(self) -> None:
+        fr = self.current_frame
+        self._prediction_sig = (
+            self._prediction_signature() if fr.has_prediction and fr.dt is not None else None
+        )
+        self._centerline_sig = (
+            self._centerline_signature() if fr.has_segmentation else None
+        )
+        self._segmentation_sig = (
+            self._segmentation_signature()
+            if fr.has_segmentation and fr.labels_2d is not None
+            else None
+        )
+        self._measurement_sig = (
+            self._measurement_signature()
+            if fr.has_measurements and fr.fiber_summary is not None
+            else None
+        )
+
     def _apply_frame_result(self, frame_result: Frame | None):
         """Provide an internal helper for apply frame result.
         
@@ -3085,6 +3237,7 @@ class MainWindow(QMainWindow):
             self.text_edit2.clear()
             self.graph_diameters.clear()
             self.graph_angles.clear()
+            self._sync_stage_signatures_from_frame()
             return
 
         applied_frame = frame_result.snapshot()
@@ -3115,6 +3268,7 @@ class MainWindow(QMainWindow):
         else:
             self.current_frame.labels_rgb_cache = (None, None)
             self.current_frame.segmentation_outline_cache = (None, None)
+        self._sync_stage_signatures_from_frame()
 
     def _set_current_slice(self, index: int, update_view: bool = True):
         """Provide an internal helper for set current slice.
@@ -3173,6 +3327,10 @@ class MainWindow(QMainWindow):
             z_index=preserved_z,
             orig_img=preserved_orig,
         )
+        self._prediction_sig = None
+        self._centerline_sig = None
+        self._segmentation_sig = None
+        self._measurement_sig = None
         if not preserve_original:
             self.current_image_name = None
 
@@ -3244,9 +3402,7 @@ class MainWindow(QMainWindow):
             self.analyzer.set_device(device)
 
     def _on_invert_toggled(self, checked: bool):
-        if self.analyzer is not None:
-            self.analyzer._reset_prediction_state()
-        self.current_frame.clear_prediction()
+        self._invalidate_prediction()
 
     def _on_segmentation_mode_changed(self, checked: bool | None = None):
         """Handle the segmentation mode changed event and propagate UI state updates.
@@ -3319,9 +3475,7 @@ class MainWindow(QMainWindow):
                 self.chb_strict.setEnabled(True)
         else:
             if self.chb_strict.isChecked():
-                self.chb_strict.blockSignals(True)
-                self.chb_strict.setChecked(False)
-                self.chb_strict.blockSignals(False)
+                self._set_strict_mode(False)
             if self.chb_strict.isEnabled():
                 self.chb_strict.setEnabled(False)
 
@@ -3346,6 +3500,11 @@ class MainWindow(QMainWindow):
         """Reads sample-specific calibration fields from the UI."""
         if not hasattr(self, "sample_props") or self.sample_props is None:
             self.sample_props = SampleProperties.defaults()
+
+        prev_px = float(getattr(self.sample_props, "pixel_size_x", 1.0))
+        prev_py = float(getattr(self.sample_props, "pixel_size_y", 1.0))
+        prev_z = float(getattr(self.sample_props, "voxel_size_z", 1.0))
+        prev_unit = str(getattr(self.sample_props, "unit", "px"))
 
         def _parse_positive(text: str, fallback: float) -> float:
             """Provide an internal helper for parse positive.
@@ -3383,6 +3542,15 @@ class MainWindow(QMainWindow):
         self.sample_props.unit = unit_txt if unit_txt else "px"
         self.sample_props.source = "manual"
 
+        changed = (
+            not math.isclose(prev_px, float(self.sample_props.pixel_size_x), rel_tol=1e-9, abs_tol=1e-9)
+            or not math.isclose(prev_py, float(self.sample_props.pixel_size_y), rel_tol=1e-9, abs_tol=1e-9)
+            or not math.isclose(prev_z, float(self.sample_props.voxel_size_z), rel_tol=1e-9, abs_tol=1e-9)
+            or prev_unit != str(self.sample_props.unit)
+        )
+        if changed:
+            self._invalidate_measurements()
+
     def sync_sample_properties_to_ui(self):
         """Updates sample-specific calibration widgets from self.sample_props."""
         if not hasattr(self, "sample_props") or self.sample_props is None:
@@ -3406,14 +3574,30 @@ class MainWindow(QMainWindow):
         if not hasattr(self, "config"):
             self.config = AppConfig()
 
+        prev_checkpoint = str(getattr(self.config, "checkpoint_path", ""))
+        prev_scale_label = str(getattr(self.config, "scale_label", "1x"))
+        prev_max_angle = float(getattr(self.config, "max_angle_deg", 30.0))
+        prev_strict = bool(getattr(self.config, "strict_centerlines", False))
+        prev_mode = str(getattr(self.config, "segmentation_mode", "watershed"))
+        prev_threshold = int(getattr(self.config, "seg_threshold", 1))
+        prev_spacing = float(getattr(self.config, "sample_spacing", 5.0))
+        prev_cluster = bool(getattr(self.config, "cluster_enabled", False))
+        prev_cluster_params = json.dumps(
+            dict(getattr(self.config, "cluster_params", {}) or {}),
+            sort_keys=True,
+            default=str,
+        )
+
         # Model & Hardware
         self.config.checkpoint_path = self.cb_model.currentText().strip()
         self.config.use_gpu = self.chb_usegpu.isChecked()
         self.config.scale_label = self.cb_scale.currentText().strip()
 
         # Centerline Params
-        # Config-only: preserve value loaded from config file / config editor dialog.
-        self.config.max_angle_deg = float(getattr(self.config, "max_angle_deg", 30.0))
+        if hasattr(self, "sp_max_cent_angle"):
+            self.config.max_angle_deg = float(self.sp_max_cent_angle.value())
+        else:
+            self.config.max_angle_deg = float(getattr(self.config, "max_angle_deg", 30.0))
         self.config.strict_centerlines = self.chb_strict.isChecked()
 
         # Segmentation Mode
@@ -3427,11 +3611,66 @@ class MainWindow(QMainWindow):
         self.config.seg_threshold = int(self.sp_segm_threshold.value())
 
         # Analysis
-        # Config-only: preserve value loaded from config file / config editor dialog.
-        self.config.sample_spacing = float(getattr(self.config, "sample_spacing", 5.0))
+        if hasattr(self, "le_samspacing"):
+            text = self.le_samspacing.text().strip()
+            try:
+                spacing = float(text)
+            except Exception:
+                spacing = prev_spacing
+            if spacing > 0 and np.isfinite(spacing):
+                self.config.sample_spacing = float(spacing)
+            else:
+                self.config.sample_spacing = float(prev_spacing)
+        else:
+            self.config.sample_spacing = float(getattr(self.config, "sample_spacing", 5.0))
 
         # Clustering
         self.config.cluster_enabled = self.chb_cluster.isChecked()
+
+        new_cluster_params = json.dumps(
+            dict(getattr(self.config, "cluster_params", {}) or {}),
+            sort_keys=True,
+            default=str,
+        )
+
+        prediction_changed = (
+            prev_checkpoint != str(self.config.checkpoint_path)
+            or prev_scale_label != str(self.config.scale_label)
+        )
+        max_angle_changed = not math.isclose(
+            prev_max_angle,
+            float(self.config.max_angle_deg),
+            rel_tol=1e-9,
+            abs_tol=1e-9,
+        )
+        segmentation_changed = (
+            max_angle_changed
+            or prev_strict != bool(self.config.strict_centerlines)
+            or prev_mode != str(self.config.segmentation_mode)
+            or prev_threshold != int(self.config.seg_threshold)
+            or prev_cluster != bool(self.config.cluster_enabled)
+            or prev_cluster_params != new_cluster_params
+        )
+        measurements_changed = not math.isclose(
+            prev_spacing,
+            float(self.config.sample_spacing),
+            rel_tol=1e-9,
+            abs_tol=1e-9,
+        )
+
+        if prediction_changed:
+            self._invalidate_prediction()
+        elif segmentation_changed:
+            self._invalidate_segmentation(
+                invalidate_centerlines=(
+                    max_angle_changed
+                    or prev_strict != bool(self.config.strict_centerlines)
+                    or prev_cluster != bool(self.config.cluster_enabled)
+                    or prev_cluster_params != new_cluster_params
+                )
+            )
+        elif measurements_changed:
+            self._invalidate_measurements()
 
     def sync_config_to_ui(self):
         """Updates the UI widgets to reflect the values in self.config."""

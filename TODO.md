@@ -34,6 +34,7 @@
 - [x] Add 3D view
 - [x] Algorithms for 3D analysis
 - [ ] Add checkbox to turn on/off auto brightness/darkness
+- [ ] Implement 3-stage cache approach
 
 
 ## 🐞 Bugs
@@ -53,6 +54,7 @@
 - [ ] Re-write compute heavy tasks in numba
 - [ ] Refactor process_centerlines
 - [x] Refactor compute_centerlines
+- [ ] Refactor gui_mainwindow
 
 
 ## 📝 Documentation
