@@ -950,28 +950,27 @@ class MainWindow(QMainWindow):
     def _build_measurement_outputs(
         self,
         *,
-        radius_samples: list[Any],
-        angles_samples_deg: list[float],
+        measurement_samples: list[Any],
         pores: list[dict[str, Any]],
         porosity: float,
         pixel_size: float,
         units_label: str,
         pore_scale: float,
     ) -> dict[str, Any]:
-        if radius_samples:
-            radii_px = np.array([c[2] for c in radius_samples], dtype=np.float32)
+        if measurement_samples:
+            radii_px = np.array([sample[4] for sample in measurement_samples], dtype=np.float32)
+            angles_arr = np.array([sample[5] for sample in measurement_samples], dtype=np.float32)
             thickness_px = 2.0 * radii_px
             thickness_units = thickness_px * float(pixel_size)
-            xs = np.array([c[1] for c in radius_samples], dtype=np.int32)
-            ys = np.array([c[0] for c in radius_samples], dtype=np.int32)
-            samples_table = np.column_stack(
-                [xs, ys, thickness_px, np.array(angles_samples_deg, dtype=np.float32)]
-            ).astype(object)
+            xs = np.array([sample[1] for sample in measurement_samples], dtype=np.int32)
+            ys = np.array([sample[0] for sample in measurement_samples], dtype=np.int32)
+            samples_table = np.column_stack([xs, ys, thickness_px, angles_arr]).astype(object)
         else:
+            angles_arr = np.array([], dtype=np.float32)
             thickness_units = np.array([], dtype=np.float32)
             samples_table = None
 
-        angles_arr = np.array([a for a in angles_samples_deg if np.isfinite(a)], dtype=np.float32)
+        angles_arr = angles_arr[np.isfinite(angles_arr)] if angles_arr.size else angles_arr
         safe_scale = float(pore_scale) if np.isfinite(pore_scale) and pore_scale > 0 else 1.0
         pore_diams_units = np.array(
             [2.0 * p.get("r_px_orig", p["r_px"] / safe_scale) * float(pixel_size) for p in pores],
@@ -1000,12 +999,11 @@ class MainWindow(QMainWindow):
             "mean_angle_deg": float(mean_angle_deg),
             "std_angle_deg": float(std_angle_deg),
             "porosity": float(porosity),
-            "sample_count": len(radius_samples),
+            "sample_count": len(measurement_samples),
             "units": units_label,
         }
         return {
             "samples_table": samples_table,
-            "angles_arr": angles_arr,
             "thickness_units": thickness_units,
             "pore_diams_units": pore_diams_units,
             "fiber_summary": fiber_summary,
@@ -1040,7 +1038,8 @@ class MainWindow(QMainWindow):
                 return False
 
         fr.error_message = None
-        fr.overlay_samples = []
+        fr.measurement_samples = []
+        fr.drawing_samples = []
         spacing_px_input = max(1.0, float(self.config.sample_spacing))
         current_scale = fr.scale_factor if fr.scale_factor and np.isfinite(fr.scale_factor) else 1.0
         spacing_px_scaled = max(1.0, spacing_px_input * current_scale)
@@ -1049,7 +1048,7 @@ class MainWindow(QMainWindow):
 
         try:
             self.analyzer.scale_factor = fr.scale_factor
-            radius_samples, angles_samples_deg, overlay_samples = self.analyzer.analyze(
+            measurement_samples, drawing_samples = self.analyzer.analyze(
                 spacing_px=spacing_px_scaled
             )
             self._set_progress_bar(80.0)
@@ -1071,8 +1070,7 @@ class MainWindow(QMainWindow):
             return False
 
         outputs = self._build_measurement_outputs(
-            radius_samples=radius_samples,
-            angles_samples_deg=angles_samples_deg,
+            measurement_samples=measurement_samples,
             pores=pores,
             porosity=porosity,
             pixel_size=pixel_size,
@@ -1082,8 +1080,8 @@ class MainWindow(QMainWindow):
         fr.set_measurement_outputs(
             samples_table=outputs["samples_table"],
             fiber_summary=outputs["fiber_summary"],
-            overlay_samples=overlay_samples,
-            angles_samples_deg=outputs["angles_arr"],
+            measurement_samples=measurement_samples,
+            drawing_samples=drawing_samples,
             thickness_units=outputs["thickness_units"],
             porosity=porosity,
             pore_diams_units=outputs["pore_diams_units"],
@@ -1092,8 +1090,8 @@ class MainWindow(QMainWindow):
             pores=pores,
             sampling_overlay=fr.sampling_overlay,
         )
+        self._build_measurement_overlays()
         self.text_edit2.setPlainText(outputs["info_text"])
-        self._render_vector_overlay()
         self._update_distributions_pyqtgraph(units_label)
         self._measurement_sig = target_sig
         return True
@@ -1432,7 +1430,11 @@ class MainWindow(QMainWindow):
 
         chunks: list[np.ndarray] = []
         for frame in batch_result.frame_results:
-            values = frame.angles_samples_deg
+            values = (
+                np.array([sample[5] for sample in (frame.measurement_samples or [])], dtype=np.float32)
+                if frame.measurement_samples is not None
+                else np.array([], dtype=np.float32)
+            )
             if values is None:
                 continue
             arr = np.asarray(values, dtype=np.float32).reshape(-1)
@@ -2698,6 +2700,7 @@ class MainWindow(QMainWindow):
             self._set_progress_bar(0.0)
             return
         self._set_progress_bar(100.0)
+        self._render_vector_overlay()
 
         fr = self.current_frame
         summary = fr.fiber_summary or {}
@@ -2711,7 +2714,7 @@ class MainWindow(QMainWindow):
         self._show_info(
             "Analysis complete",
             f"Radius samples: {int(summary.get('sample_count', 0))} (spacing={int(spacing_px_input)} px)\n"
-            f"Stored overlay samples: {len(fr.overlay_samples) if fr.overlay_samples is not None else 0}\n"
+            f"Stored drawing samples: {len(fr.drawing_samples) if fr.drawing_samples is not None else 0}\n"
             f"Mean diameter: {mean_thickness:.2f} {units_label}\n"
             f"Std diameter: {std_thickness:.2f} {units_label}\n"
             f"Orientation index: {orientation_index:.2f}\n"
@@ -2721,126 +2724,147 @@ class MainWindow(QMainWindow):
         self._refresh_save_actions()
         logger.info("Fiber analysis completed successfully.")
 
-    # ---- single overlay renderer (kept once) ----
-    def _render_vector_overlay(self):
-        """Provide an internal helper for render vector overlay.
-        
-        Returns:
-            Any: Object containing the render vector overlay outcome for downstream use."""
-        if not self.current_frame.overlay_samples:
-            return
-        show_diam = self.rb_show_diam.isChecked()
-        show_direct = self.rb_show_direct.isChecked()
-        show_pores = self.rb_show_pores.isChecked()
+    def _build_measurement_overlays(self):
+        fr = self.current_frame
+        sampling_base = ensure_rgb_u8(fr.dt_u8 if fr.dt_u8 is not None else fr.dt_normalized)
+        if sampling_base is None and fr.overlay_img is not None:
+            sampling_base = ensure_rgb_u8(fr.overlay_img)
 
-        if not show_diam and not show_direct and not show_pores:
-            show_diam = True
-
-        if show_pores:
-            base = self._pore_dt_to_rgb(self.current_frame.pore_dt, self.current_frame.void_mask)
-            if self.current_frame.pores:
-                out = base.copy()
-                for p in self.current_frame.pores:
-                    x, y = int(p['x']), int(p['y'])
-                    r = int(round(p['r_px']))
-                    if r <= 0:
-                        continue
-                    self._draw_circle(out, (x, y), r, color=(255, 255, 255), thickness=1)  
-                    # optional tiny center mark for readability (kept 1 px too)
-                    # draw_circle(out, (x, y), max(1, r // 12), color=(0, 255, 255), thickness=-1)
-                self._set_pixmap_from_array(out)
-                return
-
-        sampling_base = ensure_rgb_u8(self.current_frame.dt_u8 if self.current_frame.dt_u8 is not None else self.current_frame.dt_normalized)
-        if sampling_base is None and self.current_frame.overlay_img is not None:
-            sampling_base = ensure_rgb_u8(self.current_frame.overlay_img)
-        if sampling_base is None:
-            return
-
-        base_img = self.current_frame.orig_img if self.current_frame.scale_factor == 1.0 or self.current_frame.orig_img_scaled is None else self.current_frame.orig_img_scaled
-        measurement_base = self.current_frame.overlay_img.copy() if self.current_frame.overlay_img is not None else ensure_rgb_u8(base_img)
-        sampling_canvas = sampling_base.copy()
-        diameter_export_canvas = measurement_base.copy() if measurement_base is not None else sampling_canvas.copy()
+        base_img = fr.orig_img if fr.scale_factor == 1.0 or fr.orig_img_scaled is None else fr.orig_img_scaled
         base_rgb = ensure_rgb_u8(base_img)
-        orientation_export_canvas = base_rgb.copy() if base_rgb is not None else sampling_canvas.copy()
-        measurement_canvas = orientation_export_canvas if show_direct else diameter_export_canvas
 
-        H, W = sampling_canvas.shape[:2]
-        MAX_SEGMENTS = 15000
-        pts = self.current_frame.overlay_samples if len(self.current_frame.overlay_samples) <= MAX_SEGMENTS else self.current_frame.overlay_samples[::int(np.ceil(len(self.current_frame.overlay_samples)/MAX_SEGMENTS))]
+        fr.sampling_overlay = sampling_base.copy() if sampling_base is not None else None
+        fr.diameters_overlay = (
+            fr.overlay_img.copy()
+            if fr.overlay_img is not None
+            else (base_rgb.copy() if base_rgb is not None else None)
+        )
+        fr.orientations_overlay = base_rgb.copy() if base_rgb is not None else None
+        fr.pores_overlay = self._pore_dt_to_rgb(fr.pore_dt, fr.void_mask)
 
-        line_color = (255, 255, 0)
-        point_color = (255, 0, 0)
-        orientation_sample_coords: list[tuple[int, int]] = []
-        orientation_sample_colors: list[tuple[int, int, int]] = []
+        pts = list(fr.drawing_samples or [])
+        if len(pts) > 15000:
+            step = int(np.ceil(len(pts) / 15000))
+            pts = pts[::step]
 
-        def _angle_to_bgr(angle_deg: float) -> tuple[int, int, int]:
-            """Provide an internal helper for angle to bgr.
-            
-            Args:
-                angle_deg (float): Numeric control parameter for angle deg during computation.
-            
-            Returns:
-                tuple[int, int, int]: Tuple grouping the angle to bgr outputs in a stable positional order."""
-            if not np.isfinite(angle_deg):
-                return (200, 200, 200)
-            ang = float(np.clip(angle_deg, -90.0, 90.0))
-            hue = (ang + 90.0) / 180.0 * 179.0  # OpenCV HSV hue range is [0,179]
-            hsv = np.uint8([[[hue, 255, 255]]])
-            bgr = cv2.cvtColor(hsv, cv2.COLOR_HSV2BGR)[0, 0]
-            return int(bgr[0]), int(bgr[1]), int(bgr[2])
+        if pts and fr.sampling_overlay is not None:
+            height, width = fr.sampling_overlay.shape[:2]
+            for idx, (y, x, ny, nx, r, _angle_deg) in enumerate(pts):
+                if not (0 <= y < height and 0 <= x < width) or r <= 0:
+                    continue
 
-        for idx, (y, x, r, ny, nx, ty, tx, ang_deg) in enumerate(pts):
-            if not (0 <= y < H and 0 <= x < W) or r <= 0:
+                p0 = (y - ny * r, x - nx * r)
+                p1 = (y + ny * r, x + nx * r)
+                self._draw_line(fr.sampling_overlay, p0, p1, color=(255, 255, 0))
+                self._draw_circle(
+                    fr.sampling_overlay,
+                    (int(round(x)), int(round(y))),
+                    radius_px=1,
+                    color=(255, 0, 0),
+                    thickness=-1,
+                )
+                if fr.diameters_overlay is not None and (idx % 10) == 0:
+                    self._draw_line(fr.diameters_overlay, p0, p1, color=(255, 255, 0))
+
+        self._fill_orientation_overlay_by_label()
+
+        if fr.pores_overlay is not None and fr.pores:
+            fr.pores_overlay = fr.pores_overlay.copy()
+            for pore in fr.pores:
+                x, y = int(pore["x"]), int(pore["y"])
+                r = int(round(pore["r_px"]))
+                if r > 0:
+                    self._draw_circle(fr.pores_overlay, (x, y), r, color=(255, 255, 255), thickness=1)
+
+    def _fill_orientation_overlay_by_label(self):
+        fr = self.current_frame
+        img = fr.orientations_overlay
+        labels = fr.labels_2d
+        samples = fr.drawing_samples or []
+        if img is None or labels is None or not samples:
+            return
+
+        sample_map: dict[int, list[tuple[float, float, float]]] = {}
+        height, width = labels.shape[:2]
+        for y, x, _ny, _nx, _r, angle_deg in samples:
+            iy = int(round(float(y)))
+            ix = int(round(float(x)))
+            if iy < 0 or iy >= height or ix < 0 or ix >= width:
                 continue
-            p0 = (y - ny * r, x - nx * r)
-            p1 = (y + ny * r, x + nx * r)
-            angle_color = _angle_to_bgr(float(ang_deg))
+            label_id = int(labels[iy, ix])
+            if label_id <= 0 or not np.isfinite(angle_deg):
+                continue
+            sample_map.setdefault(label_id, []).append((float(y), float(x), float(angle_deg)))
 
-            # Keep dedicated export overlays deterministic regardless of active UI toggle.
-            if (idx % 10) == 0:
-                self._draw_line(diameter_export_canvas, p0, p1, color=line_color)
-            self._draw_line(orientation_export_canvas, p0, p1, color=angle_color)
-            orientation_sample_coords.append((y, x))
-            orientation_sample_colors.append(angle_color)
+        for label_id, label_samples in sample_map.items():
+            mask = labels == label_id
+            ys, xs = np.nonzero(mask)
+            if ys.size == 0:
+                continue
 
-            if show_direct:
-                self._draw_line(sampling_canvas, p0, p1, color=angle_color)
-                self._draw_line(measurement_canvas, p0, p1, color=angle_color)
-                draw_point_color = angle_color
-            elif show_diam:
-                self._draw_line(sampling_canvas, p0, p1, color=line_color)
-                if (idx % 10) == 0:
-                    self._draw_line(measurement_canvas, p0, p1, color=line_color)
-                draw_point_color = point_color
-            else:
-                draw_point_color = point_color
-            self._draw_circle(
-                sampling_canvas,
-                (int(round(x)), int(round(y))),
-                radius_px=1,
-                color=draw_point_color,
-                thickness=-1,
+            sample_arr = np.asarray(label_samples, dtype=np.float32)
+            tree = cKDTree(sample_arr[:, :2])
+            query_coords = np.stack([ys, xs], axis=1).astype(np.float32)
+
+            k = min(4, sample_arr.shape[0])
+            distances, indices = tree.query(query_coords, k=k)
+
+            angles = sample_arr[:, 2]
+            pixel_angles = self._weighted_axial_average_angles(angles, distances, indices)
+            pixel_colors = np.asarray(
+                [self._angle_to_bgr(float(angle)) for angle in pixel_angles],
+                dtype=np.uint8,
             )
+            img[ys, xs] = pixel_colors
 
-        if self.current_frame.labels_2d is not None and orientation_sample_coords:
-            mask = (self.current_frame.labels_2d.astype(np.int32) > 0)
-            if mask.any():
-                ys, xs = np.nonzero(mask)
-                coords = np.stack([ys, xs], axis=1)
-                tree = cKDTree(np.asarray(orientation_sample_coords, dtype=np.float32))
-                _, nn_idx = tree.query(coords, k=1)
-                colors_arr = np.asarray(orientation_sample_colors, dtype=np.uint8)
-                fill_vals = colors_arr[nn_idx]
-                orientation_export_canvas[ys, xs] = fill_vals
 
-        self.current_frame.sampling_overlay = sampling_canvas
-        self.current_frame.diameters_overlay = diameter_export_canvas
-        self.current_frame.orientations_overlay = orientation_export_canvas
-        # Default to the new overlay view if user is on an unrelated tab
+    @staticmethod
+    def _weighted_axial_average_angles(
+        sample_angles_deg: np.ndarray,
+        distances: np.ndarray,
+        indices: np.ndarray,
+    ) -> np.ndarray:
+        distances = np.asarray(distances, dtype=np.float32)
+        indices = np.asarray(indices, dtype=np.int32)
+
+        if distances.ndim == 1:
+            distances = distances[:, None]
+            indices = indices[:, None]
+
+        neighbor_angles = sample_angles_deg[indices]
+        weights = 1.0 / (distances + 1e-6)
+
+        theta2 = np.deg2rad(2.0 * neighbor_angles)
+        c = np.sum(weights * np.cos(theta2), axis=1)
+        s = np.sum(weights * np.sin(theta2), axis=1)
+
+        return 0.5 * np.rad2deg(np.arctan2(s, c))
+
+    def _render_vector_overlay(self):
+        fr = self.current_frame
+        img = fr.diameters_overlay
+        if self.rb_show_direct.isChecked():
+            img = fr.orientations_overlay
+        if self.rb_show_pores.isChecked():
+            img = fr.pores_overlay
+
+        if img is None:
+            img = fr.overlay_img if fr.overlay_img is not None else self._labels_rgb()
+        if img is None:
+            return
         if self.cb_view.currentText() not in ("Measurements overlay", "Sampling"):
             self.cb_view.setCurrentText("Measurements overlay")
-        self.refresh_view()
+        self._set_pixmap_from_array(img)
+
+    @staticmethod
+    def _angle_to_bgr(angle_deg: float) -> tuple[int, int, int]:
+        if not np.isfinite(angle_deg):
+            return (200, 200, 200)
+        ang = float(np.clip(angle_deg, -90.0, 90.0))
+        hue = (ang + 90.0) / 180.0 * 179.0
+        hsv = np.uint8([[[hue, 255, 255]]])
+        bgr = cv2.cvtColor(hsv, cv2.COLOR_HSV2BGR)[0, 0]
+        return int(bgr[0]), int(bgr[1]), int(bgr[2])
 
     def _clip_point(self, y, x, H, W):
         """Clip float (y,x) to valid integer image coordinates."""
@@ -3085,8 +3109,8 @@ class MainWindow(QMainWindow):
             # Angles (-90..90)
             ang_title = "Fiber orientation"
             ang = (
-                self.current_frame.angles_samples_deg
-                if self.current_frame.angles_samples_deg is not None
+                np.array([sample[5] for sample in (self.current_frame.measurement_samples or [])], dtype=np.float32)
+                if self.current_frame.measurement_samples is not None
                 else np.array([], dtype=np.float32)
             )
             if self._stack_diameter_histogram_enabled and self._stack_angle_histogram_data is not None:
@@ -3141,7 +3165,9 @@ class MainWindow(QMainWindow):
             img = self.current_frame.sampling_overlay if self.current_frame.sampling_overlay is not None else ensure_rgb_u8(self.current_frame.dt_u8)
         elif view == "Measurements overlay":
             fallback = self.current_frame.overlay_img if self.current_frame.overlay_img is not None else self._labels_rgb()
-            if self.rb_show_direct.isChecked():
+            if self.rb_show_pores.isChecked():
+                img = self.current_frame.pores_overlay
+            elif self.rb_show_direct.isChecked():
                 img = self.current_frame.orientations_overlay
             else:
                 img = self.current_frame.diameters_overlay

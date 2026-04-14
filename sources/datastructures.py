@@ -615,12 +615,13 @@ class Frame:
     sampling_overlay: Optional[np.ndarray] = None
     diameters_overlay: Optional[np.ndarray] = None
     orientations_overlay: Optional[np.ndarray] = None
+    pores_overlay: Optional[np.ndarray] = None
 
     # Measurement outputs
     samples_table: Optional[Any] = None
     fiber_summary: Optional[Dict[str, Any]] = None
-    overlay_samples: Optional[Any] = None
-    angles_samples_deg: Optional[np.ndarray] = None
+    measurement_samples: Optional[Any] = None
+    drawing_samples: Optional[Any] = None
     thickness_units: Optional[np.ndarray] = None
     porosity: Optional[float] = None
     pore_diams_units: Optional[np.ndarray] = None
@@ -687,6 +688,7 @@ class Frame:
         self.sampling_overlay = None
         self.diameters_overlay = None
         self.orientations_overlay = None
+        self.pores_overlay = None
         self.labels_rgb_cache = (None, None)
         self.segmentation_outline_cache = (None, None)
 
@@ -698,8 +700,8 @@ class Frame:
         self.has_measurements = False
         self.samples_table = None
         self.fiber_summary = None
-        self.overlay_samples = None
-        self.angles_samples_deg = None
+        self.measurement_samples = None
+        self.drawing_samples = None
         self.thickness_units = None
         self.porosity = None
         self.pore_diams_units = None
@@ -708,6 +710,7 @@ class Frame:
         self.pores = None
         self.diameters_overlay = None
         self.orientations_overlay = None
+        self.pores_overlay = None
 
     def begin_frame(self, orig_img: Optional[np.ndarray], frame_id: str, z_index: int) -> None:
         """Start frame and initialize per-run state tracking.
@@ -818,8 +821,8 @@ class Frame:
         *,
         samples_table: Optional[Any],
         fiber_summary: Optional[Dict[str, Any]],
-        overlay_samples: Optional[Any],
-        angles_samples_deg: Optional[np.ndarray],
+        measurement_samples: Optional[Any],
+        drawing_samples: Optional[Any],
         thickness_units: Optional[np.ndarray],
         porosity: Optional[float],
         pore_diams_units: Optional[np.ndarray],
@@ -828,27 +831,11 @@ class Frame:
         pores: Optional[Any],
         sampling_overlay: Optional[np.ndarray],
     ) -> None:
-        """Update measurement outputs and synchronize dependent runtime state.
-        
-        Args:
-            samples_table (Optional[Any]): Value for samples table interpreted by this routine.
-            fiber_summary (Optional[Dict[str, Any]]): Value for fiber summary interpreted by this routine.
-            overlay_samples (Optional[Any]): Value for overlay samples interpreted by this routine.
-            angles_samples_deg (Optional[np.ndarray]): Numeric control parameter for angles samples deg during computation.
-            thickness_units (Optional[np.ndarray]): Value for thickness units interpreted by this routine.
-            porosity (Optional[float]): Value for porosity interpreted by this routine.
-            pore_diams_units (Optional[np.ndarray]): Value for pore diams units interpreted by this routine.
-            void_mask (Optional[np.ndarray]): Array-like data carrying void mask values for analysis.
-            pore_dt (Optional[np.ndarray]): Value for pore dt interpreted by this routine.
-            pores (Optional[Any]): Value for pores interpreted by this routine.
-            sampling_overlay (Optional[np.ndarray]): Value for sampling overlay interpreted by this routine.
-        
-        Returns:
-            None: Result object produced by the set measurement outputs routine."""
+        """Update measurement outputs and synchronize dependent runtime state."""
         self.samples_table = samples_table
         self.fiber_summary = fiber_summary
-        self.overlay_samples = overlay_samples
-        self.angles_samples_deg = angles_samples_deg
+        self.measurement_samples = measurement_samples
+        self.drawing_samples = drawing_samples
         self.thickness_units = thickness_units
         self.porosity = porosity
         self.pore_diams_units = pore_diams_units

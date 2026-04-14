@@ -640,8 +640,8 @@ class BatchResultExporter:
             else np.array([])
         )
         angles = (
-            np.asarray(frame.angles_samples_deg)
-            if frame.angles_samples_deg is not None
+            np.asarray([sample[5] for sample in (frame.measurement_samples or [])], dtype=np.float32)
+            if frame.measurement_samples is not None
             else np.array([])
         )
 

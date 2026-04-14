@@ -1100,70 +1100,52 @@ class FiberAnalyzer_2D:
         spacing_px: float = 5.0,
         scale_factor: float = 1.0,
     ) -> tuple[
-        List[tuple[int, int, float]],
-        List[float],
-        List[tuple[int, int, float, float, float, float, float, float]],
+        List[tuple[int, int, float, float, float, float]],
+        List[tuple[int, int, float, float, float, float]],
     ]:
         """
         Pure analysis core with explicit inputs.
 
         Returns:
-          - radius_samples: list of (y, x, r)
-          - angles_samples_deg: list[float]
-          - overlay_samples: list of (y, x, r, ny, nx, ty, tx, angle_deg)
+          - measurement_samples: (y, x, ny, nx, r, angle_deg) in original/display scale
+          - drawing_samples: (y, x, ny, nx, r, angle_deg) in processing-image scale
         """
         if dt is None or gx is None or gy is None:
-            return [], [], []
+            return [], []
 
         segments = constant_segments_xy or []
-        # Keep sampling stable: never allow sub-pixel step below 1 px.
         spacing = max(1.0, float(spacing_px))
-        # `scale_factor` maps processing resolution back to display/original resolution.
         scale = float(scale_factor)
         if not np.isfinite(scale) or scale <= 0:
             scale = 1.0
 
-        radius_samples: List[tuple[int, int, float]] = []
-        angles_samples_deg: List[float] = []
-        overlay_samples: List[tuple[int, int, float, float, float, float, float, float]] = []
+        measurement_samples: List[tuple[int, int, float, float, float, float]] = []
+        drawing_samples: List[tuple[int, int, float, float, float, float]] = []
 
-        def _canon_angle(ty: float, tx: float):
-            # Convert tangent direction to canonical orientation angle in image coords:
-            # - use clockwise-positive convention via leading minus
-            # - fold 180-degree equivalent directions into (-90, 90]
-            """Provide an internal helper for canon angle.
-            
-            Args:
-                ty (float): Value for ty interpreted by this routine.
-                tx (float): Value for tx interpreted by this routine.
-            
-            Returns:
-                Any: Object containing the canon angle outcome for downstream use."""
+        def _canon_angle(ty: float, tx: float) -> float:
             n = float(np.hypot(ty, tx))
             if n == 0.0 or not np.isfinite(n):
-                return None
+                return float("nan")
             ty, tx = ty / n, tx / n
             ang = -np.degrees(np.arctan2(ty, tx))
             if ang > 90.0:
                 ang -= 180.0
-                ty, tx = -ty, -tx
             elif ang <= -90.0:
                 ang += 180.0
-                ty, tx = -ty, -tx
             if ang <= -90.0:
                 ang = -89.999
-            return ty, tx, ang
+            return float(ang)
 
         for seg_xy in segments:
             seg_xy = np.asarray(seg_xy).reshape(-1, 2).astype(np.float32)
             if len(seg_xy) < 2:
                 continue
-            # Uniform arc-length sampling along each centerline segment.
+
             samples_xy = resample_polyline_xy(seg_xy, step=spacing)
             if len(samples_xy) < 2:
                 continue
+
             samples_yx = samples_xy[:, [1, 0]].astype(np.float32)
-            # Estimate local normal from DT gradients; tangent is the perpendicular.
             normals_yx = normals_from_dt_2d(
                 centerline=samples_yx,
                 dt=dt,
@@ -1173,56 +1155,54 @@ class FiberAnalyzer_2D:
                 iters=3,
                 tau_g=1e-3,
             )
+
             for i, (y, x) in enumerate(samples_yx):
-                #approximate radius at the ridge center
                 r0 = float(_bilinear(dt, float(y), float(x)))
                 if r0 <= 0:
                     continue
+
                 ny, nx = float(normals_yx[i, 0]), float(normals_yx[i, 1])
-                ty, tx = nx, -ny
-                canon = _canon_angle(ty, tx)
-                if canon is None:
-                    ty_c, tx_c, ang = float("nan"), float("nan"), float("nan")
-                else:
-                    ty_c, tx_c, ang = canon
-                angles_samples_deg.append(ang)
-
-                norm = np.sqrt(nx**2 + ny**2)
-                nx /= norm
+                norm = float(np.hypot(ny, nx))
+                if norm == 0.0 or not np.isfinite(norm):
+                    continue
                 ny /= norm
+                nx /= norm
 
-                x1 = x - nx*(r0/2)
-                y1 = y - ny*(r0/2)
+                angle_deg = _canon_angle(nx, -ny)
 
-                x2 = x + nx*(r0/2)
-                y2 = y + ny*(r0/2) 
-
+                x1 = x - nx * (r0 / 2.0)
+                y1 = y - ny * (r0 / 2.0)
+                x2 = x + nx * (r0 / 2.0)
+                y2 = y + ny * (r0 / 2.0)
                 v1 = float(_bilinear(dt, float(y1), float(x1)))
                 v2 = float(_bilinear(dt, float(y2), float(x2)))
+                r = float((v1 + v2 + r0) / 2.0)
+                if r <= 0 or not np.isfinite(r):
+                    continue
 
-                r = (v1 + v2 + r0) / 2
-
-                # Keep per-sample geometry for overlays/diagnostics.
-                overlay_samples.append((int(round(y)), int(round(x)), r, ny, nx, ty_c, tx_c, float(ang)))
-                # Export histogram samples in original scale.
-                radius_samples.append(
+                drawing_samples.append(
+                    (int(round(y)), int(round(x)), ny, nx, r, angle_deg)
+                )
+                measurement_samples.append(
                     (
                         int(round(y / scale)),
                         int(round(x / scale)),
+                        ny,
+                        nx,
                         r / scale,
+                        angle_deg,
                     )
                 )
 
-        return radius_samples, angles_samples_deg, overlay_samples
+        return measurement_samples, drawing_samples
 
     def analyze(self, constant_segments: Optional[List[np.ndarray]] = None, spacing_px: float = 5.0):
         """
         Run thickness/orientation sampling on current centerline segments.
 
         Returns:
-          - radius_samples: list of (y, x, r)
-          - angles_samples_deg: list[float]
-          - overlay_samples: list of (y, x, r, ny, nx, ty, tx, angle_deg)
+          - measurement_samples: (y, x, ny, nx, r, angle_deg) in original/display scale
+          - drawing_samples: (y, x, ny, nx, r, angle_deg) in processing-image scale
 
         Note:
             `_xy` suffix denotes (x, y) ordering, while `_yx` denotes (y, x).
