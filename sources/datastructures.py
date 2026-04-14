@@ -594,6 +594,10 @@ class Frame:
     has_prediction: bool = False
     has_segmentation: bool = False
     has_measurements: bool = False
+    prediction_sig: Optional[str] = None
+    centerline_sig: Optional[str] = None
+    segmentation_sig: Optional[str] = None
+    measurement_sig: Optional[str] = None
     error_message: Optional[str] = None
 
     # Source and prediction buffers
@@ -674,6 +678,10 @@ class Frame:
         self.style_vec = None
         self.orig_img_scaled = None
         self.scale_factor = 1.0
+        self.prediction_sig = None
+        self.centerline_sig = None
+        self.segmentation_sig = None
+        self.measurement_sig = None
         self.error_message = None
 
     def clear_segmentation(self) -> None:
@@ -691,6 +699,9 @@ class Frame:
         self.pores_overlay = None
         self.labels_rgb_cache = (None, None)
         self.segmentation_outline_cache = (None, None)
+        self.centerline_sig = None
+        self.segmentation_sig = None
+        self.measurement_sig = None
 
     def clear_measurements(self) -> None:
         """Clear cached measurements state that is no longer valid.
@@ -711,6 +722,7 @@ class Frame:
         self.diameters_overlay = None
         self.orientations_overlay = None
         self.pores_overlay = None
+        self.measurement_sig = None
 
     def begin_frame(self, orig_img: Optional[np.ndarray], frame_id: str, z_index: int) -> None:
         """Start frame and initialize per-run state tracking.
