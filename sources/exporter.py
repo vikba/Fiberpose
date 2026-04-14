@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import csv
 import json
 import os
 from typing import Any
@@ -53,6 +54,23 @@ class BatchResultExporter:
                 cfg=cfg,
                 artifacts=artifacts,
             )
+
+        frames = list(batch_result.frame_results)
+        if "tables" in artifacts and len(frames) > 1:
+            try:
+                summary_base = self._stack_base_name(frames, cfg)
+                summary_path = self._resolve_output_path(output_dir, summary_base, "_summary", ".csv", cfg)
+                self._write_batch_summary_csv(frames, summary_path)
+                written_files.append(summary_path)
+            except Exception as exc:
+                errors.append(
+                    {
+                        "frame_index": -1,
+                        "frame_id": str(self._stack_base_name(frames, cfg)),
+                        "artifact": "summary",
+                        "error": str(exc),
+                    }
+                )
 
         manifest_path = None
         if cfg.get("write_manifest", True):
@@ -416,6 +434,51 @@ class BatchResultExporter:
                     handle.write(
                         f"{z_index},{frame_id},{int(x)},{int(y)},{diameter_val:.6f},{angle_val:.6f}\n"
                     )
+
+    def _write_batch_summary_csv(self, frames: list[Any], path: str) -> None:
+        """Write a one-row-per-frame summary table for multi-image batches."""
+        with open(path, "w", newline="") as handle:
+            writer = csv.writer(handle)
+            writer.writerow(
+                [
+                    "frame_index",
+                    "z_index",
+                    "frame_id",
+                    "mean_diameter",
+                    "std_diameter",
+                    "orientation_index",
+                    "mean_angle_deg",
+                    "std_angle_deg",
+                    "porosity",
+                    "sample_count",
+                    "units",
+                    "has_segmentation",
+                    "has_measurements",
+                ]
+            )
+            for frame_index, frame in enumerate(frames):
+                mean_val, std_val, orientation_index, mean_angle_deg, std_angle_deg, porosity, sample_count = (
+                    self._measurement_summary_from_frame(frame)
+                )
+                summary = getattr(frame, "fiber_summary", None) or {}
+                units = str(summary.get("units", "px"))
+                writer.writerow(
+                    [
+                        int(frame_index),
+                        int(getattr(frame, "z_index", frame_index)),
+                        str(getattr(frame, "frame_id", f"frame_{frame_index:04d}")),
+                        f"{mean_val:.6f}",
+                        f"{std_val:.6f}",
+                        f"{orientation_index:.6f}",
+                        f"{mean_angle_deg:.6f}",
+                        f"{std_angle_deg:.6f}",
+                        f"{porosity:.6f}",
+                        int(sample_count),
+                        units,
+                        int(bool(getattr(frame, "has_segmentation", False))),
+                        int(bool(getattr(frame, "has_measurements", False))),
+                    ]
+                )
 
     def _normalize_export_config(self, export_config: dict[str, Any]) -> dict[str, Any]:
         """Normalize export config into a canonical representation.
