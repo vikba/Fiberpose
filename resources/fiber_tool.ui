@@ -845,7 +845,7 @@
   </action>
   <action name="action_batch_processing">
    <property name="text">
-    <string>Run Batch On Folder</string>
+    <string>Open Folder (Batch Mode)</string>
    </property>
   </action>
   <action name="action_edit_config">

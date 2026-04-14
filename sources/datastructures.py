@@ -53,7 +53,8 @@ class AppConfig:
             "dt": True,
             "labels": True,
             "overlay": True,
-            "debug": True,
+            "diameters": True,
+            "orientations": True,
             "outline": False,
             "tables": True,
             "style_vector": False,
@@ -612,7 +613,8 @@ class Frame:
     centerlines_overlay_img: Optional[np.ndarray] = None
     overlay_img: Optional[np.ndarray] = None
     sampling_overlay: Optional[np.ndarray] = None
-    measurements_overlay: Optional[np.ndarray] = None
+    diameters_overlay: Optional[np.ndarray] = None
+    orientations_overlay: Optional[np.ndarray] = None
 
     # Measurement outputs
     samples_table: Optional[Any] = None
@@ -683,7 +685,8 @@ class Frame:
         self.centerlines_overlay_img = None
         self.overlay_img = None
         self.sampling_overlay = None
-        self.measurements_overlay = None
+        self.diameters_overlay = None
+        self.orientations_overlay = None
         self.labels_rgb_cache = (None, None)
         self.segmentation_outline_cache = (None, None)
 
@@ -703,6 +706,8 @@ class Frame:
         self.void_mask = None
         self.pore_dt = None
         self.pores = None
+        self.diameters_overlay = None
+        self.orientations_overlay = None
 
     def begin_frame(self, orig_img: Optional[np.ndarray], frame_id: str, z_index: int) -> None:
         """Start frame and initialize per-run state tracking.
@@ -774,7 +779,6 @@ class Frame:
         centerlines_overlay_img: Optional[np.ndarray],
         overlay_img: Optional[np.ndarray],
         sampling_overlay: Optional[np.ndarray] = None,
-        measurements_overlay: Optional[np.ndarray] = None,
         labels_rgb_cache: Optional[tuple[Optional[int], Optional[np.ndarray]]] = None,
         segmentation_outline_cache: Optional[tuple[Optional[int], Optional[np.ndarray]]] = None,
         invalidate_measurements: bool = True,
@@ -786,7 +790,6 @@ class Frame:
             centerlines_overlay_img (Optional[np.ndarray]): Value for centerlines overlay img interpreted by this routine.
             overlay_img (Optional[np.ndarray]): Value for overlay img interpreted by this routine.
             sampling_overlay (Optional[np.ndarray]): Value for sampling overlay interpreted by this routine.
-            measurements_overlay (Optional[np.ndarray]): Value for measurements overlay interpreted by this routine.
             labels_rgb_cache (Optional[tuple[Optional[int], Optional[np.ndarray]]]): Array-like data carrying labels rgb cache values for analysis.
             segmentation_outline_cache (Optional[tuple[Optional[int], Optional[np.ndarray]]]): Value for segmentation outline cache interpreted by this routine.
             invalidate_measurements (bool): Value for invalidate measurements interpreted by this routine.
@@ -797,7 +800,6 @@ class Frame:
         self.centerlines_overlay_img = centerlines_overlay_img
         self.overlay_img = overlay_img
         self.sampling_overlay = sampling_overlay
-        self.measurements_overlay = measurements_overlay
         if labels_rgb_cache is not None:
             self.labels_rgb_cache = labels_rgb_cache
         elif labels_2d is None:
@@ -824,7 +826,6 @@ class Frame:
         void_mask: Optional[np.ndarray],
         pore_dt: Optional[np.ndarray],
         pores: Optional[Any],
-        measurements_overlay: Optional[np.ndarray],
         sampling_overlay: Optional[np.ndarray],
     ) -> None:
         """Update measurement outputs and synchronize dependent runtime state.
@@ -840,7 +841,6 @@ class Frame:
             void_mask (Optional[np.ndarray]): Array-like data carrying void mask values for analysis.
             pore_dt (Optional[np.ndarray]): Value for pore dt interpreted by this routine.
             pores (Optional[Any]): Value for pores interpreted by this routine.
-            measurements_overlay (Optional[np.ndarray]): Value for measurements overlay interpreted by this routine.
             sampling_overlay (Optional[np.ndarray]): Value for sampling overlay interpreted by this routine.
         
         Returns:
@@ -855,7 +855,6 @@ class Frame:
         self.void_mask = void_mask
         self.pore_dt = pore_dt
         self.pores = pores
-        self.measurements_overlay = measurements_overlay
         self.sampling_overlay = sampling_overlay
         self.has_measurements = True
         self.error_message = None

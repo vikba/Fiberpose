@@ -939,7 +939,6 @@ class MainWindow(QMainWindow):
             centerlines_overlay_img=self.analyzer.get_centerlines_image(),
             overlay_img=self._create_overlay(base_img, labels, alpha=0.5, labels_rgb=labels_rgb),
             sampling_overlay=fr.sampling_overlay,
-            measurements_overlay=fr.measurements_overlay,
             labels_rgb_cache=labels_cache,
             segmentation_outline_cache=outline_cache,
             invalidate_measurements=True,
@@ -1091,7 +1090,6 @@ class MainWindow(QMainWindow):
             void_mask=void_mask,
             pore_dt=pore_dt,
             pores=pores,
-            measurements_overlay=fr.measurements_overlay,
             sampling_overlay=fr.sampling_overlay,
         )
         self.text_edit2.setPlainText(outputs["info_text"])
@@ -1608,7 +1606,7 @@ class MainWindow(QMainWindow):
         
         Returns:
             tuple[str, ...]: Tuple grouping the save artifact keys outputs in a stable positional order."""
-        return ("dt", "labels", "overlay", "debug", "outline", "tables", "style_vector")
+        return ("dt", "labels", "overlay", "diameters", "orientations", "outline", "tables", "style_vector")
 
     def _current_save_layout(self) -> str:
         """Return export layout based on loaded source type."""
@@ -2689,13 +2687,15 @@ class MainWindow(QMainWindow):
         """
         if self._image_batch is not None and not self._is_batch_processing:
             if self._batch_result is not None and self._batch_results_have_measurements:
+                self._set_progress_bar(100.0)
                 self._set_current_slice(self._current_z_index, update_view=True)
                 return
             self._run_batch_analysis(compute_measurements=True)
             return
 
-        self._set_progress_bar(70.0)
+        self._set_progress_bar(0.0)
         if not self._ensure_measurements_ready():
+            self._set_progress_bar(0.0)
             return
         self._set_progress_bar(100.0)
 
@@ -2729,9 +2729,9 @@ class MainWindow(QMainWindow):
             Any: Object containing the render vector overlay outcome for downstream use."""
         if not self.current_frame.overlay_samples:
             return
-        show_diam   = getattr(self, "rb_show_diam", None) and self.rb_show_diam.isChecked()
-        show_direct = getattr(self, "rb_show_direct", None) and self.rb_show_direct.isChecked()
-        show_pores  = getattr(self, "rb_show_pores", None) and self.rb_show_pores.isChecked()
+        show_diam = self.rb_show_diam.isChecked()
+        show_direct = self.rb_show_direct.isChecked()
+        show_pores = self.rb_show_pores.isChecked()
 
         if not show_diam and not show_direct and not show_pores:
             show_diam = True
@@ -2760,12 +2760,10 @@ class MainWindow(QMainWindow):
         base_img = self.current_frame.orig_img if self.current_frame.scale_factor == 1.0 or self.current_frame.orig_img_scaled is None else self.current_frame.orig_img_scaled
         measurement_base = self.current_frame.overlay_img.copy() if self.current_frame.overlay_img is not None else ensure_rgb_u8(base_img)
         sampling_canvas = sampling_base.copy()
-        # For angle coloring paint directly over the original image
-        measurement_canvas = (
-            ensure_rgb_u8(base_img).copy()
-            if show_direct
-            else (measurement_base.copy() if measurement_base is not None else sampling_canvas.copy())
-        )
+        diameter_export_canvas = measurement_base.copy() if measurement_base is not None else sampling_canvas.copy()
+        base_rgb = ensure_rgb_u8(base_img)
+        orientation_export_canvas = base_rgb.copy() if base_rgb is not None else sampling_canvas.copy()
+        measurement_canvas = orientation_export_canvas if show_direct else diameter_export_canvas
 
         H, W = sampling_canvas.shape[:2]
         MAX_SEGMENTS = 15000
@@ -2773,8 +2771,8 @@ class MainWindow(QMainWindow):
 
         line_color = (255, 255, 0)
         point_color = (255, 0, 0)
-        sample_coords: list[tuple[int, int]] = []
-        sample_colors: list[tuple[int, int, int]] = []
+        orientation_sample_coords: list[tuple[int, int]] = []
+        orientation_sample_colors: list[tuple[int, int, int]] = []
 
         def _angle_to_bgr(angle_deg: float) -> tuple[int, int, int]:
             """Provide an internal helper for angle to bgr.
@@ -2795,18 +2793,22 @@ class MainWindow(QMainWindow):
         for idx, (y, x, r, ny, nx, ty, tx, ang_deg) in enumerate(pts):
             if not (0 <= y < H and 0 <= x < W) or r <= 0:
                 continue
+            p0 = (y - ny * r, x - nx * r)
+            p1 = (y + ny * r, x + nx * r)
+            angle_color = _angle_to_bgr(float(ang_deg))
+
+            # Keep dedicated export overlays deterministic regardless of active UI toggle.
+            if (idx % 10) == 0:
+                self._draw_line(diameter_export_canvas, p0, p1, color=line_color)
+            self._draw_line(orientation_export_canvas, p0, p1, color=angle_color)
+            orientation_sample_coords.append((y, x))
+            orientation_sample_colors.append(angle_color)
+
             if show_direct:
-                color = _angle_to_bgr(float(ang_deg))
-                p0 = (y - ny * r, x - nx * r)
-                p1 = (y + ny * r, x + nx * r)
-                self._draw_line(sampling_canvas, p0, p1, color=color)
-                self._draw_line(measurement_canvas, p0, p1, color=color)
-                sample_coords.append((y, x))
-                sample_colors.append(color)
-                draw_point_color = color
+                self._draw_line(sampling_canvas, p0, p1, color=angle_color)
+                self._draw_line(measurement_canvas, p0, p1, color=angle_color)
+                draw_point_color = angle_color
             elif show_diam:
-                p0 = (y - ny * r, x - nx * r)
-                p1 = (y + ny * r, x + nx * r)
                 self._draw_line(sampling_canvas, p0, p1, color=line_color)
                 if (idx % 10) == 0:
                     self._draw_line(measurement_canvas, p0, p1, color=line_color)
@@ -2821,20 +2823,20 @@ class MainWindow(QMainWindow):
                 thickness=-1,
             )
 
-        # Fill watershed regions by nearest angle sample
-        if show_direct and self.current_frame.labels_2d is not None and sample_coords:
+        if self.current_frame.labels_2d is not None and orientation_sample_coords:
             mask = (self.current_frame.labels_2d.astype(np.int32) > 0)
             if mask.any():
                 ys, xs = np.nonzero(mask)
                 coords = np.stack([ys, xs], axis=1)
-                tree = cKDTree(np.asarray(sample_coords, dtype=np.float32))
+                tree = cKDTree(np.asarray(orientation_sample_coords, dtype=np.float32))
                 _, nn_idx = tree.query(coords, k=1)
-                colors_arr = np.asarray(sample_colors, dtype=np.uint8)
+                colors_arr = np.asarray(orientation_sample_colors, dtype=np.uint8)
                 fill_vals = colors_arr[nn_idx]
-                measurement_canvas[ys, xs] = fill_vals
+                orientation_export_canvas[ys, xs] = fill_vals
 
         self.current_frame.sampling_overlay = sampling_canvas
-        self.current_frame.measurements_overlay = measurement_canvas
+        self.current_frame.diameters_overlay = diameter_export_canvas
+        self.current_frame.orientations_overlay = orientation_export_canvas
         # Default to the new overlay view if user is on an unrelated tab
         if self.cb_view.currentText() not in ("Measurements overlay", "Sampling"):
             self.cb_view.setCurrentText("Measurements overlay")
@@ -3077,7 +3079,7 @@ class MainWindow(QMainWindow):
             )
             self.graph_diameters.addItem(bg)
 
-        show_pores = getattr(self, "rb_show_pores", None) and self.rb_show_pores.isChecked()
+        show_pores = self.rb_show_pores.isChecked()
 
         if not show_pores:
             # Angles (-90..90)
@@ -3139,7 +3141,12 @@ class MainWindow(QMainWindow):
             img = self.current_frame.sampling_overlay if self.current_frame.sampling_overlay is not None else ensure_rgb_u8(self.current_frame.dt_u8)
         elif view == "Measurements overlay":
             fallback = self.current_frame.overlay_img if self.current_frame.overlay_img is not None else self._labels_rgb()
-            img = self.current_frame.measurements_overlay if self.current_frame.measurements_overlay is not None else fallback
+            if self.rb_show_direct.isChecked():
+                img = self.current_frame.orientations_overlay
+            else:
+                img = self.current_frame.diameters_overlay
+            if img is None:
+                img = fallback
         elif view == "gx": 
             img = to_uint8_for_view(self.current_frame.gx)
         elif view == "gy":

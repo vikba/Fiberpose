@@ -12,11 +12,11 @@ import numpy as np
 class BatchResultExporter:
     """Persist batch/frame outputs using a small dict-based export config."""
 
-    _ALL_ARTIFACTS = ("dt", "labels", "overlay", "debug", "outline", "tables", "style_vector")
+    _ALL_ARTIFACTS = ("dt", "labels", "overlay", "diameters", "orientations", "outline", "tables", "style_vector")
     _PRESET_ARTIFACTS = {
-        "predictions": {"dt", "labels", "overlay", "debug", "outline"},
+        "predictions": {"dt", "labels", "overlay", "diameters", "orientations", "outline"},
         "measurements": {"tables"},
-        "full": {"dt", "labels", "overlay", "debug", "outline", "tables", "style_vector"},
+        "full": {"dt", "labels", "overlay", "diameters", "orientations", "outline", "tables", "style_vector"},
     }
 
     def __init__(self, export_config: dict[str, Any] | None = None):
@@ -143,12 +143,21 @@ class BatchResultExporter:
                         path = self._resolve_output_path(output_dir, base_name, "_overlay", image_ext, cfg)
                         iio.imwrite(path, np.asarray(frame.overlay_img, dtype=np.uint8))
                         written_files.append(path)
-                    elif artifact == "debug":
-                        if frame.measurements_overlay is None:
+                    elif artifact == "diameters":
+                        src = frame.diameters_overlay
+                        if src is None:
                             skipped.append(self._skip_item(frame_index, artifact, "missing_data"))
                             continue
-                        path = self._resolve_output_path(output_dir, base_name, "_debug", image_ext, cfg)
-                        iio.imwrite(path, np.asarray(frame.measurements_overlay, dtype=np.uint8))
+                        path = self._resolve_output_path(output_dir, base_name, "_diameters", image_ext, cfg)
+                        iio.imwrite(path, np.asarray(src, dtype=np.uint8))
+                        written_files.append(path)
+                    elif artifact == "orientations":
+                        src = frame.orientations_overlay
+                        if src is None:
+                            skipped.append(self._skip_item(frame_index, artifact, "missing_data"))
+                            continue
+                        path = self._resolve_output_path(output_dir, base_name, "_orientations", image_ext, cfg)
+                        iio.imwrite(path, np.asarray(src, dtype=np.uint8))
                         written_files.append(path)
                     elif artifact == "outline":
                         outline_img = self._cached_outline_image(frame)
@@ -176,7 +185,7 @@ class BatchResultExporter:
                     errors.append(
                         {
                             "frame_index": int(frame_index),
-                            "frame_id": str(getattr(frame, "frame_id", "")),
+                            "frame_id": str(frame.frame_id),
                             "artifact": artifact,
                             "error": str(exc),
                         }
@@ -236,12 +245,20 @@ class BatchResultExporter:
                     path = self._resolve_output_path(output_dir, base_name, "_overlay", ".tiff", cfg)
                     iio.imwrite(path, np.stack(arrays, axis=0))
                     written_files.append(path)
-                elif artifact == "debug":
+                elif artifact == "diameters":
                     arrays = self._collect_stack_arrays(frames, artifact)
                     if arrays is None:
                         skipped.append(self._skip_item(-1, artifact, "missing_data"))
                         continue
-                    path = self._resolve_output_path(output_dir, base_name, "_debug", ".tiff", cfg)
+                    path = self._resolve_output_path(output_dir, base_name, "_diameters", ".tiff", cfg)
+                    iio.imwrite(path, np.stack(arrays, axis=0))
+                    written_files.append(path)
+                elif artifact == "orientations":
+                    arrays = self._collect_stack_arrays(frames, artifact)
+                    if arrays is None:
+                        skipped.append(self._skip_item(-1, artifact, "missing_data"))
+                        continue
+                    path = self._resolve_output_path(output_dir, base_name, "_orientations", ".tiff", cfg)
                     iio.imwrite(path, np.stack(arrays, axis=0))
                     written_files.append(path)
                 elif artifact == "outline":
@@ -254,7 +271,7 @@ class BatchResultExporter:
                     written_files.append(path)
                 elif artifact == "tables":
                     if not any(
-                        getattr(frame, "samples_table", None) is not None and len(frame.samples_table) > 0
+                        frame.samples_table is not None and len(frame.samples_table) > 0
                         for frame in frames
                     ):
                         skipped.append(self._skip_item(-1, artifact, "missing_data"))
@@ -263,7 +280,7 @@ class BatchResultExporter:
                     self._write_stack_samples_csv(frames, path)
                     written_files.append(path)
                 elif artifact == "style_vector":
-                    if not all(getattr(frame, "style_vec", None) is not None for frame in frames):
+                    if not all(frame.style_vec is not None for frame in frames):
                         skipped.append(self._skip_item(-1, artifact, "missing_data"))
                         continue
                     path = self._resolve_output_path(output_dir, base_name, "_style", ".npy", cfg)
@@ -297,12 +314,12 @@ class BatchResultExporter:
         arrays: list[np.ndarray] = []
         for frame in frames:
             if artifact == "dt":
-                src = getattr(frame, "dt_u8", None)
+                src = frame.dt_u8
                 if src is None:
                     return None
                 arrays.append(np.asarray(src, dtype=np.uint8))
             elif artifact == "labels":
-                src = getattr(frame, "labels_2d", None)
+                src = frame.labels_2d
                 if src is None:
                     return None
                 arr = np.asarray(src)
@@ -312,12 +329,17 @@ class BatchResultExporter:
                     return None
                 arrays.append(np.asarray(arr, dtype=np.uint16))
             elif artifact == "overlay":
-                src = getattr(frame, "overlay_img", None)
+                src = frame.overlay_img
                 if src is None:
                     return None
                 arrays.append(np.asarray(src, dtype=np.uint8))
-            elif artifact == "debug":
-                src = getattr(frame, "measurements_overlay", None)
+            elif artifact == "diameters":
+                src = frame.diameters_overlay
+                if src is None:
+                    return None
+                arrays.append(np.asarray(src, dtype=np.uint8))
+            elif artifact == "orientations":
+                src = frame.orientations_overlay
                 if src is None:
                     return None
                 arrays.append(np.asarray(src, dtype=np.uint8))
@@ -336,7 +358,7 @@ class BatchResultExporter:
         Return the cached outline visualization image.
         Saving must not recompute outlines.
         """
-        cache = getattr(frame, "segmentation_outline_cache", None)
+        cache = frame.segmentation_outline_cache
         if not isinstance(cache, tuple) or len(cache) != 2:
             return None
         cached_img = cache[1]
@@ -361,7 +383,7 @@ class BatchResultExporter:
         if source_base_name:
             return self._sanitize_name(str(source_base_name))
 
-        first_id = str(getattr(frames[0], "frame_id", "") or "").strip()
+        first_id = str(frames[0].frame_id or "").strip()
         if first_id:
             return self._sanitize_name(os.path.splitext(os.path.basename(first_id))[0])
         return "stack"
@@ -381,9 +403,9 @@ class BatchResultExporter:
             for frame in frames:
                 if frame.samples_table is None or len(frame.samples_table) == 0:
                     continue
-                z_index = int(getattr(frame, "z_index", 0))
-                frame_id = str(getattr(frame, "frame_id", ""))
-                thickness_units = getattr(frame, "thickness_units", None)
+                z_index = int(frame.z_index)
+                frame_id = str(frame.frame_id)
+                thickness_units = frame.thickness_units
                 for sample_index, row in enumerate(frame.samples_table, start=1):
                     x, y, t_px = row[:3]
                     angle_val = float(row[3]) if len(row) > 3 else float("nan")
@@ -451,8 +473,8 @@ class BatchResultExporter:
             include = []
         if exclude is None:
             exclude = []
-        cfg["include"] = [str(item) for item in include]
-        cfg["exclude"] = [str(item) for item in exclude]
+        cfg["include"] = [str(item).strip().lower() for item in include]
+        cfg["exclude"] = [str(item).strip().lower() for item in exclude]
         cfg["source_base_name"] = (
             str(cfg.get("source_base_name")).strip() if cfg.get("source_base_name") is not None else None
         )
@@ -490,7 +512,7 @@ class BatchResultExporter:
             return self._sanitize_name(str(explicit_base))
 
         naming = cfg.get("naming", "frame_id_z")
-        frame_id = self._sanitize_name(os.path.splitext(os.path.basename(str(getattr(frame, "frame_id", ""))))[0])
+        frame_id = self._sanitize_name(os.path.splitext(os.path.basename(str(frame.frame_id)))[0])
 
         if naming == "index":
             return f"frame_{index:04d}"
@@ -499,7 +521,7 @@ class BatchResultExporter:
         if naming == "frame_id":
             return frame_id
 
-        z_index_raw = getattr(frame, "z_index", index)
+        z_index_raw = frame.z_index
         try:
             z_index = int(z_index_raw)
         except Exception:
@@ -580,7 +602,7 @@ class BatchResultExporter:
             handle.write("\n\n")
             handle.write("x,y,diameter,angle_deg\n")
 
-            thickness_units = getattr(frame, "thickness_units", None)
+            thickness_units = frame.thickness_units
             for idx, row in enumerate(frame.samples_table, start=1):
                 x, y, t_px = row[:3]
                 angle_val = float(row[3]) if len(row) > 3 else float("nan")
@@ -600,7 +622,7 @@ class BatchResultExporter:
         
         Returns:
             tuple[float, float, float, float, float, float, int]: Tuple grouping the measurement summary from frame outputs in a stable positional order."""
-        summary = getattr(frame, "fiber_summary", None)
+        summary = frame.fiber_summary
         if summary:
             return (
                 float(summary.get("mean_diameter", float("nan"))),
@@ -614,12 +636,12 @@ class BatchResultExporter:
 
         diameters = (
             np.asarray(frame.thickness_units)
-            if getattr(frame, "thickness_units", None) is not None
+            if frame.thickness_units is not None
             else np.array([])
         )
         angles = (
             np.asarray(frame.angles_samples_deg)
-            if getattr(frame, "angles_samples_deg", None) is not None
+            if frame.angles_samples_deg is not None
             else np.array([])
         )
 
@@ -627,7 +649,7 @@ class BatchResultExporter:
         std_val = float(np.std(diameters)) if diameters.size else float("nan")
         sample_count = int(frame.samples_table.shape[0]) if frame.samples_table is not None else int(diameters.size)
         orientation_index, mean_angle_deg, std_angle_deg = self._compute_orientation_stats(angles)
-        porosity = float(frame.porosity) if getattr(frame, "porosity", None) is not None else float("nan")
+        porosity = float(frame.porosity) if frame.porosity is not None else float("nan")
         return mean_val, std_val, orientation_index, mean_angle_deg, std_angle_deg, porosity, sample_count
 
     @staticmethod
@@ -639,7 +661,7 @@ class BatchResultExporter:
         
         Returns:
             tuple[float, float, float]: Tuple grouping the compute orientation stats outputs in a stable positional order."""
-        if angles_samples_deg is None or getattr(angles_samples_deg, "size", 0) == 0:
+        if angles_samples_deg is None or angles_samples_deg.size == 0:
             return float("nan"), float("nan"), float("nan")
 
         angles_rad = np.deg2rad(angles_samples_deg)

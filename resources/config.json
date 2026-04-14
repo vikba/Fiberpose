@@ -4,7 +4,7 @@
     "scale_label": "2x",
     "max_angle_deg": 30.0,
     "strict_centerlines": false,
-    "segmentation_mode": "fastest_ascend",
+    "segmentation_mode": "watershed",
     "seg_threshold": 1,
     "sample_spacing": 5.0,
     "render3d_max_display_voxels": 8000000,
@@ -21,12 +21,13 @@
         "dt": false,
         "labels": true,
         "overlay": false,
-        "debug": false,
+        "diameters": true,
+        "orientations": true,
         "outline": true,
-        "tables": false,
-        "style_vector": true,
+        "tables": true,
+        "style_vector": false,
         "image_format": "png",
         "collision": "suffix",
-        "write_manifest": false
+        "write_manifest": true
     }
 }
