@@ -209,8 +209,15 @@ class ConfigEditorDialog(QtWidgets.QDialog):
         "segmentation_mode": {
             "label": "Segmentation mode",
             "kind": "enum",
-            "options": ["watershed", "ridge", "fastest_ascend"],
+            "options": ["watershed", "radial_expansion"],
             "editable": False,
+        },
+        "radial_expansion_factor": {
+            "label": "Radial expansion factor",
+            "kind": "float",
+            "min": 0.0,
+            "max": 5.0,
+            "step": 0.05,
         },
         "seg_threshold": {"label": "Segmentation threshold", "kind": "int", "min": 0, "max": 255, "step": 1},
         "sample_spacing": {"label": "Sample spacing (px)", "kind": "float", "min": 0.1, "max": 1e9, "step": 1.0},

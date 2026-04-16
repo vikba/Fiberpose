@@ -189,13 +189,9 @@ class MainWindow(QMainWindow):
         self.rb_ridge.blockSignals(True)
         self.rb_ridge.setChecked(False)
         self.rb_ridge.blockSignals(False)
-        if hasattr(self, "rb_fastest_ascend"):
-            self.rb_fastest_ascend.blockSignals(True)
-            self.rb_fastest_ascend.setChecked(False)
-            self.rb_fastest_ascend.blockSignals(False)
         self.chb_strict.blockSignals(True)
         self.chb_strict.setChecked(False)
-        self.chb_strict.setEnabled(False)
+        self.chb_strict.setEnabled(True)
         self.chb_strict.blockSignals(False)
         self.chb_cluster.setChecked(False)
 
@@ -262,8 +258,6 @@ class MainWindow(QMainWindow):
         self._on_cluster_toggled(self.chb_cluster.isChecked())
         self.rb_watershed.toggled.connect(self._on_segmentation_mode_changed)
         self.rb_ridge.toggled.connect(self._on_segmentation_mode_changed)
-        if hasattr(self, "rb_fastest_ascend"):
-            self.rb_fastest_ascend.toggled.connect(self._on_segmentation_mode_changed)
         self.chb_strict.toggled.connect(self._on_strict_checkbox_toggled)
         self._update_strict_checkbox_state()
 
@@ -299,8 +293,6 @@ class MainWindow(QMainWindow):
         
         self.rb_watershed.toggled.connect(self.sync_ui_to_config)
         self.rb_ridge.toggled.connect(self.sync_ui_to_config)
-        if hasattr(self, "rb_fastest_ascend"):
-            self.rb_fastest_ascend.toggled.connect(self.sync_ui_to_config)
 
         # Spinboxes
         if hasattr(self, "sp_max_cent_angle"):
@@ -550,11 +542,11 @@ class MainWindow(QMainWindow):
             fr.segmentation_outline_cache = (current_id, cache_img)
         return cache_img
 
-    def _centerlines_with_connections(self) -> np.ndarray | None:
+    def _segmentation_centerlines_with_connections(self) -> np.ndarray | None:
         """
-        Return the cached centerline view with clustering links overlaid for visibility.
+        Return segmentation-centerline view with optional clustering links.
         """
-        img = self.current_frame.centerlines_overlay_img
+        img = self.current_frame.segmentation_centerlines_overlay_img
         base = ensure_rgb_u8(img)
         if base is None:
             return None
@@ -575,6 +567,14 @@ class MainWindow(QMainWindow):
             qy = int(round(float(q_xy[1])))
             cv2.line(out, (px, py), (qx, qy), color, 1, cv2.LINE_AA)
         return out
+
+    def _measurement_centerlines_view(self) -> np.ndarray | None:
+        """Return cached measurement-centerline view."""
+        return ensure_rgb_u8(self.current_frame.measurement_centerlines_overlay_img)
+
+    def _centerlines_comparison_view(self) -> np.ndarray | None:
+        """Return combined centerline comparison debug view."""
+        return ensure_rgb_u8(self.current_frame.centerlines_comparison_overlay_img)
 
     def _labels_rgb(self) -> np.ndarray | None:
         """Provide an internal helper for labels rgb.
@@ -637,20 +637,13 @@ class MainWindow(QMainWindow):
     def _segmentation_params(self) -> tuple[str, dict[str, Any]]:
         mode = str(getattr(self.config, "segmentation_mode", "watershed") or "watershed")
         thr_u8 = int(getattr(self.config, "seg_threshold", 1))
-
-        if mode == "ridge":
-            current_scale = self.current_frame.scale_factor if np.isfinite(self.current_frame.scale_factor) else 1.0
-            radius_val = (thr_u8 / 255.0) * 25.0
-            params = {
-                "radius_thresh_px": float(radius_val) * float(current_scale),
-                "dilate_extra_px": 0.0,
-                "min_run_points": 1,
-            }
-        elif mode == "fastest_ascend":
-            params = {"sigma": 1.0, "dist_thresh": 0.2, "flux_merge_thresh": 5.0}
-        else:
-            params = {"threshold_u8": thr_u8}
-
+        if mode not in ("watershed", "radial_expansion"):
+            mode = "watershed"
+        params = (
+            {"threshold_u8": thr_u8}
+            if mode == "watershed"
+            else {"expansion_factor": float(getattr(self.config, "radial_expansion_factor", 0.7))}
+        )
         return mode, params
 
     def _prediction_signature(self) -> str | None:
@@ -667,16 +660,15 @@ class MainWindow(QMainWindow):
         }
         return json.dumps(payload, sort_keys=True, default=str)
 
-    def _centerline_signature(self) -> str | None:
+    def _segmentation_centerline_signature(self) -> str | None:
         prediction_sig = self._prediction_signature()
         if prediction_sig is None:
             return None
         payload = {
             "prediction_sig": prediction_sig,
-            "max_angle_deg": float(getattr(self.config, "max_angle_deg", 30.0)),
-            "strict_centerlines": bool(getattr(self.config, "strict_centerlines", False)),
             "cluster_enabled": bool(getattr(self.config, "cluster_enabled", False)),
             "cluster_params": dict(getattr(self.config, "cluster_params", {}) or {}),
+            "radial_expansion_factor": float(getattr(self.config, "radial_expansion_factor", 0.7)),
             "centerline_kwargs": dict(
                 getattr(self.analyzer, "_centerline_kwargs", None)
                 or FiberAnalyzer_2D._default_centerline_kwargs()
@@ -684,25 +676,38 @@ class MainWindow(QMainWindow):
         }
         return json.dumps(payload, sort_keys=True, default=str)
 
-    def _segmentation_signature(self) -> str | None:
-        centerline_sig = self._centerline_signature()
-        if centerline_sig is None:
+    def _measurement_centerline_signature(self) -> str | None:
+        segmentation_centerline_sig = self._segmentation_centerline_signature()
+        if segmentation_centerline_sig is None:
             return None
         payload = {
-            "centerline_sig": centerline_sig,
+            "segmentation_centerline_sig": segmentation_centerline_sig,
+            "max_angle_deg": float(getattr(self.config, "max_angle_deg", 30.0)),
+            "strict_centerlines": bool(getattr(self.config, "strict_centerlines", False)),
+        }
+        return json.dumps(payload, sort_keys=True, default=str)
+
+    def _segmentation_signature(self) -> str | None:
+        segmentation_centerline_sig = self._segmentation_centerline_signature()
+        if segmentation_centerline_sig is None:
+            return None
+        payload = {
+            "segmentation_centerline_sig": segmentation_centerline_sig,
             "segmentation_mode": str(getattr(self.config, "segmentation_mode", "watershed")),
             "seg_threshold": int(getattr(self.config, "seg_threshold", 1)),
+            "radial_expansion_factor": float(getattr(self.config, "radial_expansion_factor", 0.7)),
         }
         return json.dumps(payload, sort_keys=True, default=str)
 
     def _measurement_signature(self) -> str | None:
-        segmentation_sig = self._segmentation_signature()
-        if segmentation_sig is None:
+        measurement_centerline_sig = self._measurement_centerline_signature()
+        if measurement_centerline_sig is None:
             return None
         props = self.sample_props if self.sample_props is not None else SampleProperties.defaults()
         payload = {
-            "segmentation_sig": segmentation_sig,
+            "measurement_centerline_sig": measurement_centerline_sig,
             "sample_spacing": float(getattr(self.config, "sample_spacing", 5.0)),
+            "seg_threshold": int(getattr(self.config, "seg_threshold", 1)),
             "pixel_size_x": float(props.pixel_size_x),
             "pixel_size_y": float(props.pixel_size_y),
             "voxel_size_z": float(props.voxel_size_z),
@@ -721,11 +726,17 @@ class MainWindow(QMainWindow):
         if invalidate_centerlines:
             fr.clear_segmentation()
         else:
-            keep_overlay = fr.centerlines_overlay_img
-            keep_sig = fr.centerline_sig
+            keep_seg_overlay = fr.segmentation_centerlines_overlay_img
+            keep_meas_overlay = fr.measurement_centerlines_overlay_img
+            keep_cmp_overlay = fr.centerlines_comparison_overlay_img
+            keep_seg_sig = fr.segmentation_centerline_sig
+            keep_meas_sig = fr.measurement_centerline_sig
             fr.clear_segmentation()
-            fr.centerlines_overlay_img = keep_overlay
-            fr.centerline_sig = keep_sig
+            fr.segmentation_centerlines_overlay_img = keep_seg_overlay
+            fr.measurement_centerlines_overlay_img = keep_meas_overlay
+            fr.centerlines_comparison_overlay_img = keep_cmp_overlay
+            fr.segmentation_centerline_sig = keep_seg_sig
+            fr.measurement_centerline_sig = keep_meas_sig
         self._invalidate_measurements()
 
     def _invalidate_measurements(self) -> None:
@@ -751,6 +762,7 @@ class MainWindow(QMainWindow):
                 "strict_centerlines": bool(getattr(self.config, "strict_centerlines", False)),
                 "cluster_enabled": bool(getattr(self.config, "cluster_enabled", False)),
                 "cluster_params": dict(getattr(self.config, "cluster_params", {}) or {}),
+                "radial_expansion_factor": float(getattr(self.config, "radial_expansion_factor", 0.7)),
             }
         )
         return params
@@ -810,8 +822,13 @@ class MainWindow(QMainWindow):
         self.analyzer.process_centerlines(
             max_angle_deg=float(centerline_params["max_angle_deg"]),
             **dict(centerline_params["centerline_kwargs"]),
+            radial_expansion_factor=float(centerline_params["radial_expansion_factor"]),
         )
-        return {"centerlines_overlay_img": self.analyzer.get_centerlines_image()}
+        return {
+            "segmentation_centerlines_overlay_img": self.analyzer.get_segmentation_centerlines_image(),
+            "measurement_centerlines_overlay_img": self.analyzer.get_measurement_centerlines_image(),
+            "centerlines_comparison_overlay_img": self.analyzer.get_centerlines_comparison_image(),
+        }
 
     def segment_stage(
         self,
@@ -836,7 +853,9 @@ class MainWindow(QMainWindow):
             outline_cache = (None, None)
         return {
             "labels_2d": labels,
-            "centerlines_overlay_img": centerlines["centerlines_overlay_img"],
+            "segmentation_centerlines_overlay_img": centerlines["segmentation_centerlines_overlay_img"],
+            "measurement_centerlines_overlay_img": centerlines["measurement_centerlines_overlay_img"],
+            "centerlines_comparison_overlay_img": centerlines["centerlines_comparison_overlay_img"],
             "overlay_img": self._create_overlay(base_img, labels, alpha=0.5, labels_rgb=labels_rgb),
             "labels_rgb_cache": labels_cache,
             "segmentation_outline_cache": outline_cache,
@@ -884,17 +903,23 @@ class MainWindow(QMainWindow):
         fr.prediction_sig = target_sig
         return True
 
-    def _ensure_centerlines_ready(self) -> bool:
+    def _ensure_segmentation_centerlines_ready(self) -> bool:
         fr = self.current_frame
         if not self._ensure_prediction_ready():
             return False
         if self.analyzer is None:
             return False
 
-        target_sig = self._centerline_signature()
-        if target_sig is None:
+        segmentation_sig = self._segmentation_centerline_signature()
+        measurement_sig = self._measurement_centerline_signature()
+        if segmentation_sig is None or measurement_sig is None:
             return False
-        if fr.centerline_sig == target_sig and self.analyzer.get_centerline_segments():
+        if (
+            fr.segmentation_centerline_sig == segmentation_sig
+            and fr.measurement_centerline_sig == measurement_sig
+            and self.analyzer.get_segmentation_centerline_segments()
+            and self.analyzer.get_measurement_centerline_segments()
+        ):
             return True
 
         params = self._centerline_params()
@@ -906,11 +931,32 @@ class MainWindow(QMainWindow):
             logger.error("Centerline computation failed: %s", exc)
             return False
 
-        fr.centerlines_overlay_img = outputs["centerlines_overlay_img"]
-        fr.centerline_sig = target_sig
+        fr.segmentation_centerlines_overlay_img = outputs["segmentation_centerlines_overlay_img"]
+        fr.measurement_centerlines_overlay_img = outputs["measurement_centerlines_overlay_img"]
+        fr.centerlines_comparison_overlay_img = outputs["centerlines_comparison_overlay_img"]
+        fr.segmentation_centerline_sig = segmentation_sig
+        fr.measurement_centerline_sig = measurement_sig
         fr.segmentation_sig = None
         fr.measurement_sig = None
         return True
+
+    def _ensure_measurement_centerlines_ready(self) -> bool:
+        if not self._ensure_segmentation_centerlines_ready():
+            return False
+        fr = self.current_frame
+        target_sig = self._measurement_centerline_signature()
+        if target_sig is None:
+            return False
+        if (
+            fr.measurement_centerline_sig == target_sig
+            and self.analyzer is not None
+            and self.analyzer.get_measurement_centerline_segments()
+        ):
+            return True
+        # Recompute both centerline sets when measurement filtering settings changed.
+        fr.segmentation_centerline_sig = None
+        fr.measurement_centerline_sig = None
+        return self._ensure_segmentation_centerlines_ready()
 
     def _ensure_segmentation_ready(self) -> bool:
         fr = self.current_frame
@@ -929,7 +975,7 @@ class MainWindow(QMainWindow):
             return False
         if fr.has_segmentation and fr.labels_2d is not None and fr.segmentation_sig == target_sig:
             return True
-        if not self._ensure_centerlines_ready():
+        if not self._ensure_segmentation_centerlines_ready():
             return False
 
         self._invalidate_segmentation(invalidate_centerlines=False)
@@ -937,7 +983,11 @@ class MainWindow(QMainWindow):
         try:
             outputs = self.segment_stage(
                 fr,
-                {"centerlines_overlay_img": fr.centerlines_overlay_img},
+                {
+                    "segmentation_centerlines_overlay_img": fr.segmentation_centerlines_overlay_img,
+                    "measurement_centerlines_overlay_img": fr.measurement_centerlines_overlay_img,
+                    "centerlines_comparison_overlay_img": fr.centerlines_comparison_overlay_img,
+                },
                 {"mode": mode, "params": params},
             )
         except Exception as exc:
@@ -948,7 +998,9 @@ class MainWindow(QMainWindow):
 
         fr.set_segmentation_outputs(
             labels_2d=outputs["labels_2d"],
-            centerlines_overlay_img=outputs["centerlines_overlay_img"],
+            segmentation_centerlines_overlay_img=outputs["segmentation_centerlines_overlay_img"],
+            measurement_centerlines_overlay_img=outputs["measurement_centerlines_overlay_img"],
+            centerlines_comparison_overlay_img=outputs["centerlines_comparison_overlay_img"],
             overlay_img=outputs["overlay_img"],
             sampling_overlay=fr.sampling_overlay,
             labels_rgb_cache=outputs["labels_rgb_cache"],
@@ -1081,10 +1133,10 @@ class MainWindow(QMainWindow):
 
     def _ensure_measurements_ready(self) -> bool:
         fr = self.current_frame
-        if not self._ensure_segmentation_ready():
+        if not self._ensure_prediction_ready():
             return False
         if self.analyzer is None:
-            self._show_info("No analyzer", "Segmentation data unavailable.")
+            self._show_info("No analyzer", "Measurement data unavailable.")
             return False
 
         target_sig = self._measurement_signature()
@@ -1094,8 +1146,8 @@ class MainWindow(QMainWindow):
             return True
 
         self._invalidate_measurements()
-        if not self._ensure_centerlines_ready() or not self.analyzer.get_centerline_segments():
-            self._show_info("No centerlines", "No centerlines available. Run segmentation first.")
+        if not self._ensure_measurement_centerlines_ready() or not self.analyzer.get_measurement_centerline_segments():
+            self._show_info("No centerlines", "No measurement centerlines available.")
             return False
 
         fr.error_message = None
@@ -1103,7 +1155,11 @@ class MainWindow(QMainWindow):
         try:
             outputs = self.measure(
                 prediction=fr,
-                centerlines={"centerlines_overlay_img": fr.centerlines_overlay_img},
+                centerlines={
+                    "segmentation_centerlines_overlay_img": fr.segmentation_centerlines_overlay_img,
+                    "measurement_centerlines_overlay_img": fr.measurement_centerlines_overlay_img,
+                    "centerlines_comparison_overlay_img": fr.centerlines_comparison_overlay_img,
+                },
                 segmentation={"labels_2d": fr.labels_2d},
                 measurement_params=measurement_params,
                 sample_props=self.sample_props,
@@ -1394,6 +1450,7 @@ class MainWindow(QMainWindow):
                 "max_angle_deg": float(self.config.max_angle_deg),
                 "strict_centerlines": bool(self.config.strict_centerlines),
                 "segmentation_mode": str(self.config.segmentation_mode),
+                "radial_expansion_factor": float(self.config.radial_expansion_factor),
                 "seg_threshold": int(self.config.seg_threshold),
                 "sample_spacing": float(self.config.sample_spacing),
                 "cluster_enabled": bool(self.config.cluster_enabled),
@@ -2342,8 +2399,8 @@ class MainWindow(QMainWindow):
         failures: list[tuple[str, str]] = []
         processed = 0
         for result in batch_result.frame_results:
-            if not result.has_segmentation:
-                failures.append((result.frame_id, "Segmentation did not produce results"))
+            if not result.has_measurements:
+                failures.append((result.frame_id, "Measurement stage did not produce results"))
             else:
                 processed += 1
         export_errors = export_result.get("errors", [])
@@ -3228,8 +3285,12 @@ class MainWindow(QMainWindow):
             img = to_uint8_for_view(self.current_frame.dt_normalized)
         elif view == "Laplacian":
             img = to_uint8_for_view(self.current_frame.lapl_img)
-        elif view == "Centerlines":
-            img = self._centerlines_with_connections()
+        elif view in ("Segmentation centerlines", "Centerlines"):
+            img = self._segmentation_centerlines_with_connections()
+        elif view == "Measurement centerlines":
+            img = self._measurement_centerlines_view()
+        elif view == "Centerline comparison":
+            img = self._centerlines_comparison_view()
         elif view == "Segmentation":
             img = self._labels_rgb()
         elif view == "Segmentation outline":
@@ -3545,21 +3606,8 @@ class MainWindow(QMainWindow):
             self.analyzer.set_strict_centerline_filter(bool(enabled))
 
     def _update_strict_checkbox_state(self) -> None:
-        """Enables the strict centerline checkbox only in Ridge segmentation mode."""
-        if not hasattr(self, "config"):
-            return
-
-        # Clean check using the config object
-        enable = self.config.segmentation_mode == "ridge"
-        
-        if enable:
-            if not self.chb_strict.isEnabled():
-                self.chb_strict.setEnabled(True)
-        else:
-            if self.chb_strict.isChecked():
-                self._set_strict_mode(False)
-            if self.chb_strict.isEnabled():
-                self.chb_strict.setEnabled(False)
+        """Strict filtering now controls measurement-centerline filtering and is always available."""
+        self.chb_strict.setEnabled(True)
 
     def _set_segmentation_mode(self, mode: str) -> None:
         """Provide an internal helper for set segmentation mode.
@@ -3570,11 +3618,8 @@ class MainWindow(QMainWindow):
         Returns:
             None: Result object produced by the set segmentation mode routine."""
         target = str(mode or "watershed").strip().lower()
-        if target == "ridge":
+        if target == "radial_expansion":
             self.rb_ridge.setChecked(True)
-            return
-        if target == "fastest_ascend" and hasattr(self, "rb_fastest_ascend"):
-            self.rb_fastest_ascend.setChecked(True)
             return
         self.rb_watershed.setChecked(True)
 
@@ -3661,6 +3706,7 @@ class MainWindow(QMainWindow):
         prev_max_angle = float(getattr(self.config, "max_angle_deg", 30.0))
         prev_strict = bool(getattr(self.config, "strict_centerlines", False))
         prev_mode = str(getattr(self.config, "segmentation_mode", "watershed"))
+        prev_radial_expansion_factor = float(getattr(self.config, "radial_expansion_factor", 0.7))
         prev_threshold = int(getattr(self.config, "seg_threshold", 1))
         prev_spacing = float(getattr(self.config, "sample_spacing", 5.0))
         prev_cluster = bool(getattr(self.config, "cluster_enabled", False))
@@ -3684,13 +3730,12 @@ class MainWindow(QMainWindow):
 
         # Segmentation Mode
         if self.rb_ridge.isChecked():
-            self.config.segmentation_mode = "ridge"
-        elif hasattr(self, "rb_fastest_ascend") and self.rb_fastest_ascend.isChecked():
-            self.config.segmentation_mode = "fastest_ascend"
+            self.config.segmentation_mode = "radial_expansion"
         else:
             self.config.segmentation_mode = "watershed"
 
         self.config.seg_threshold = int(self.sp_segm_threshold.value())
+        self.config.radial_expansion_factor = float(getattr(self.config, "radial_expansion_factor", 0.7))
 
         # Analysis
         if hasattr(self, "le_samspacing"):
@@ -3729,6 +3774,12 @@ class MainWindow(QMainWindow):
             max_angle_changed
             or prev_strict != bool(self.config.strict_centerlines)
             or prev_mode != str(self.config.segmentation_mode)
+            or not math.isclose(
+                prev_radial_expansion_factor,
+                float(self.config.radial_expansion_factor),
+                rel_tol=1e-9,
+                abs_tol=1e-9,
+            )
             or prev_threshold != int(self.config.seg_threshold)
             or prev_cluster != bool(self.config.cluster_enabled)
             or prev_cluster_params != new_cluster_params
@@ -3747,6 +3798,12 @@ class MainWindow(QMainWindow):
                 invalidate_centerlines=(
                     max_angle_changed
                     or prev_strict != bool(self.config.strict_centerlines)
+                    or not math.isclose(
+                        prev_radial_expansion_factor,
+                        float(self.config.radial_expansion_factor),
+                        rel_tol=1e-9,
+                        abs_tol=1e-9,
+                    )
                     or prev_cluster != bool(self.config.cluster_enabled)
                     or prev_cluster_params != new_cluster_params
                 )
@@ -3798,20 +3855,14 @@ class MainWindow(QMainWindow):
         # --- Segmentation Mode ---
         self.rb_watershed.blockSignals(True)
         self.rb_ridge.blockSignals(True)
-        if hasattr(self, "rb_fastest_ascend"):
-            self.rb_fastest_ascend.blockSignals(True)
 
-        if cfg.segmentation_mode == "ridge":
+        if str(cfg.segmentation_mode).strip().lower() == "radial_expansion":
             self.rb_ridge.setChecked(True)
-        elif cfg.segmentation_mode == "fastest_ascend" and hasattr(self, "rb_fastest_ascend"):
-            self.rb_fastest_ascend.setChecked(True)
         else:
             self.rb_watershed.setChecked(True)
 
         self.rb_watershed.blockSignals(False)
         self.rb_ridge.blockSignals(False)
-        if hasattr(self, "rb_fastest_ascend"):
-            self.rb_fastest_ascend.blockSignals(False)
 
         self.sp_segm_threshold.blockSignals(True)
         # Cast to int to guarantee PyQt6 won't complain

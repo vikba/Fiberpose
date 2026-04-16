@@ -1,15 +1,15 @@
 # Fiberpose Pipeline
 
 ## Scope
-- Documents runtime behavior in `sources/gui_mainwindow.py`, `sources/fiber_analyzer.py`, and `sources/batch_pipeline.py`.
+- Documents runtime behavior in `sources/gui_mainwindow.py`, `sources/fiber_analyzer_2D.py`, and `sources/batch_pipeline.py`.
 - Covers segmentation, measurement, batch execution, and stack/3D visualization.
 
 ## Runtime Modes and Flags
 - `segmentation.mode=watershed` calls `FiberAnalyzer.segment(mode="watershed", params={"threshold_u8": ...})`.
-- `segmentation.mode=ridge` calls `FiberAnalyzer.segment(mode="ridge", params={"radius_thresh_px": ..., "dilate_extra_px": ..., "min_run_points": ...})`.
-- `segmentation.mode=fastest_ascend` calls `FiberAnalyzer.segment(mode="fastest_ascend", params={"sigma": ..., "dist_thresh": ..., "flux_merge_thresh": ...})`.
-- `strict_centerlines` affects centerline filtering in `process_centerlines`; GUI enables this checkbox only in ridge mode.
-- `clustering.enabled` toggles fragment stitching (`stitch_and_cluster`) before marker/render generation.
+- `segmentation.mode=radial_expansion` calls `FiberAnalyzer.segment(mode="radial_expansion", params={"expansion_factor": ...})`.
+- `radial_expansion_factor` controls ridge expansion as a fraction of local DT (default `0.7`).
+- `strict_centerlines` affects the measurement-centerline filtering stage.
+- `clustering.enabled` toggles optional centerline stitching links for debug visualization.
 - `scale factor` (`cb_scale`) rescales input for prediction/segmentation and rescales thresholds/measurements back to original units.
 - `pores view` changes overlay/histogram to pore circles and pore diameter distribution.
 
@@ -19,8 +19,9 @@
 - `BatchResult`: `frame_results: list[Frame]`.
 - `dt`: model output distance transform (`float32`).
 - `dt_u8`, `dt_normalized`, `gx`, `gy`, `laplacian`, `style_vec`: cached prediction products.
-- `fragments`: `list[FiberFragment]` from centerline extraction.
-- `markers`: `int32` seed image used by watershed.
+- `segmentation_centerlines`: `list[FiberFragment]` built directly from raw ridges.
+- `measurement_centerlines`: `list[FiberFragment]` filtered from `segmentation_centerlines`.
+- `markers`: `int32` marker image rendered from `segmentation_centerlines` and used by watershed.
 - `labels_2d`: `uint16` segmentation labels.
 - `samples_table`, `thickness_units`, `angles_samples_deg`, `porosity`, `pores`, `pore_diams_units`: measurement outputs.
 
@@ -54,22 +55,22 @@
 - internally: `_run_model()` -> `FiberposeModel.predict(...)`
 - then smooth DT, compute gradients/laplacian, cache outputs
 6. Always run `FiberAnalyzer.process_centerlines(...)`:
-- `compute_centerlines(...)` ->
-- `RidgeDetector.detect_ridges(...)` ->
-- contour split/trim ->
-- sliding window filter (optional strict checks) ->
-- `FiberFragment` list + markers
-- optional clustering merge and centerline overlay render
+- `RidgeDetector.detect_ridges(...)` (raw ridge lines)
+- `_ridge_lines_to_segmentation_fragments(...)`:
+  - sample local DT radius on raw ridges
+  - expand ridges by `radial_expansion_factor * DT`
+  - merge overlapping expanded regions and assign stable label ids
+- `_filter_measurement_centerlines(...)` derives measurement centerlines from segmentation centerlines
+- render segmentation/measurement/comparison centerline overlays
 7. Copy analyzer prediction caches into `Frame` via `set_prediction_outputs(...)`.
 8. Segment by mode through unified dispatch:
 - `FiberAnalyzer.segment(mode=..., params=...)`
 - watershed uses threshold_u8
-- ridge uses radius threshold and optional dilation/min-run params (radius and dilation scale with active scale)
-- fastest_ascend uses sigma/dist-threshold/flux-merge params
+- radial_expansion uses the precomputed expanded ridge labels
 9. Build label colors + overlay and store via `set_segmentation_outputs(...)`.
 
 ## Per-Frame Measurement Flow
-1. `analyze_fibers()` ensures valid segmentation at current scale; reruns `segment()` if missing or scale mismatch.
+1. `analyze_fibers()` ensures prediction + measurement centerlines are ready.
 2. Sets `analyzer.scale_factor = frame.scale_factor`.
 3. Calls `FiberAnalyzer.analyze(spacing_px_scaled)` returning:
 - `radius_samples` (center/radius mapped back to original scale)
@@ -108,4 +109,4 @@
 - `Stack3DWindow` (`gui_dialogs.py`): stack projection + 3D visualization.
 
 ## Notes
-- `pipeline_config["ridge_detection"]["centerline_kwargs"]` defaults from `FiberAnalyzer._default_centerline_kwargs()` and is used by `segment()`.
+- `centerline_kwargs` defaults from `FiberAnalyzer_2D._default_centerline_kwargs()` and are used by `process_centerlines()`.

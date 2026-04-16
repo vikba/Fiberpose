@@ -27,6 +27,7 @@ class AppConfig:
     
     # --- Segmentation Params ---
     segmentation_mode: str = "watershed"
+    radial_expansion_factor: float = 0.7
     seg_threshold: int = 1
     
     # --- Analysis & Physical Units ---
@@ -595,7 +596,8 @@ class Frame:
     has_segmentation: bool = False
     has_measurements: bool = False
     prediction_sig: Optional[str] = None
-    centerline_sig: Optional[str] = None
+    segmentation_centerline_sig: Optional[str] = None
+    measurement_centerline_sig: Optional[str] = None
     segmentation_sig: Optional[str] = None
     measurement_sig: Optional[str] = None
     error_message: Optional[str] = None
@@ -614,7 +616,9 @@ class Frame:
 
     # Segmentation products
     labels_2d: Optional[np.ndarray] = None
-    centerlines_overlay_img: Optional[np.ndarray] = None
+    segmentation_centerlines_overlay_img: Optional[np.ndarray] = None
+    measurement_centerlines_overlay_img: Optional[np.ndarray] = None
+    centerlines_comparison_overlay_img: Optional[np.ndarray] = None
     overlay_img: Optional[np.ndarray] = None
     sampling_overlay: Optional[np.ndarray] = None
     diameters_overlay: Optional[np.ndarray] = None
@@ -679,7 +683,8 @@ class Frame:
         self.orig_img_scaled = None
         self.scale_factor = 1.0
         self.prediction_sig = None
-        self.centerline_sig = None
+        self.segmentation_centerline_sig = None
+        self.measurement_centerline_sig = None
         self.segmentation_sig = None
         self.measurement_sig = None
         self.error_message = None
@@ -691,7 +696,9 @@ class Frame:
             None: Result object produced by the clear segmentation routine."""
         self.has_segmentation = False
         self.labels_2d = None
-        self.centerlines_overlay_img = None
+        self.segmentation_centerlines_overlay_img = None
+        self.measurement_centerlines_overlay_img = None
+        self.centerlines_comparison_overlay_img = None
         self.overlay_img = None
         self.sampling_overlay = None
         self.diameters_overlay = None
@@ -699,7 +706,8 @@ class Frame:
         self.pores_overlay = None
         self.labels_rgb_cache = (None, None)
         self.segmentation_outline_cache = (None, None)
-        self.centerline_sig = None
+        self.segmentation_centerline_sig = None
+        self.measurement_centerline_sig = None
         self.segmentation_sig = None
         self.measurement_sig = None
 
@@ -791,7 +799,9 @@ class Frame:
         self,
         *,
         labels_2d: Optional[np.ndarray],
-        centerlines_overlay_img: Optional[np.ndarray],
+        segmentation_centerlines_overlay_img: Optional[np.ndarray],
+        measurement_centerlines_overlay_img: Optional[np.ndarray],
+        centerlines_comparison_overlay_img: Optional[np.ndarray],
         overlay_img: Optional[np.ndarray],
         sampling_overlay: Optional[np.ndarray] = None,
         labels_rgb_cache: Optional[tuple[Optional[int], Optional[np.ndarray]]] = None,
@@ -812,7 +822,9 @@ class Frame:
         Returns:
             None: Result object produced by the set segmentation outputs routine."""
         self.labels_2d = labels_2d
-        self.centerlines_overlay_img = centerlines_overlay_img
+        self.segmentation_centerlines_overlay_img = segmentation_centerlines_overlay_img
+        self.measurement_centerlines_overlay_img = measurement_centerlines_overlay_img
+        self.centerlines_comparison_overlay_img = centerlines_comparison_overlay_img
         self.overlay_img = overlay_img
         self.sampling_overlay = sampling_overlay
         if labels_rgb_cache is not None:

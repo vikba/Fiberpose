@@ -29,9 +29,9 @@
       <widget class="QPushButton" name="btn_segment">
        <property name="geometry">
         <rect>
-         <x>10</x>
-         <y>340</y>
-         <width>81</width>
+         <x>20</x>
+         <y>540</y>
+         <width>101</width>
          <height>31</height>
         </rect>
        </property>
@@ -47,8 +47,8 @@
       <widget class="QPushButton" name="btn_analyze_2D">
        <property name="geometry">
         <rect>
-         <x>10</x>
-         <y>580</y>
+         <x>130</x>
+         <y>540</y>
          <width>101</width>
          <height>31</height>
         </rect>
@@ -59,7 +59,7 @@
         </font>
        </property>
        <property name="text">
-        <string>Analyze fibers</string>
+        <string>Analyze 2D</string>
        </property>
       </widget>
       <widget class="QPushButton" name="btn_open_3d">
@@ -84,7 +84,7 @@
        <property name="geometry">
         <rect>
          <x>10</x>
-         <y>390</y>
+         <y>350</y>
          <width>231</width>
          <height>181</height>
         </rect>
@@ -432,27 +432,9 @@
        <widget class="QRadioButton" name="rb_ridge">
         <property name="geometry">
          <rect>
-          <x>10</x>
-          <y>170</y>
-          <width>81</width>
-          <height>25</height>
-         </rect>
-        </property>
-        <property name="font">
-         <font>
-          <pointsize>8</pointsize>
-         </font>
-        </property>
-        <property name="text">
-         <string>Ridge</string>
-        </property>
-       </widget>
-       <widget class="QRadioButton" name="rb_fastest_ascend">
-        <property name="geometry">
-         <rect>
-          <x>100</x>
+          <x>110</x>
           <y>130</y>
-          <width>131</width>
+          <width>111</width>
           <height>25</height>
          </rect>
         </property>
@@ -461,8 +443,8 @@
           <pointsize>8</pointsize>
          </font>
         </property>
-        <property name="text">
-         <string>Fastest Ascend</string>
+       <property name="text">
+         <string>Radial expansion</string>
         </property>
        </widget>
        <widget class="QCheckBox" name="chb_strict">
@@ -471,8 +453,8 @@
         </property>
         <property name="geometry">
          <rect>
-          <x>100</x>
-          <y>170</y>
+          <x>10</x>
+          <y>160</y>
           <width>51</width>
           <height>17</height>
          </rect>
@@ -504,6 +486,39 @@
          <string>cluster</string>
         </property>
        </widget>
+       <widget class="QComboBox" name="cb_scale">
+        <property name="geometry">
+         <rect>
+          <x>160</x>
+          <y>160</y>
+          <width>51</width>
+          <height>21</height>
+         </rect>
+        </property>
+        <property name="font">
+         <font>
+          <pointsize>8</pointsize>
+         </font>
+        </property>
+        <item>
+         <property name="text">
+          <string>1x</string>
+         </property>
+        </item>
+       </widget>
+       <widget class="QLabel" name="label_2">
+        <property name="geometry">
+         <rect>
+          <x>70</x>
+          <y>160</y>
+          <width>81</width>
+          <height>21</height>
+         </rect>
+        </property>
+        <property name="text">
+         <string>Resolution</string>
+        </property>
+       </widget>
       </widget>
       <widget class="QProgressBar" name="progress_bar">
        <property name="geometry">
@@ -522,9 +537,9 @@
        <property name="geometry">
         <rect>
          <x>10</x>
-         <y>700</y>
+         <y>660</y>
          <width>221</width>
-         <height>101</height>
+         <height>141</height>
         </rect>
        </property>
       </widget>
@@ -554,7 +569,17 @@
        </item>
        <item>
         <property name="text">
-         <string>Centerlines</string>
+         <string>Segmentation centerlines</string>
+        </property>
+       </item>
+       <item>
+        <property name="text">
+         <string>Measurement centerlines</string>
+        </property>
+       </item>
+       <item>
+        <property name="text">
+         <string>Centerline comparison</string>
         </property>
        </item>
        <item>
@@ -619,8 +644,8 @@
       <widget class="QPushButton" name="btn_plot_profile">
        <property name="geometry">
         <rect>
-         <x>10</x>
-         <y>660</y>
+         <x>20</x>
+         <y>620</y>
          <width>101</width>
          <height>31</height>
         </rect>
@@ -637,8 +662,8 @@
       <widget class="QPushButton" name="btn_set_scalebar">
        <property name="geometry">
         <rect>
-         <x>10</x>
-         <y>620</y>
+         <x>20</x>
+         <y>580</y>
          <width>101</width>
          <height>31</height>
         </rect>
@@ -650,39 +675,6 @@
        </property>
        <property name="text">
         <string>Set scalebar</string>
-       </property>
-      </widget>
-      <widget class="QComboBox" name="cb_scale">
-       <property name="geometry">
-        <rect>
-         <x>180</x>
-         <y>350</y>
-         <width>51</width>
-         <height>21</height>
-        </rect>
-       </property>
-       <property name="font">
-        <font>
-         <pointsize>8</pointsize>
-        </font>
-       </property>
-       <item>
-        <property name="text">
-         <string>1x</string>
-        </property>
-       </item>
-      </widget>
-      <widget class="QLabel" name="label_2">
-       <property name="geometry">
-        <rect>
-         <x>100</x>
-         <y>349</y>
-         <width>81</width>
-         <height>21</height>
-        </rect>
-       </property>
-       <property name="text">
-        <string>Resolution</string>
        </property>
       </widget>
       <widget class="QPushButton" name="btn_analyze_3D">
@@ -714,8 +706,6 @@
       <zorder>label</zorder>
       <zorder>btn_plot_profile</zorder>
       <zorder>btn_set_scalebar</zorder>
-      <zorder>cb_scale</zorder>
-      <zorder>label_2</zorder>
       <zorder>btn_analyze_3D</zorder>
      </widget>
     </item>
@@ -780,7 +770,7 @@
      <x>0</x>
      <y>0</y>
      <width>879</width>
-     <height>24</height>
+     <height>21</height>
     </rect>
    </property>
    <widget class="QMenu" name="menuFile">
