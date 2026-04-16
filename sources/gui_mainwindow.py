@@ -642,7 +642,7 @@ class MainWindow(QMainWindow):
         params = (
             {"threshold_u8": thr_u8}
             if mode == "watershed"
-            else {"expansion_factor": float(getattr(self.config, "radial_expansion_factor", 0.7))}
+            else {"expansion_factor": float(getattr(self.config, "segmentation_expansion_factor", 1.0))}
         )
         return mode, params
 
@@ -668,7 +668,7 @@ class MainWindow(QMainWindow):
             "prediction_sig": prediction_sig,
             "cluster_enabled": bool(getattr(self.config, "cluster_enabled", False)),
             "cluster_params": dict(getattr(self.config, "cluster_params", {}) or {}),
-            "radial_expansion_factor": float(getattr(self.config, "radial_expansion_factor", 0.7)),
+            "merge_expansion_factor": float(getattr(self.config, "merge_expansion_factor", 0.7)),
             "centerline_kwargs": dict(
                 getattr(self.analyzer, "_centerline_kwargs", None)
                 or FiberAnalyzer_2D._default_centerline_kwargs()
@@ -695,7 +695,7 @@ class MainWindow(QMainWindow):
             "segmentation_centerline_sig": segmentation_centerline_sig,
             "segmentation_mode": str(getattr(self.config, "segmentation_mode", "watershed")),
             "seg_threshold": int(getattr(self.config, "seg_threshold", 1)),
-            "radial_expansion_factor": float(getattr(self.config, "radial_expansion_factor", 0.7)),
+            "segmentation_expansion_factor": float(getattr(self.config, "segmentation_expansion_factor", 1.0)),
         }
         return json.dumps(payload, sort_keys=True, default=str)
 
@@ -762,7 +762,8 @@ class MainWindow(QMainWindow):
                 "strict_centerlines": bool(getattr(self.config, "strict_centerlines", False)),
                 "cluster_enabled": bool(getattr(self.config, "cluster_enabled", False)),
                 "cluster_params": dict(getattr(self.config, "cluster_params", {}) or {}),
-                "radial_expansion_factor": float(getattr(self.config, "radial_expansion_factor", 0.7)),
+                "merge_expansion_factor": float(getattr(self.config, "merge_expansion_factor", 0.7)),
+                "segmentation_expansion_factor": float(getattr(self.config, "segmentation_expansion_factor", 1.0)),
             }
         )
         return params
@@ -822,7 +823,8 @@ class MainWindow(QMainWindow):
         self.analyzer.process_centerlines(
             max_angle_deg=float(centerline_params["max_angle_deg"]),
             **dict(centerline_params["centerline_kwargs"]),
-            radial_expansion_factor=float(centerline_params["radial_expansion_factor"]),
+            merge_expansion_factor=float(centerline_params["merge_expansion_factor"]),
+            segmentation_expansion_factor=float(centerline_params["segmentation_expansion_factor"]),
         )
         return {
             "segmentation_centerlines_overlay_img": self.analyzer.get_segmentation_centerlines_image(),
@@ -1450,7 +1452,8 @@ class MainWindow(QMainWindow):
                 "max_angle_deg": float(self.config.max_angle_deg),
                 "strict_centerlines": bool(self.config.strict_centerlines),
                 "segmentation_mode": str(self.config.segmentation_mode),
-                "radial_expansion_factor": float(self.config.radial_expansion_factor),
+                "merge_expansion_factor": float(self.config.merge_expansion_factor),
+                "segmentation_expansion_factor": float(self.config.segmentation_expansion_factor),
                 "seg_threshold": int(self.config.seg_threshold),
                 "sample_spacing": float(self.config.sample_spacing),
                 "cluster_enabled": bool(self.config.cluster_enabled),
@@ -3706,7 +3709,8 @@ class MainWindow(QMainWindow):
         prev_max_angle = float(getattr(self.config, "max_angle_deg", 30.0))
         prev_strict = bool(getattr(self.config, "strict_centerlines", False))
         prev_mode = str(getattr(self.config, "segmentation_mode", "watershed"))
-        prev_radial_expansion_factor = float(getattr(self.config, "radial_expansion_factor", 0.7))
+        prev_merge_expansion_factor = float(getattr(self.config, "merge_expansion_factor", 0.7))
+        prev_segmentation_expansion_factor = float(getattr(self.config, "segmentation_expansion_factor", 1.0))
         prev_threshold = int(getattr(self.config, "seg_threshold", 1))
         prev_spacing = float(getattr(self.config, "sample_spacing", 5.0))
         prev_cluster = bool(getattr(self.config, "cluster_enabled", False))
@@ -3735,7 +3739,8 @@ class MainWindow(QMainWindow):
             self.config.segmentation_mode = "watershed"
 
         self.config.seg_threshold = int(self.sp_segm_threshold.value())
-        self.config.radial_expansion_factor = float(getattr(self.config, "radial_expansion_factor", 0.7))
+        self.config.merge_expansion_factor = float(getattr(self.config, "merge_expansion_factor", 0.7))
+        self.config.segmentation_expansion_factor = float(getattr(self.config, "segmentation_expansion_factor", 1.0))
 
         # Analysis
         if hasattr(self, "le_samspacing"):
@@ -3775,8 +3780,14 @@ class MainWindow(QMainWindow):
             or prev_strict != bool(self.config.strict_centerlines)
             or prev_mode != str(self.config.segmentation_mode)
             or not math.isclose(
-                prev_radial_expansion_factor,
-                float(self.config.radial_expansion_factor),
+                prev_merge_expansion_factor,
+                float(self.config.merge_expansion_factor),
+                rel_tol=1e-9,
+                abs_tol=1e-9,
+            )
+            or not math.isclose(
+                prev_segmentation_expansion_factor,
+                float(self.config.segmentation_expansion_factor),
                 rel_tol=1e-9,
                 abs_tol=1e-9,
             )
@@ -3799,8 +3810,8 @@ class MainWindow(QMainWindow):
                     max_angle_changed
                     or prev_strict != bool(self.config.strict_centerlines)
                     or not math.isclose(
-                        prev_radial_expansion_factor,
-                        float(self.config.radial_expansion_factor),
+                        prev_merge_expansion_factor,
+                        float(self.config.merge_expansion_factor),
                         rel_tol=1e-9,
                         abs_tol=1e-9,
                     )

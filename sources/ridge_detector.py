@@ -3,13 +3,13 @@
 Steger ridge/line detection (exact math) with Numba speedups.
 
 - RidgeDetector class with public detect_ridges()
-- Returns (lines, junctions)
+- Public API returns detected polylines as plain NumPy arrays
 - Heavy pixel loops are JIT-compiled with numba (if available), no fastmath to preserve quality
 - Linking stays in Python (topology-sensitive, list-heavy); still benefits from faster inputs
 
 Usage:
     det = RidgeDetector()
-    lines, junctions = det.detect_ridges(img, sigma=2.0, low=8, high=15, polarity="dark")
+    polylines = det.detect_ridges(img, sigma=2.0, low=8, high=15, polarity="dark")
 
 CLI demo:
     python ridge_detector_numba.py in.png out.png --sigma 2 --low 8 --high 15 --polarity dark
@@ -773,7 +773,7 @@ class RidgeDetector:
         low: float = 5.0,
         high: float = 10.0,
         polarity: str = "dark",
-    ) -> Tuple[List[RidgeLine], List[Junction]]:
+    ) -> List[np.ndarray]:
         """Orchestrate detect ridges within the current module workflow.
         
         Args:
@@ -784,7 +784,7 @@ class RidgeDetector:
             polarity (str): Value for polarity interpreted by this routine.
         
         Returns:
-            Tuple[List[RidgeLine], List[Junction]]: Tuple grouping the detect ridges outputs in a stable positional order.
+            List[np.ndarray]: Plain detected polylines in `(x, y)` order.
         
         Raises:
             ValueError: If provided values violate validation or domain constraints."""
@@ -800,7 +800,8 @@ class RidgeDetector:
 
         alpha, oct4, beta0 = cls._precompute_angles(nx, ny, w, h)
 
-        return cls._link_contours(ismax, ev, nx, ny, px, py, w, h, alpha, oct4, beta0)
+        lines, _junctions = cls._link_contours(ismax, ev, nx, ny, px, py, w, h, alpha, oct4, beta0)
+        return [np.asarray(line.pts[:, [1, 0]], dtype=np.float32) for line in lines]
 
     # -------------------------
     # Helpers
@@ -1261,26 +1262,20 @@ def main():
     arr = np.asarray(img, dtype=np.float32)
 
     det = RidgeDetector()
-    lines, junctions = det.detect_ridges(
+    polylines = det.detect_ridges(
         arr, sigma=args.sigma, low=args.low, high=args.high, polarity=args.polarity
     )
 
     vis = np.stack([arr, arr, arr], axis=-1)
     vis = np.clip(vis, 0, 255).astype(np.uint8)
 
-    for ln in lines:
-        rr = np.clip(np.round(ln.pts[:, 0]).astype(int), 0, vis.shape[0] - 1)
-        cc = np.clip(np.round(ln.pts[:, 1]).astype(int), 0, vis.shape[1] - 1)
+    for polyline_xy in polylines:
+        cc = np.clip(np.round(polyline_xy[:, 0]).astype(int), 0, vis.shape[1] - 1)
+        rr = np.clip(np.round(polyline_xy[:, 1]).astype(int), 0, vis.shape[0] - 1)
         vis[rr, cc] = (255, 0, 0)
 
-    for j in junctions:
-        r = int(round(float(j.pt[0])))
-        c = int(round(float(j.pt[1])))
-        if 0 <= r < vis.shape[0] and 0 <= c < vis.shape[1]:
-            vis[r, c] = (0, 255, 0)
-
     Image.fromarray(vis).save(args.output)
-    print(f"Saved {args.output}. Lines={len(lines)} Junctions={len(junctions)} NumPy+Numba={_HAVE_NUMBA}")
+    print(f"Saved {args.output}. Polylines={len(polylines)} NumPy+Numba={_HAVE_NUMBA}")
 
 
 if __name__ == "__main__":

@@ -212,8 +212,15 @@ class ConfigEditorDialog(QtWidgets.QDialog):
             "options": ["watershed", "radial_expansion"],
             "editable": False,
         },
-        "radial_expansion_factor": {
-            "label": "Radial expansion factor",
+        "merge_expansion_factor": {
+            "label": "Merge expansion factor",
+            "kind": "float",
+            "min": 0.0,
+            "max": 5.0,
+            "step": 0.05,
+        },
+        "segmentation_expansion_factor": {
+            "label": "Segmentation expansion factor",
             "kind": "float",
             "min": 0.0,
             "max": 5.0,
@@ -485,7 +492,7 @@ class ConfigEditorDialog(QtWidgets.QDialog):
                     data[key] = parsed
             elif isinstance(widget, QtWidgets.QLineEdit):
                 data[key] = widget.text().strip()
-        return AppConfig(**data)
+        return AppConfig.from_dict(data, strict=True)
 
     def _set_config_path(self, path: str) -> None:
         """Provide an internal helper for set config path.
@@ -517,13 +524,7 @@ class ConfigEditorDialog(QtWidgets.QDialog):
             return
         selected_path = os.path.abspath(selected_path)
         try:
-            with open(selected_path, "r", encoding="utf-8") as f:
-                raw = json.load(f)
-            if not isinstance(raw, dict):
-                raise ValueError("Config JSON root must be an object.")
-            valid_keys = {f.name for f in fields(AppConfig)}
-            filtered = {k: v for k, v in raw.items() if k in valid_keys}
-            cfg = AppConfig(**filtered)
+            cfg = AppConfig.load_from_json(selected_path, strict=True)
         except Exception as exc:
             QtWidgets.QMessageBox.critical(self, "Load failed", str(exc))
             return

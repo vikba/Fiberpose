@@ -12,7 +12,7 @@ from scipy.ndimage import gaussian_filter, laplace
 from skimage.segmentation import watershed, find_boundaries
 
 from .clustering import stitch_and_cluster
-from .datastructures import FiberFragment
+from .datastructures import MeasurementFragment, SegmentationFragment
 from .models import FiberposeModel
 from .ridge_detector import RidgeDetector
 from .utils import (
@@ -113,15 +113,15 @@ class FiberAnalyzer_2D:
         self._gx: Optional[np.ndarray] = None
         self._gy: Optional[np.ndarray] = None
         self._laplacian: Optional[np.ndarray] = None
-        self._segmentation_centerlines: Optional[List[FiberFragment]] = None
-        self._measurement_centerlines: Optional[List[FiberFragment]] = None
+        self._segmentation_centerlines: Optional[List[SegmentationFragment]] = None
+        self._measurement_centerlines: Optional[List[MeasurementFragment]] = None
         self._measurement_normals_xy: Optional[List[np.ndarray]] = None
         self._segmentation_centerlines_rgb: Optional[np.ndarray] = None
         self._measurement_centerlines_rgb: Optional[np.ndarray] = None
         self._centerlines_comparison_rgb: Optional[np.ndarray] = None
         self._segmentation_markers: Optional[np.ndarray] = None
         self._radial_expansion_labels: Optional[np.ndarray] = None
-        self._radial_expansion_factor: Optional[float] = None
+        self._segmentation_expansion_factor: Optional[float] = None
         self._labels: Optional[np.ndarray] = None
         self._segment_counter = 0
         self._segmentation_cluster_connection_pairs = []
@@ -316,7 +316,8 @@ class FiberAnalyzer_2D:
         tol: float = 3.0,
         win_len: float = 25.0,
         std_thresh: float = 0.8,
-        radial_expansion_factor: float = 0.7,
+        merge_expansion_factor: float = 0.7,
+        segmentation_expansion_factor: float = 1.0,
     ) -> Tuple[List[np.ndarray], List[np.ndarray], Optional[np.ndarray], Optional[np.ndarray]]:
         """
         Build both centerline sets from one ridge-detection pass:
@@ -326,7 +327,7 @@ class FiberAnalyzer_2D:
         if self._dt_u8 is None or self._dt is None:
             raise ValueError("Distance transform not available. Call predict_dt first.")
 
-        lines, _junctions = RidgeDetector.detect_ridges(
+        detected_polylines = RidgeDetector.detect_ridges(
             image2d=self._dt_u8,
             sigma=sigma,
             low=low,
@@ -334,10 +335,10 @@ class FiberAnalyzer_2D:
             polarity=polarity,
         )
 
-        segmentation_fragments, expanded_labels = self._ridge_lines_to_segmentation_fragments(
-            lines=lines,
+        segmentation_fragments = self._group_detected_polylines_into_segmentation_fragments(
+            detected_polylines=detected_polylines,
             dt=self._dt,
-            expansion_factor=float(radial_expansion_factor),
+            merge_expansion_factor=float(merge_expansion_factor),
             segment_id_start=self._segment_counter,
             trim=int(trim),
         )
@@ -353,6 +354,12 @@ class FiberAnalyzer_2D:
             )
             for seg, parent_id in zip(segmentation_fragments, original_parent_ids):
                 seg.parent_fiber_id = int(parent_id)
+
+        expanded_labels = self._rasterize_segmentation_fragments(
+            fragments=segmentation_fragments,
+            shape=self._dt_u8.shape,
+            segmentation_expansion_factor=float(segmentation_expansion_factor),
+        )
 
         measurement_fragments = self._filter_measurement_centerlines(
             segmentation_fragments=segmentation_fragments,
@@ -401,7 +408,7 @@ class FiberAnalyzer_2D:
         self._centerlines_comparison_rgb = centerlines_comparison_rgb
         self._segmentation_markers = markers
         self._radial_expansion_labels = expanded_labels
-        self._radial_expansion_factor = float(radial_expansion_factor)
+        self._segmentation_expansion_factor = float(segmentation_expansion_factor)
         self._segmentation_cluster_connection_pairs = cluster_connections
 
         measurement_segments_xy: List[np.ndarray] = [
@@ -415,21 +422,20 @@ class FiberAnalyzer_2D:
         return measurement_segments_xy, self._measurement_normals_xy, measurement_centerlines_rgb, markers
 
     @classmethod
-    def _ridge_lines_to_segmentation_fragments(
+    def _group_detected_polylines_into_segmentation_fragments(
         cls,
         *,
-        lines: List[Any],
+        detected_polylines: List[np.ndarray],
         dt: np.ndarray,
-        expansion_factor: float = 0.7,
+        merge_expansion_factor: float = 0.7,
         segment_id_start: int = 0,
         trim: int = 3,
-    ) -> Tuple[List[FiberFragment], np.ndarray]:
+    ) -> List[SegmentationFragment]:
         """
-        Convert raw ridge lines into segmentation fragments and their expanded label map.
-        Expanded radius defaults to 70% of local DT.
+        Group detected polylines into segmentation fragments using overlap under merge expansion.
         """
         h, w = dt.shape[:2]
-        expansion = max(0.0, float(expansion_factor))
+        expansion = max(0.0, float(merge_expansion_factor))
         trim_n = max(0, int(trim))
 
         owner = np.zeros((h, w), dtype=np.int32)
@@ -457,13 +463,12 @@ class FiberAnalyzer_2D:
             else:
                 uf_parent[ra] = rb
 
-        fragments: List[FiberFragment] = []
+        polyline_records: List[tuple[int, np.ndarray, np.ndarray]] = []
         local_label = 0
-        for line in lines:
-            pts_rc = np.asarray(getattr(line, "pts", None), dtype=np.float32)
-            if pts_rc.ndim != 2 or pts_rc.shape[1] != 2:
+        for pts_xy_raw in detected_polylines:
+            pts_xy = np.asarray(pts_xy_raw, dtype=np.float32)
+            if pts_xy.ndim != 2 or pts_xy.shape[1] != 2:
                 continue
-            pts_xy = pts_rc[:, [1, 0]]
             if trim_n > 0 and pts_xy.shape[0] > 2 * trim_n:
                 pts_xy = pts_xy[trim_n:-trim_n]
             if pts_xy.shape[0] < 2:
@@ -475,17 +480,11 @@ class FiberAnalyzer_2D:
 
             local_label += 1
             uf_parent.setdefault(local_label, local_label)
-            frag_id = int(segment_id_start + len(fragments) + 1)
-            frag = FiberFragment(
-                fragment_id=frag_id,
-                centerline_xy=pts_xy.astype(np.float32, copy=False),
-                radii=radii,
-                parent_fiber_id=local_label,
-            )
-            fragments.append(frag)
+            pts_xy = pts_xy.astype(np.float32, copy=False)
+            polyline_records.append((local_label, pts_xy, radii))
 
             line_mask = np.zeros((h, w), dtype=np.uint8)
-            for pt_xy, radius in zip(frag.points_xy, frag.radii):
+            for pt_xy, radius in zip(pts_xy, radii):
                 rr = max(1, int(round(float(radius) * expansion)))
                 x = int(round(float(pt_xy[0])))
                 y = int(round(float(pt_xy[1])))
@@ -502,37 +501,65 @@ class FiberAnalyzer_2D:
                 uf_union(local_label, int(other_id))
             owner[mask_bool & (owner == 0)] = local_label
 
-        if not fragments:
-            return [], np.zeros((h, w), dtype=np.int32)
+        if not polyline_records:
+            return []
 
         root_to_label: Dict[int, int] = {}
         next_label = 1
-        for frag in fragments:
-            root = uf_find(int(frag.parent_fiber_id))
+        grouped_polylines: Dict[int, list[np.ndarray]] = {}
+        grouped_radii: Dict[int, list[np.ndarray]] = {}
+        for local_label, pts_xy, radii in polyline_records:
+            root = uf_find(int(local_label))
             label_id = root_to_label.get(root)
             if label_id is None:
                 label_id = next_label
                 root_to_label[root] = label_id
                 next_label += 1
-            frag.parent_fiber_id = int(label_id)
+            grouped_polylines.setdefault(label_id, []).append(pts_xy)
+            grouped_radii.setdefault(label_id, []).append(radii)
 
+        fragments: List[SegmentationFragment] = []
+        for label_id in sorted(grouped_polylines):
+            frag_id = int(segment_id_start + len(fragments) + 1)
+            fragments.append(
+                SegmentationFragment(
+                    fragment_id=frag_id,
+                    polylines_xy=grouped_polylines[label_id],
+                    polylines_radii=grouped_radii[label_id],
+                    parent_fiber_id=int(label_id),
+                )
+            )
+
+        return fragments
+
+    @staticmethod
+    def _rasterize_segmentation_fragments(
+        *,
+        fragments: List[SegmentationFragment],
+        shape: Tuple[int, int],
+        segmentation_expansion_factor: float = 1.0,
+    ) -> np.ndarray:
+        """Render radial-expansion labels from merged segmentation fragments."""
+        h, w = shape
+        expansion = max(0.0, float(segmentation_expansion_factor))
         expanded_labels = np.zeros((h, w), dtype=np.int32)
         for frag in fragments:
             label_id = int(frag.parent_fiber_id)
-            for pt_xy, radius in zip(frag.points_xy, frag.radii):
-                rr = max(1, int(round(float(radius) * expansion)))
-                x = int(round(float(pt_xy[0])))
-                y = int(round(float(pt_xy[1])))
-                if x < 0 or y < 0 or x >= w or y >= h:
-                    continue
-                cv2.circle(expanded_labels, (x, y), rr, label_id, thickness=-1)
-        return fragments, expanded_labels
+            for pts_xy, radii in zip(frag.polylines_xy, frag.polylines_radii):
+                for pt_xy, radius in zip(pts_xy, radii):
+                    rr = max(1, int(round(float(radius) * expansion)))
+                    x = int(round(float(pt_xy[0])))
+                    y = int(round(float(pt_xy[1])))
+                    if x < 0 or y < 0 or x >= w or y >= h:
+                        continue
+                    cv2.circle(expanded_labels, (x, y), rr, label_id, thickness=-1)
+        return expanded_labels
 
     @classmethod
     def _filter_measurement_centerlines(
         cls,
         *,
-        segmentation_fragments: List[FiberFragment],
+        segmentation_fragments: List[SegmentationFragment],
         dt_u8: np.ndarray,
         dt: np.ndarray,
         gx: np.ndarray | None,
@@ -542,45 +569,46 @@ class FiberAnalyzer_2D:
         std_thresh: float,
         strict: bool,
         segment_id_start: int,
-    ) -> List[FiberFragment]:
+    ) -> List[MeasurementFragment]:
         """Initialize measurement centerlines by filtering segmentation centerlines."""
-        measurement_fragments: List[FiberFragment] = []
+        measurement_fragments: List[MeasurementFragment] = []
         segment_counter = int(segment_id_start)
         for seg in segmentation_fragments:
-            seg_xy = seg.points_xy.reshape(-1, 1, 2)
-            windows_xy = cls._sliding_window_filter(
-                seg_xy,
-                image=dt_u8,
-                dt=dt,
-                grad_x=gx,
-                grad_y=gy,
-                win_len=win_len,
-                std_thresh=std_thresh,
-                max_angle=max_angle_deg,
-                strict=bool(strict),
-            )
-            for window_xy in windows_xy:
-                pts_xy = window_xy.reshape(-1, 2).astype(np.float32, copy=False)
-                if pts_xy.shape[0] < 2:
-                    continue
-                x_idx = np.clip(np.rint(pts_xy[:, 0]).astype(np.int32), 0, dt.shape[1] - 1)
-                y_idx = np.clip(np.rint(pts_xy[:, 1]).astype(np.int32), 0, dt.shape[0] - 1)
-                radii = np.asarray(dt[y_idx, x_idx], dtype=np.float32)
-                segment_counter += 1
-                measurement_fragments.append(
-                    FiberFragment(
-                        fragment_id=segment_counter,
-                        centerline_xy=pts_xy,
-                        radii=radii,
-                        parent_fiber_id=int(seg.parent_fiber_id),
-                    )
+            for polyline_xy in seg.polylines_xy:
+                seg_xy = polyline_xy.reshape(-1, 1, 2)
+                windows_xy = cls._sliding_window_filter(
+                    seg_xy,
+                    image=dt_u8,
+                    dt=dt,
+                    grad_x=gx,
+                    grad_y=gy,
+                    win_len=win_len,
+                    std_thresh=std_thresh,
+                    max_angle=max_angle_deg,
+                    strict=bool(strict),
                 )
+                for window_xy in windows_xy:
+                    pts_xy = window_xy.reshape(-1, 2).astype(np.float32, copy=False)
+                    if pts_xy.shape[0] < 2:
+                        continue
+                    x_idx = np.clip(np.rint(pts_xy[:, 0]).astype(np.int32), 0, dt.shape[1] - 1)
+                    y_idx = np.clip(np.rint(pts_xy[:, 1]).astype(np.int32), 0, dt.shape[0] - 1)
+                    radii = np.asarray(dt[y_idx, x_idx], dtype=np.float32)
+                    segment_counter += 1
+                    measurement_fragments.append(
+                        MeasurementFragment(
+                            fragment_id=segment_counter,
+                            segmentation_fragment_id=int(seg.fragment_id),
+                            polyline_xy=pts_xy,
+                            radii=radii,
+                        )
+                    )
         return measurement_fragments
 
     @staticmethod
     def _render_centerlines_rgb(
         dt_u8: np.ndarray,
-        segments: List[FiberFragment],
+        segments: List[Any],
         cluster_connections: List[Tuple[np.ndarray, np.ndarray]] | None = None,
         centerline_color: Tuple[int, int, int] = (255, 0, 0),
     ) -> np.ndarray:
@@ -588,7 +616,7 @@ class FiberAnalyzer_2D:
         
         Args:
             dt_u8 (np.ndarray): Value for dt u8 interpreted by this routine.
-            segments (List[FiberFragment]): Value for segments interpreted by this routine.
+            segments (List[Any]): Value for segments interpreted by this routine.
             cluster_connections (List[Tuple[np.ndarray, np.ndarray]] | None): Value for cluster connections interpreted by this routine.
         
         Returns:
@@ -597,26 +625,28 @@ class FiberAnalyzer_2D:
         centerlines_rgb = cv2.cvtColor(base_dt, cv2.COLOR_GRAY2BGR)
 
         for seg in segments:
-            pts = seg.points_xy.reshape(-1, 1, 2).astype(np.int32)
-            if len(pts) < 2:
-                x, y = pts[0, 0]
-                cv2.circle(
-                    centerlines_rgb,
-                    (x, y),
-                    1,
-                    centerline_color,
-                    thickness=-1,
-                    lineType=cv2.LINE_AA,
-                )
-            else:
-                cv2.polylines(
-                    centerlines_rgb,
-                    [pts],
-                    isClosed=False,
-                    color=centerline_color,
-                    thickness=1,
-                    lineType=cv2.LINE_AA,
-                )
+            polylines = getattr(seg, "polylines_xy", [seg.points_xy])
+            for polyline_xy in polylines:
+                pts = np.asarray(polyline_xy, dtype=np.float32).reshape(-1, 1, 2).astype(np.int32)
+                if len(pts) < 2:
+                    x, y = pts[0, 0]
+                    cv2.circle(
+                        centerlines_rgb,
+                        (x, y),
+                        1,
+                        centerline_color,
+                        thickness=-1,
+                        lineType=cv2.LINE_AA,
+                    )
+                else:
+                    cv2.polylines(
+                        centerlines_rgb,
+                        [pts],
+                        isClosed=False,
+                        color=centerline_color,
+                        thickness=1,
+                        lineType=cv2.LINE_AA,
+                    )
 
         if cluster_connections:
             connection_color = (0, 255, 0)
@@ -632,17 +662,18 @@ class FiberAnalyzer_2D:
     @staticmethod
     def _render_centerline_comparison_rgb(
         dt_u8: np.ndarray,
-        segmentation_segments: List[FiberFragment],
-        measurement_segments: List[FiberFragment],
+        segmentation_segments: List[SegmentationFragment],
+        measurement_segments: List[MeasurementFragment],
         cluster_connections: List[Tuple[np.ndarray, np.ndarray]] | None = None,
     ) -> np.ndarray:
         """Render segmentation and measurement centerlines together for debugging."""
         base_dt = to_uint8_for_view(dt_u8)
         out = cv2.cvtColor(base_dt, cv2.COLOR_GRAY2BGR)
         for seg in segmentation_segments:
-            pts = seg.points_xy.reshape(-1, 1, 2).astype(np.int32)
-            if len(pts) >= 2:
-                cv2.polylines(out, [pts], isClosed=False, color=(255, 0, 0), thickness=1, lineType=cv2.LINE_AA)
+            for polyline_xy in seg.polylines_xy:
+                pts = polyline_xy.reshape(-1, 1, 2).astype(np.int32)
+                if len(pts) >= 2:
+                    cv2.polylines(out, [pts], isClosed=False, color=(255, 0, 0), thickness=1, lineType=cv2.LINE_AA)
         for seg in measurement_segments:
             pts = seg.points_xy.reshape(-1, 1, 2).astype(np.int32)
             if len(pts) >= 2:
@@ -682,7 +713,7 @@ class FiberAnalyzer_2D:
 
         if mode_name == "radial_expansion":
             return self.segment_radial_expansion(
-                expansion_factor=float(opts.get("expansion_factor", 0.7)),
+                expansion_factor=float(opts.get("expansion_factor", 1.0)),
             )
 
         raise ValueError(f"Unsupported segmentation mode: {mode}")
@@ -725,12 +756,12 @@ class FiberAnalyzer_2D:
         ).astype(np.uint16)
         return labels
 
-    def segment_radial_expansion(self, expansion_factor: float = 0.7) -> np.ndarray:
+    def segment_radial_expansion(self, expansion_factor: float = 1.0) -> np.ndarray:
         """Segment using the cached expanded ridge-label map."""
         if self._dt_u8 is None:
             raise ValueError("Distance transform not available. Call predict_dt first.")
         target_factor = float(expansion_factor)
-        cached_factor = self._radial_expansion_factor
+        cached_factor = self._segmentation_expansion_factor
         needs_rebuild = (
             self._radial_expansion_labels is None
             or cached_factor is None
@@ -741,7 +772,7 @@ class FiberAnalyzer_2D:
             self.process_centerlines(
                 self._last_max_angle,
                 **self._centerline_kwargs,
-                radial_expansion_factor=target_factor,
+                segmentation_expansion_factor=target_factor,
             )
         labels_i32 = np.asarray(self._radial_expansion_labels, dtype=np.int32, copy=False)
         labels = np.clip(labels_i32, 0, np.iinfo(np.uint16).max).astype(np.uint16, copy=False)
@@ -753,13 +784,13 @@ class FiberAnalyzer_2D:
 
     @staticmethod
     def _cluster_segments(
-        segments: List[FiberFragment],
+        segments: List[SegmentationFragment],
         cluster_config: Dict[str, Any],
     ) -> List[Tuple[np.ndarray, np.ndarray]]:
         """Provide an internal helper for cluster segments.
         
         Args:
-            segments (List[FiberFragment]): Value for segments interpreted by this routine.
+            segments (List[SegmentationFragment]): Value for segments interpreted by this routine.
             cluster_config (Dict[str, Any]): Configuration values that control how cluster config is processed.
         
         Returns:
@@ -791,33 +822,34 @@ class FiberAnalyzer_2D:
         return connections
 
     @staticmethod
-    def _render_markers(shape: Tuple[int, int], segments: List[FiberFragment]) -> np.ndarray:
+    def _render_markers(shape: Tuple[int, int], segments: List[SegmentationFragment]) -> np.ndarray:
         """Provide an internal helper for render markers.
         
         Args:
             shape (Tuple[int, int]): Value for shape interpreted by this routine.
-            segments (List[FiberFragment]): Value for segments interpreted by this routine.
+            segments (List[SegmentationFragment]): Value for segments interpreted by this routine.
         
         Returns:
             np.ndarray: Array containing the render markers output aligned with downstream expectations."""
         markers = np.zeros(shape, dtype=np.int32)
         for seg in segments:
-            pts = np.asarray(seg.points_xy, dtype=np.float32)
-            if pts.size == 0:
-                continue
-            pts_int = np.round(pts).astype(np.int32).reshape(-1, 1, 2)
-            if len(pts_int) < 2:
-                cx, cy = pts_int[0, 0]
-                cv2.circle(markers, (cx, cy), 1, int(seg.parent_fiber_id), thickness=-1)
-                continue
-            cv2.polylines(
-                markers,
-                [pts_int],
-                isClosed=False,
-                color=int(seg.parent_fiber_id),
-                thickness=1,
-                lineType=cv2.LINE_8,
-            )
+            for polyline_xy in seg.polylines_xy:
+                pts = np.asarray(polyline_xy, dtype=np.float32)
+                if pts.size == 0:
+                    continue
+                pts_int = np.round(pts).astype(np.int32).reshape(-1, 1, 2)
+                if len(pts_int) < 2:
+                    cx, cy = pts_int[0, 0]
+                    cv2.circle(markers, (cx, cy), 1, int(seg.parent_fiber_id), thickness=-1)
+                    continue
+                cv2.polylines(
+                    markers,
+                    [pts_int],
+                    isClosed=False,
+                    color=int(seg.parent_fiber_id),
+                    thickness=1,
+                    lineType=cv2.LINE_8,
+                )
         return markers
 
     def get_dt(self) -> Optional[np.ndarray]:
@@ -887,7 +919,10 @@ class FiberAnalyzer_2D:
     def get_segmentation_centerline_segments(self) -> List[np.ndarray]:
         if not self._segmentation_centerlines:
             return []
-        return [seg.points_xy.reshape(-1, 1, 2) for seg in self._segmentation_centerlines]
+        segments_xy: List[np.ndarray] = []
+        for seg in self._segmentation_centerlines:
+            segments_xy.extend(polyline_xy.reshape(-1, 1, 2) for polyline_xy in seg.polylines_xy)
+        return segments_xy
 
     def get_measurement_centerline_segments(self) -> List[np.ndarray]:
         if not self._measurement_centerlines:

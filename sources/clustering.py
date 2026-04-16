@@ -11,7 +11,7 @@ from typing import Iterable, List, Sequence, Tuple
 import cv2
 import numpy as np
 
-from .datastructures import FiberFragment, FragmentEndpoint
+from .datastructures import FragmentEndpoint, SegmentationFragment
 
 INF = float("inf")
 
@@ -176,7 +176,7 @@ def line_to_line_rms_cost(
 
 
 def stitch_and_cluster(
-    fragments: Sequence[FiberFragment],
+    fragments: Sequence[SegmentationFragment],
     d_max: float,
     threshold: float,
     *,
@@ -188,7 +188,7 @@ def stitch_and_cluster(
     """Orchestrate stitch and cluster within the current module workflow.
     
     Args:
-        fragments (Sequence[FiberFragment]): Value for fragments interpreted by this routine.
+        fragments (Sequence[SegmentationFragment]): Value for fragments interpreted by this routine.
         d_max (float): Value for d max interpreted by this routine.
         threshold (float): Numeric control parameter for threshold during computation.
         max_neighbors (int | None): Value for max neighbors interpreted by this routine.
@@ -265,14 +265,14 @@ def endpoint_label(ep: FragmentEndpoint) -> str:
     return f"{ep.fragment.fragment_id}{ep.end}"
 
 
-def load_fragments_from_txt(path: str) -> List[FiberFragment]:
+def load_fragments_from_txt(path: str) -> List[SegmentationFragment]:
     """Load fragments from txt from persisted storage and normalize it for use.
     
     Args:
         path (str): Filesystem location used by this operation.
     
     Returns:
-        List[FiberFragment]: List of computed elements in processing order."""
+        List[SegmentationFragment]: List of computed elements in processing order."""
     seg_pts = defaultdict(list)
     with open(path, "r", encoding="utf-8") as f:
         for line in f:
@@ -292,17 +292,17 @@ def load_fragments_from_txt(path: str) -> List[FiberFragment]:
     for sid, pts in seg_pts.items():
         pts_sorted = sorted(pts, key=lambda t: t[0])
         arr = np.array([[x, y] for (_, x, y) in pts_sorted], dtype=np.float32)
-        fragments.append(FiberFragment(fragment_id=sid, centerline_xy=arr))
+        fragments.append(SegmentationFragment(fragment_id=sid, polylines_xy=[arr]))
     return fragments
 
 
 def compute_canvas_size(
-    fragments: Sequence[FiberFragment], margin: int = 20
+    fragments: Sequence[SegmentationFragment], margin: int = 20
 ) -> Tuple[int, int, np.ndarray]:
     """Compute canvas size required by later pipeline stages.
     
     Args:
-        fragments (Sequence[FiberFragment]): Value for fragments interpreted by this routine.
+        fragments (Sequence[SegmentationFragment]): Value for fragments interpreted by this routine.
         margin (int): Value for margin interpreted by this routine.
     
     Returns:
@@ -317,11 +317,11 @@ def compute_canvas_size(
     return width, height, origin
 
 
-def draw_debug(fragments: Sequence[FiberFragment], window_name: str = "Clustering Debug"):
+def draw_debug(fragments: Sequence[SegmentationFragment], window_name: str = "Clustering Debug"):
     """Orchestrate draw debug within the current module workflow.
     
     Args:
-        fragments (Sequence[FiberFragment]): Value for fragments interpreted by this routine.
+        fragments (Sequence[SegmentationFragment]): Value for fragments interpreted by this routine.
         window_name (str): Value for window name interpreted by this routine."""
     width, height, origin = compute_canvas_size(fragments, margin=20)
     canvas = np.full((height, width, 3), 255, np.uint8)
