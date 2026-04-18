@@ -708,6 +708,13 @@ class MainWindow(QMainWindow):
             "seg_threshold": int(getattr(self.config, "seg_threshold", 1)),
         }
 
+    def _analyzer_matches_frame_prediction(self, fr: Frame) -> bool:
+        if self.analyzer is None or fr.dt is None or fr.gx is None or fr.gy is None:
+            return False
+        dt = self.analyzer.get_dt()
+        gx, gy = self.analyzer.get_gradients()
+        return dt is fr.dt and gx is fr.gx and gy is fr.gy
+
     def _hydrate_analyzer_from_prediction(self, fr: Frame, *, max_angle_deg: float, centerline_kwargs: dict[str, Any]) -> None:
         if self.analyzer is None or fr.dt is None or fr.gx is None or fr.gy is None:
             return
@@ -852,6 +859,7 @@ class MainWindow(QMainWindow):
         if (
             fr.segmentation_centerline_sig == segmentation_sig
             and fr.measurement_centerline_sig == measurement_sig
+            and self._analyzer_matches_frame_prediction(fr)
             and self.analyzer.get_segmentation_centerline_segments()
             and self.analyzer.get_measurement_centerline_segments()
         ):
@@ -885,6 +893,7 @@ class MainWindow(QMainWindow):
         if (
             fr.measurement_centerline_sig == target_sig
             and self.analyzer is not None
+            and self._analyzer_matches_frame_prediction(fr)
             and self.analyzer.get_measurement_centerline_segments()
         ):
             return True
@@ -2230,8 +2239,14 @@ class MainWindow(QMainWindow):
                 self._set_progress_bar(0.0)
                 QtWidgets.QApplication.processEvents()
                 cached_frame = None
-                if cached_batch is not None and 0 <= int(z_index) < len(cached_batch.frame_results):
-                    cached_frame = cached_batch.frame_at(int(z_index))
+                if cached_batch is not None:
+                    frame_pos = int(processed_images)
+                    if 0 <= frame_pos < len(cached_batch.frame_results):
+                        candidate = cached_batch.frame_at(frame_pos)
+                        if int(candidate.z_index) == int(z_index):
+                            cached_frame = candidate
+                    if cached_frame is None and 0 <= int(z_index) < len(cached_batch.frame_results):
+                        cached_frame = cached_batch.frame_at(int(z_index))
                 if cached_frame is None:
                     self.current_frame = Frame.empty(
                         frame_id=str(frame_id),
@@ -3353,11 +3368,21 @@ class MainWindow(QMainWindow):
             self.graph_diameters.clear()
             self.graph_angles.clear()
 
-        if self.current_frame.labels_2d is not None:
-            labels_rgb = labels_to_color(self.current_frame.labels_2d)
-            self.current_frame.labels_rgb_cache = (id(self.current_frame.labels_2d), labels_rgb)
-        else:
+        labels = self.current_frame.labels_2d
+        if labels is None:
             self.current_frame.labels_rgb_cache = (None, None)
+            self.current_frame.segmentation_outline_cache = (None, None)
+            return
+
+        current_id = id(labels)
+        cache_id, cache_img = self.current_frame.labels_rgb_cache
+        if cache_id != current_id or cache_img is None:
+            cache_img = labels_to_color(labels)
+            self.current_frame.labels_rgb_cache = (current_id, cache_img)
+
+        outline_id, outline_img = self.current_frame.segmentation_outline_cache
+        if outline_id != current_id and outline_img is not None:
+            # Keep outline generation lazy, but prevent carrying an outline for unrelated labels.
             self.current_frame.segmentation_outline_cache = (None, None)
 
     def _set_current_slice(self, index: int, update_view: bool = True):
