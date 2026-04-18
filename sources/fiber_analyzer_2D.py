@@ -45,6 +45,7 @@ class FiberAnalyzer_2D:
         device: Any,
         model_kwargs: Optional[Dict[str, Any]] = None,
         strict: bool | None = None,
+        keep_segments_without_measurement_centerlines: bool | None = None,
     ):
         """Initialize fiber analyzer 2 d and establish required runtime state.
         
@@ -52,7 +53,9 @@ class FiberAnalyzer_2D:
             ckpt_path (str): Filesystem location describing where ckpt path is read or written.
             device (Any): Execution target device (for example CPU or CUDA).
             model_kwargs (Optional[Dict[str, Any]]): Value for model kwargs interpreted by this routine.
-            strict (bool | None): Boolean flag that toggles strict behavior."""
+            strict (bool | None): Boolean flag that toggles strict behavior.
+            keep_segments_without_measurement_centerlines (bool | None): Keep/remove behavior for segments
+                that do not produce measurement centerlines."""
         self.ckpt_path = ckpt_path
         self.device = device
 
@@ -78,6 +81,11 @@ class FiberAnalyzer_2D:
 
         self._predictor: Optional[FiberposeModel] = None
         self._strict_centerlines = bool(strict) if strict is not None else False
+        self._keep_segments_without_measurement_centerlines = (
+            bool(keep_segments_without_measurement_centerlines)
+            if keep_segments_without_measurement_centerlines is not None
+            else False
+        )
 
         self._centerline_kwargs: Dict[str, Any] = self._default_centerline_kwargs()
         self._last_max_angle: float = 0.0
@@ -137,6 +145,13 @@ class FiberAnalyzer_2D:
         Args:
             strict (bool): Boolean flag that toggles strict behavior."""
         self._strict_centerlines = bool(strict)
+
+    def set_keep_segments_without_measurement_centerlines(self, keep: bool):
+        """Update whether segmentation keeps fragments lacking measurement centerlines.
+        
+        Args:
+            keep (bool): Boolean flag that toggles keep behavior."""
+        self._keep_segments_without_measurement_centerlines = bool(keep)
 
     def set_device(self, device: Any):
         """Update device and keep dependent state synchronized.
@@ -329,6 +344,7 @@ class FiberAnalyzer_2D:
             win_len=win_len,
             std_thresh=std_thresh,
             strict=self._strict_centerlines,
+            keep_segments_without_measurement_centerlines=self._keep_segments_without_measurement_centerlines,
             segment_id_start=self._segment_counter,
         )
         self._segment_counter += len(measurement_fragments)
@@ -529,6 +545,7 @@ class FiberAnalyzer_2D:
         win_len: float,
         std_thresh: float,
         strict: bool,
+        keep_segments_without_measurement_centerlines: bool,
         segment_id_start: int,
     ) -> Tuple[List[MeasurementFragment], List[SegmentationFragment]]:
         """Initialize measurement centerlines and mark supported segmentation fragments."""
@@ -571,6 +588,8 @@ class FiberAnalyzer_2D:
             seg.has_measurement_centerlines = accepted_for_measurement
             if accepted_for_measurement:
                 active_segmentation_fragments.append(seg)
+        if bool(keep_segments_without_measurement_centerlines):
+            active_segmentation_fragments = list(segmentation_fragments)
         return measurement_fragments, active_segmentation_fragments
 
     @staticmethod

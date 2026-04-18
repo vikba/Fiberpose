@@ -24,6 +24,7 @@ class AppConfig:
     # --- Centerline Params ---
     max_angle_deg: float = 30.0
     strict_centerlines: bool = False
+    keep_segments_without_measurement_centerlines: bool = False
     
     # --- Segmentation Params ---
     segmentation_mode: str = "watershed"

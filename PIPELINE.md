@@ -9,6 +9,7 @@
 - `segmentation.mode=radial_expansion` calls `FiberAnalyzer.segment(mode="radial_expansion", params={"expansion_factor": ...})`.
 - `radial_expansion_factor` controls ridge expansion as a fraction of local DT (default `0.7`).
 - `strict_centerlines` affects the measurement-centerline filtering stage.
+- `keep_segments_without_measurement_centerlines` keeps segmentation fragments even when no measurement centerline survives filtering.
 - `clustering.enabled` toggles optional centerline stitching links for debug visualization.
 - `scale factor` (`cb_scale`) rescales input for prediction/segmentation and rescales thresholds/measurements back to original units.
 - `pores view` changes overlay/histogram to pore circles and pore diameter distribution.

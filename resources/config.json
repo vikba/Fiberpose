@@ -4,6 +4,7 @@
     "scale_label": "1x",
     "max_angle_deg": 30.0,
     "strict_centerlines": false,
+    "keep_segments_without_measurement_centerlines": false,
     "segmentation_mode": "radial_expansion",
     "merge_expansion_factor": 0.7,
     "segmentation_expansion_factor": 1.0,

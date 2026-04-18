@@ -206,6 +206,10 @@ class ConfigEditorDialog(QtWidgets.QDialog):
         },
         "max_angle_deg": {"label": "Max angle (deg)", "kind": "float", "min": 0.0, "max": 180.0, "step": 1.0},
         "strict_centerlines": {"label": "Strict centerlines", "kind": "bool"},
+        "keep_segments_without_measurement_centerlines": {
+            "label": "Keep segments without measurement centerlines",
+            "kind": "bool",
+        },
         "segmentation_mode": {
             "label": "Segmentation mode",
             "kind": "enum",

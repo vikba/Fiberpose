@@ -226,8 +226,14 @@ class MainWindow(QMainWindow):
             ckpt_path=self.ckpt_path,
             device=self.device,
             strict=self.config.strict_centerlines, 
+            keep_segments_without_measurement_centerlines=bool(
+                getattr(self.config, "keep_segments_without_measurement_centerlines", False)
+            ),
         )
         self.analyzer.set_strict_centerline_filter(self.config.strict_centerlines)
+        self.analyzer.set_keep_segments_without_measurement_centerlines(
+            bool(getattr(self.config, "keep_segments_without_measurement_centerlines", False))
+        )
 
         # react to checkbox changes at runtime
         self.chb_usegpu.toggled.connect(self._on_usegpu_toggled)
@@ -620,6 +626,9 @@ class MainWindow(QMainWindow):
         payload = {
             "prediction_sig": prediction_sig,
             "merge_expansion_factor": float(getattr(self.config, "merge_expansion_factor", 0.7)),
+            "keep_segments_without_measurement_centerlines": bool(
+                getattr(self.config, "keep_segments_without_measurement_centerlines", False)
+            ),
             "centerline_kwargs": dict(
                 getattr(self.analyzer, "_centerline_kwargs", None)
                 or FiberAnalyzer_2D._default_centerline_kwargs()
@@ -711,6 +720,9 @@ class MainWindow(QMainWindow):
         params.update(
             {
                 "strict_centerlines": bool(getattr(self.config, "strict_centerlines", False)),
+                "keep_segments_without_measurement_centerlines": bool(
+                    getattr(self.config, "keep_segments_without_measurement_centerlines", False)
+                ),
                 "merge_expansion_factor": float(getattr(self.config, "merge_expansion_factor", 0.7)),
                 "segmentation_expansion_factor": float(getattr(self.config, "segmentation_expansion_factor", 1.0)),
             }
@@ -765,6 +777,9 @@ class MainWindow(QMainWindow):
             centerline_kwargs=dict(centerline_params["centerline_kwargs"]),
         )
         self.analyzer.set_strict_centerline_filter(bool(centerline_params["strict_centerlines"]))
+        self.analyzer.set_keep_segments_without_measurement_centerlines(
+            bool(centerline_params["keep_segments_without_measurement_centerlines"])
+        )
         self.analyzer.process_centerlines(
             max_angle_deg=float(centerline_params["max_angle_deg"]),
             **dict(centerline_params["centerline_kwargs"]),
@@ -1194,6 +1209,9 @@ class MainWindow(QMainWindow):
             self._on_checkpoint_selection_changed(self.cb_model.currentIndex())
             self._on_usegpu_toggled(self.chb_usegpu.isChecked())
             self.analyzer.set_strict_centerline_filter(self.config.strict_centerlines)
+            self.analyzer.set_keep_segments_without_measurement_centerlines(
+                bool(getattr(self.config, "keep_segments_without_measurement_centerlines", False))
+            )
 
     def _load_config_from_path(self, path: str) -> bool:
         """Provide an internal helper for load config from path.
@@ -1393,6 +1411,9 @@ class MainWindow(QMainWindow):
                 "scale_label": str(self.config.scale_label),
                 "max_angle_deg": float(self.config.max_angle_deg),
                 "strict_centerlines": bool(self.config.strict_centerlines),
+                "keep_segments_without_measurement_centerlines": bool(
+                    getattr(self.config, "keep_segments_without_measurement_centerlines", False)
+                ),
                 "segmentation_mode": str(self.config.segmentation_mode),
                 "merge_expansion_factor": float(self.config.merge_expansion_factor),
                 "segmentation_expansion_factor": float(self.config.segmentation_expansion_factor),
