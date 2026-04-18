@@ -16,6 +16,28 @@ def label_to_rgb(label: int) -> tuple[int, int, int]:
     r, g, b = colorsys.hsv_to_rgb(hue, sat, val)
     return int(round(r * 255)), int(round(g * 255)), int(round(b * 255))
 
+
+def labels_to_color(labels: np.ndarray | None) -> np.ndarray | None:
+    """Render a label-id map into an RGB visualization image."""
+    if labels is None:
+        return None
+    labels_i64 = np.asarray(labels, dtype=np.int64)
+    if labels_i64.ndim != 2:
+        return None
+    h, w = labels_i64.shape
+    out = np.zeros((h, w, 3), dtype=np.uint8)
+    if labels_i64.size == 0:
+        return out
+    for value in np.unique(labels_i64):
+        ivalue = int(value)
+        if ivalue <= 0:
+            continue
+        mask = labels_i64 == ivalue
+        if not np.any(mask):
+            continue
+        out[mask] = label_to_rgb(ivalue)
+    return out
+
 # ------------- image helpers -------------
 def to_uint8_for_view(img: np.ndarray | None) -> np.ndarray | None:
     """Convert values into uint8 for view for downstream compatibility.

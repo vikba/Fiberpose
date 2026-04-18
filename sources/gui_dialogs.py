@@ -121,7 +121,7 @@ class SaveOptionsDialog(QtWidgets.QDialog):
 
         self._checkboxes: Dict[str, QtWidgets.QCheckBox] = {
             "dt": QtWidgets.QCheckBox("Distance transform (DT PNG)"),
-            "labels": QtWidgets.QCheckBox("Segmentation labels (ID map image)"),
+            "labels": QtWidgets.QCheckBox("Segmentation labels (RGB visualization)"),
             "overlay": QtWidgets.QCheckBox("Overlay visualization"),
             "diameters": QtWidgets.QCheckBox("Diameter measurements overlay"),
             "orientations": QtWidgets.QCheckBox("Orientation measurements overlay"),

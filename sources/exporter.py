@@ -10,6 +10,8 @@ from typing import Any
 import imageio.v3 as iio
 import numpy as np
 
+from .utils import labels_to_color
+
 class BatchResultExporter:
     """Persist batch/frame outputs using a small dict-based export config."""
 
@@ -148,11 +150,12 @@ class BatchResultExporter:
                         iio.imwrite(path, np.asarray(frame.dt_u8, dtype=np.uint8))
                         written_files.append(path)
                     elif artifact == "labels":
-                        if frame.labels_2d is None or np.max(frame.labels_2d) <= 0:
+                        labels_rgb = self._labels_rgb_image(frame)
+                        if labels_rgb is None:
                             skipped.append(self._skip_item(frame_index, artifact, "missing_data"))
                             continue
                         path = self._resolve_output_path(output_dir, base_name, "_labels", image_ext, cfg)
-                        iio.imwrite(path, np.asarray(frame.labels_2d, dtype=np.uint16))
+                        iio.imwrite(path, np.asarray(labels_rgb, dtype=np.uint8))
                         written_files.append(path)
                     elif artifact == "overlay":
                         if frame.overlay_img is None:
@@ -249,7 +252,7 @@ class BatchResultExporter:
                     if arrays is None:
                         skipped.append(self._skip_item(-1, artifact, "missing_data"))
                         continue
-                    if not any(arr.size and int(np.max(arr)) > 0 for arr in arrays):
+                    if not any(np.any(arr) for arr in arrays):
                         skipped.append(self._skip_item(-1, artifact, "missing_data"))
                         continue
                     path = self._resolve_output_path(output_dir, base_name, "_labels", ".tiff", cfg)
@@ -337,15 +340,13 @@ class BatchResultExporter:
                     return None
                 arrays.append(np.asarray(src, dtype=np.uint8))
             elif artifact == "labels":
-                src = frame.labels_2d
+                src = self._labels_rgb_image(frame)
                 if src is None:
                     return None
-                arr = np.asarray(src)
-                if arr.ndim == 3:
-                    arr = arr[..., 0]
-                if arr.ndim != 2:
+                arr = np.asarray(src, dtype=np.uint8)
+                if arr.ndim != 3 or arr.shape[2] < 3:
                     return None
-                arrays.append(np.asarray(arr, dtype=np.uint16))
+                arrays.append(arr[..., :3])
             elif artifact == "overlay":
                 src = frame.overlay_img
                 if src is None:
@@ -383,6 +384,29 @@ class BatchResultExporter:
         if cached_img is None:
             return None
         return np.asarray(cached_img, dtype=np.uint8)
+
+    @staticmethod
+    def _labels_rgb_image(frame: Any) -> np.ndarray | None:
+        """Return segmentation labels as RGB using the same mapping as visualization."""
+        labels = getattr(frame, "labels_2d", None)
+        if labels is None:
+            return None
+        labels_arr = np.asarray(labels)
+        if labels_arr.ndim != 2:
+            return None
+        if labels_arr.size == 0 or int(np.max(labels_arr)) <= 0:
+            return None
+
+        cache = getattr(frame, "labels_rgb_cache", None)
+        if isinstance(cache, tuple) and len(cache) == 2:
+            cache_id, cache_img = cache
+            if cache_img is not None and cache_id == id(labels):
+                return np.asarray(cache_img, dtype=np.uint8)
+
+        rendered = labels_to_color(labels_arr)
+        if rendered is None:
+            return None
+        return np.asarray(rendered, dtype=np.uint8)
 
     def _stack_base_name(self, frames: list[Any], cfg: dict[str, Any]) -> str:
         """Provide an internal helper for stack base name.

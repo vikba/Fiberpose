@@ -4,8 +4,8 @@
     "scale_label": "1x",
     "max_angle_deg": 30.0,
     "strict_centerlines": false,
-    "keep_segments_without_measurement_centerlines": false,
-    "segmentation_mode": "radial_expansion",
+    "keep_segments_without_measurement_centerlines": true,
+    "segmentation_mode": "watershed",
     "merge_expansion_factor": 0.7,
     "segmentation_expansion_factor": 1.0,
     "seg_threshold": 1,
@@ -20,15 +20,15 @@
     ],
     "save_options": {
         "dt": false,
-        "labels": true,
+        "labels": false,
         "overlay": false,
-        "diameters": true,
-        "orientations": true,
+        "diameters": false,
+        "orientations": false,
         "outline": true,
-        "tables": true,
+        "tables": false,
         "style_vector": false,
         "image_format": "png",
         "collision": "suffix",
-        "write_manifest": true
+        "write_manifest": false
     }
 }

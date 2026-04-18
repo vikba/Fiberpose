@@ -41,7 +41,7 @@ from .gui_dialogs import (
 from .fiber_analyzer_2D import FiberAnalyzer_2D
 from .datastructures import BatchResult, Frame, ImageBatch, AppConfig, SampleProperties
 from .batch_pipeline import BatchAnalyzer, StackAnalyzer_3D
-from .utils import ensure_rgb_u8, label_to_rgb, to_uint8_for_view
+from .utils import ensure_rgb_u8, labels_to_color, to_uint8_for_view
 
 # ------------------- Paths -------------------
 
@@ -51,33 +51,6 @@ DEFAULT_UI_PATH = os.path.join(PROJECT_ROOT, "resources", "fiber_tool.ui")
 DEFAULT_CONFIG_PATH = os.path.join(PROJECT_ROOT, "resources", "config.json")
 DEFAULT_CKPT_PATH = os.path.join(PROJECT_ROOT, "checkpoints", "fiber_2000_epoch.pt")
 CHECKPOINTS_DIR = os.path.join(PROJECT_ROOT, "checkpoints")
-
-# ------------------- Image helpers -------------------
-
-def labels_to_color(labels: np.ndarray) -> np.ndarray:
-    """Orchestrate labels to color within the current module workflow.
-    
-    Args:
-        labels (np.ndarray): Array-like data carrying labels values for analysis.
-    
-    Returns:
-        np.ndarray: Array containing the labels to color output aligned with downstream expectations."""
-    if labels is None:
-        return None
-    labels = labels.astype(np.int64, copy=False)
-    h, w = labels.shape
-    out = np.zeros((h, w, 3), dtype=np.uint8)
-    if labels.size == 0:
-        return out
-    for value in np.unique(labels):
-        if value == 0:
-            continue
-        mask = labels == value
-        if not mask.any():
-            continue
-        color = label_to_rgb(int(value))
-        out[mask] = color
-    return out
 
 # ------------------- MainWindow -------------------
 
@@ -1315,7 +1288,10 @@ class MainWindow(QMainWindow):
                             p = u.toLocalFile()
                             if self._is_loadable_path(p):
                                 if os.path.isdir(p):
-                                    self._run_batch_processing_for_folder(p)
+                                    # Keep drag-and-drop behavior aligned with the Load action:
+                                    # dropping a folder loads it, while processing is triggered
+                                    # explicitly via Segment/Analyze actions.
+                                    self.open_source(path=p, source_kind="folder")
                                 else:
                                     self.open_source(path=p, source_kind="auto")
                                 event.acceptProposedAction()
@@ -1523,6 +1499,9 @@ class MainWindow(QMainWindow):
         self._current_z_index = 0
         self._configure_z_scroll(len(image_batch))
         self._set_current_slice(0, update_view=True)
+        # New source invalidates previous export availability until
+        # segmentation/analysis is run on the newly loaded data.
+        self._refresh_save_actions()
 
     def _apply_sample_properties_from_batch(self, image_batch: ImageBatch) -> None:
         """Provide an internal helper for apply sample properties from batch.
