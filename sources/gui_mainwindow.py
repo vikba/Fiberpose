@@ -183,28 +183,6 @@ class MainWindow(QMainWindow):
         self._profile_point_items: list[QGraphicsItem] = []
         self._profile_dialog: PlotProfileDialog | None = None
 
-        self.rb_watershed.blockSignals(True)
-        self.rb_watershed.setChecked(True)
-        self.rb_watershed.blockSignals(False)
-        self.rb_ridge.blockSignals(True)
-        self.rb_ridge.setChecked(False)
-        self.rb_ridge.blockSignals(False)
-        self.chb_strict.blockSignals(True)
-        self.chb_strict.setChecked(False)
-        self.chb_strict.setEnabled(True)
-        self.chb_strict.blockSignals(False)
-        self.chb_cluster.setChecked(False)
-
-
-        self.cb_scale.blockSignals(True)
-        self.cb_scale.clear()
-        for value in ("0.5x", "1x", "2x", "4x"):
-            self.cb_scale.addItem(value)
-        idx = self.cb_scale.findText("1x")
-        if idx >= 0:
-            self.cb_scale.setCurrentIndex(idx)
-        self.cb_scale.blockSignals(False)
-
         # Menu & actions: updated UI element names (rb_mask1_cent -> rb_centerlines; rb_mask2_segm -> rb_segmentation;
         # sp_threshold1 -> sp_max_cent_angle; sp_threshold2 -> sp_segm_threshold)
         self.action_load_image.triggered.connect(self.load_original)
@@ -254,8 +232,6 @@ class MainWindow(QMainWindow):
         # react to checkbox changes at runtime
         self.chb_usegpu.toggled.connect(self._on_usegpu_toggled)
         self.chb_invert.toggled.connect(self._on_invert_toggled)
-        self.chb_cluster.toggled.connect(self._on_cluster_toggled)
-        self._on_cluster_toggled(self.chb_cluster.isChecked())
         self.rb_watershed.toggled.connect(self._on_segmentation_mode_changed)
         self.rb_ridge.toggled.connect(self._on_segmentation_mode_changed)
         self.chb_strict.toggled.connect(self._on_strict_checkbox_toggled)
@@ -289,7 +265,6 @@ class MainWindow(QMainWindow):
         # Checkboxes and Radio Buttons
         self.chb_usegpu.toggled.connect(self.sync_ui_to_config)
         self.chb_strict.toggled.connect(self.sync_ui_to_config)
-        self.chb_cluster.toggled.connect(self.sync_ui_to_config)
         
         self.rb_watershed.toggled.connect(self.sync_ui_to_config)
         self.rb_ridge.toggled.connect(self.sync_ui_to_config)
@@ -542,31 +517,9 @@ class MainWindow(QMainWindow):
             fr.segmentation_outline_cache = (current_id, cache_img)
         return cache_img
 
-    def _segmentation_centerlines_with_connections(self) -> np.ndarray | None:
-        """
-        Return segmentation-centerline view with optional clustering links.
-        """
-        img = self.current_frame.segmentation_centerlines_overlay_img
-        base = ensure_rgb_u8(img)
-        if base is None:
-            return None
-        if not self.config.cluster_enabled or self.analyzer is None:
-            return base
-        try:
-            connections = self.analyzer.get_cluster_connections()
-        except Exception:
-            connections = []
-        if not connections:
-            return base
-        out = base.copy()
-        color = (0, 255, 0)
-        for p_xy, q_xy in connections:
-            px = int(round(float(p_xy[0])))
-            py = int(round(float(p_xy[1])))
-            qx = int(round(float(q_xy[0])))
-            qy = int(round(float(q_xy[1])))
-            cv2.line(out, (px, py), (qx, qy), color, 1, cv2.LINE_AA)
-        return out
+    def _segmentation_centerlines_view(self) -> np.ndarray | None:
+        """Return cached segmentation-centerline view."""
+        return ensure_rgb_u8(self.current_frame.segmentation_centerlines_overlay_img)
 
     def _measurement_centerlines_view(self) -> np.ndarray | None:
         """Return cached measurement-centerline view."""
@@ -666,8 +619,6 @@ class MainWindow(QMainWindow):
             return None
         payload = {
             "prediction_sig": prediction_sig,
-            "cluster_enabled": bool(getattr(self.config, "cluster_enabled", False)),
-            "cluster_params": dict(getattr(self.config, "cluster_params", {}) or {}),
             "merge_expansion_factor": float(getattr(self.config, "merge_expansion_factor", 0.7)),
             "centerline_kwargs": dict(
                 getattr(self.analyzer, "_centerline_kwargs", None)
@@ -760,8 +711,6 @@ class MainWindow(QMainWindow):
         params.update(
             {
                 "strict_centerlines": bool(getattr(self.config, "strict_centerlines", False)),
-                "cluster_enabled": bool(getattr(self.config, "cluster_enabled", False)),
-                "cluster_params": dict(getattr(self.config, "cluster_params", {}) or {}),
                 "merge_expansion_factor": float(getattr(self.config, "merge_expansion_factor", 0.7)),
                 "segmentation_expansion_factor": float(getattr(self.config, "segmentation_expansion_factor", 1.0)),
             }
@@ -816,10 +765,6 @@ class MainWindow(QMainWindow):
             centerline_kwargs=dict(centerline_params["centerline_kwargs"]),
         )
         self.analyzer.set_strict_centerline_filter(bool(centerline_params["strict_centerlines"]))
-        self.analyzer.enable_fiber_clustering(
-            bool(centerline_params["cluster_enabled"]),
-            **dict(centerline_params["cluster_params"]),
-        )
         self.analyzer.process_centerlines(
             max_angle_deg=float(centerline_params["max_angle_deg"]),
             **dict(centerline_params["centerline_kwargs"]),
@@ -1248,7 +1193,6 @@ class MainWindow(QMainWindow):
         if self.analyzer is not None:
             self._on_checkpoint_selection_changed(self.cb_model.currentIndex())
             self._on_usegpu_toggled(self.chb_usegpu.isChecked())
-            self._on_cluster_toggled(self.chb_cluster.isChecked())
             self.analyzer.set_strict_centerline_filter(self.config.strict_centerlines)
 
     def _load_config_from_path(self, path: str) -> bool:
@@ -1434,8 +1378,6 @@ class MainWindow(QMainWindow):
         filenames = [str(v) for v in metadata.get("filenames", [])]
         z_indices = [int(v) for v in metadata.get("z_indices", [])]
         spacing_zyx = tuple(float(v) for v in self.sample_props.spacing_zyx())
-        cluster_params = getattr(self.config, "cluster_params", {}) or {}
-
         payload = {
             "batch": {
                 "source_type": str(metadata.get("source_type", "")),
@@ -1456,8 +1398,6 @@ class MainWindow(QMainWindow):
                 "segmentation_expansion_factor": float(self.config.segmentation_expansion_factor),
                 "seg_threshold": int(self.config.seg_threshold),
                 "sample_spacing": float(self.config.sample_spacing),
-                "cluster_enabled": bool(self.config.cluster_enabled),
-                "cluster_params": cluster_params,
             },
             "runtime": {
                 "invert_input": bool(self.chb_invert.isChecked()),
@@ -3289,7 +3229,7 @@ class MainWindow(QMainWindow):
         elif view == "Laplacian":
             img = to_uint8_for_view(self.current_frame.lapl_img)
         elif view in ("Segmentation centerlines", "Centerlines"):
-            img = self._segmentation_centerlines_with_connections()
+            img = self._segmentation_centerlines_view()
         elif view == "Measurement centerlines":
             img = self._measurement_centerlines_view()
         elif view == "Centerline comparison":
@@ -3573,20 +3513,6 @@ class MainWindow(QMainWindow):
             checked (bool): Value for checked interpreted by this routine."""
         self._set_strict_mode(bool(checked))
 
-    def _on_cluster_toggled(self, checked: bool):
-        # Update the config flag immediately
-        """Handle the cluster toggled event and propagate UI state updates.
-        
-        Args:
-            checked (bool): Value for checked interpreted by this routine."""
-        self.config.cluster_enabled = bool(checked)
-        if self.analyzer is not None:
-            # Safely pass cluster_params (now defined in AppConfig)
-            self.analyzer.enable_fiber_clustering(
-                self.config.cluster_enabled, 
-                **self.config.cluster_params
-            )
-
     # ------------------- New default image loading -------------------
 
     def load_default_image(self):
@@ -3713,12 +3639,6 @@ class MainWindow(QMainWindow):
         prev_segmentation_expansion_factor = float(getattr(self.config, "segmentation_expansion_factor", 1.0))
         prev_threshold = int(getattr(self.config, "seg_threshold", 1))
         prev_spacing = float(getattr(self.config, "sample_spacing", 5.0))
-        prev_cluster = bool(getattr(self.config, "cluster_enabled", False))
-        prev_cluster_params = json.dumps(
-            dict(getattr(self.config, "cluster_params", {}) or {}),
-            sort_keys=True,
-            default=str,
-        )
 
         # Model & Hardware
         self.config.checkpoint_path = self.cb_model.currentText().strip()
@@ -3756,15 +3676,6 @@ class MainWindow(QMainWindow):
         else:
             self.config.sample_spacing = float(getattr(self.config, "sample_spacing", 5.0))
 
-        # Clustering
-        self.config.cluster_enabled = self.chb_cluster.isChecked()
-
-        new_cluster_params = json.dumps(
-            dict(getattr(self.config, "cluster_params", {}) or {}),
-            sort_keys=True,
-            default=str,
-        )
-
         prediction_changed = (
             prev_checkpoint != str(self.config.checkpoint_path)
             or prev_scale_label != str(self.config.scale_label)
@@ -3792,8 +3703,6 @@ class MainWindow(QMainWindow):
                 abs_tol=1e-9,
             )
             or prev_threshold != int(self.config.seg_threshold)
-            or prev_cluster != bool(self.config.cluster_enabled)
-            or prev_cluster_params != new_cluster_params
         )
         measurements_changed = not math.isclose(
             prev_spacing,
@@ -3815,8 +3724,6 @@ class MainWindow(QMainWindow):
                         rel_tol=1e-9,
                         abs_tol=1e-9,
                     )
-                    or prev_cluster != bool(self.config.cluster_enabled)
-                    or prev_cluster_params != new_cluster_params
                 )
             )
         elif measurements_changed:
@@ -3884,11 +3791,6 @@ class MainWindow(QMainWindow):
         if hasattr(self, "le_samspacing"):
             self.le_samspacing.setText(str(cfg.sample_spacing))
 
-        # --- Clustering ---
-        self.chb_cluster.blockSignals(True)
-        self.chb_cluster.setChecked(bool(cfg.cluster_enabled))
-        self.chb_cluster.blockSignals(False)
-        
         # Trigger UI state updates that depend on these flags
         if hasattr(self, "_update_strict_checkbox_state"):
             self._update_strict_checkbox_state()

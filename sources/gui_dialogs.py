@@ -242,12 +242,6 @@ class ConfigEditorDialog(QtWidgets.QDialog):
             "max": 10000,
             "step": 1,
         },
-        "cluster_enabled": {"label": "Cluster enabled", "kind": "bool"},
-        "cluster_params": {
-            "label": "Cluster params (JSON object)",
-            "kind": "json",
-            "tooltip": "JSON dictionary with advanced clustering parameters.",
-        },
         "grad_quality_points": {
             "label": "Grad quality points (JSON list)",
             "kind": "json_list",

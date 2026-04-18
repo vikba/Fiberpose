@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import Optional
+from typing import Any, Optional
 
 import numpy as np
 import torch
@@ -13,6 +13,60 @@ from torch.amp import autocast
 from .resunet import ResUnet, parse_nbase, torch_GPU, torch_CPU
 
 logger = logging.getLogger(__name__)
+
+
+def _safe_torch_load(path: str, map_location: Any, weights_only: bool = True) -> Any:
+    """Load a PyTorch object while remaining compatible with older torch versions."""
+    try:
+        return torch.load(path, map_location=map_location, weights_only=weights_only)
+    except TypeError:
+        return torch.load(path, map_location=map_location)
+
+
+def _extract_state_dict(payload: Any) -> dict[str, Any]:
+    """Extract state dict from either a raw state dict or a checkpoint dict."""
+    if isinstance(payload, dict):
+        model_payload = payload.get("model")
+        if isinstance(model_payload, dict):
+            return model_payload
+        if all(isinstance(k, str) for k in payload.keys()):
+            return payload
+    raise ValueError("Checkpoint does not contain a recognizable state_dict payload.")
+
+
+def _infer_nout_from_state_dict(state_dict: dict[str, Any]) -> int | None:
+    """Infer output channels from checkpoint tensors."""
+    primary_key = "output.2.weight"
+    primary = state_dict.get(primary_key)
+    if hasattr(primary, "ndim") and int(primary.ndim) >= 3 and hasattr(primary, "shape"):
+        return int(primary.shape[0])
+
+    indexed_candidates: list[tuple[int, Any]] = []
+    loose_candidates: list[tuple[str, Any]] = []
+    for key, value in state_dict.items():
+        if not (isinstance(key, str) and key.startswith("output.") and key.endswith(".weight")):
+            continue
+        if hasattr(value, "ndim") and int(value.ndim) >= 3 and hasattr(value, "shape"):
+            parts = key.split(".")
+            if len(parts) >= 3 and parts[1].isdigit():
+                indexed_candidates.append((int(parts[1]), value))
+            else:
+                loose_candidates.append((key, value))
+
+    if indexed_candidates:
+        indexed_candidates.sort(key=lambda item: item[0])
+        return int(indexed_candidates[-1][1].shape[0])
+
+    if not loose_candidates:
+        return None
+    loose_candidates.sort(key=lambda item: item[0])
+    return int(loose_candidates[-1][1].shape[0])
+
+
+def _infer_nout_from_checkpoint(ckpt_path: str) -> int | None:
+    payload = _safe_torch_load(ckpt_path, map_location=torch_CPU, weights_only=True)
+    state_dict = _extract_state_dict(payload)
+    return _infer_nout_from_state_dict(state_dict)
 
 
 def _resolve_device(
@@ -45,7 +99,7 @@ class FiberposeModel:
         self,
         ckpt_path: str,
         nbase: str = "1,32,64,128,256",
-        nout: int = 3,
+        nout: int | None = None,
         sz: int = 3,
         pool_kernel: int = 2,
         scale: int = 2,
@@ -69,7 +123,26 @@ class FiberposeModel:
 
         self.nbase_str = nbase
         self.nbase = parse_nbase(nbase)
-        self.nout = int(nout)
+
+        inferred_nout = _infer_nout_from_checkpoint(ckpt_path)
+        if nout is None:
+            if inferred_nout is None:
+                raise ValueError(
+                    f"Could not infer nout from checkpoint '{ckpt_path}'. "
+                    "Pass nout explicitly or use a compatible checkpoint."
+                )
+            resolved_nout = int(inferred_nout)
+        else:
+            resolved_nout = int(nout)
+            if resolved_nout <= 0:
+                raise ValueError(f"nout must be positive; got {resolved_nout}")
+            if inferred_nout is not None and resolved_nout != int(inferred_nout):
+                raise ValueError(
+                    "Explicit nout does not match checkpoint output channels: "
+                    f"nout={resolved_nout}, inferred={int(inferred_nout)} "
+                    f"from '{ckpt_path}'."
+                )
+        self.nout = resolved_nout
 
         self.model = ResUnet(
             nbase=self.nbase,
@@ -94,6 +167,7 @@ class FiberposeModel:
             raise
 
         self.model.eval()
+        logger.info("Resolved nout=%d for checkpoint '%s'", self.nout, ckpt_path)
         logger.info("Loaded checkpoint '%s' on device '%s'", ckpt_path, self.device)
 
     @torch.no_grad()
@@ -108,7 +182,13 @@ class FiberposeModel:
             y, style = self.model(x)
 
         y_np = y.detach().cpu().numpy()
-        dt = y_np[0, 2].astype(np.float32)
+        dt_channel = self._dt_channel_index()
+        if y_np.shape[1] <= dt_channel:
+            raise ValueError(
+                "Predicted tensor channel count is incompatible with DT channel selection: "
+                f"got shape={y_np.shape}, selected_channel={dt_channel}"
+            )
+        dt = y_np[0, dt_channel].astype(np.float32)
 
         if not return_style:
             return dt
@@ -156,3 +236,13 @@ class FiberposeModel:
             arr = np.zeros_like(arr, dtype=np.float32)
 
         return arr.astype(np.float32, copy=False)
+
+    def _dt_channel_index(self) -> int:
+        if self.nout >= 3:
+            return 2
+        if self.nout == 1:
+            return 0
+        raise ValueError(
+            f"Unsupported DT channel mapping for nout={self.nout}. "
+            "Expected nout == 1 or nout >= 3."
+        )

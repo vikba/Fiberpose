@@ -38,10 +38,6 @@ class AppConfig:
     render3d_max_display_voxels: int = 8_000_000
     render3d_max_display_edge: int = 320
     
-    # --- Clustering ---
-    cluster_enabled: bool = False
-    cluster_params: dict = field(default_factory=dict)
-
     # --- DT gradient quality view ---
     # Signed error breakpoints for s = |grad(dt)| - 1:
     # [p0, p1, p2, p3] with p0 < p1 <= 0 <= p2 < p3.
@@ -925,7 +921,7 @@ class SegmentationFragment:
     polylines_xy: list[np.ndarray]
     polylines_radii: Optional[list[np.ndarray]] = None
     parent_fiber_id: int = -1
-    _endpoints: Tuple["FragmentEndpoint", "FragmentEndpoint"] = field(init=False, repr=False)
+    has_measurement_centerlines: bool = False
 
     def __post_init__(self) -> None:
         """Normalize and validate dataclass fields after instance construction.
@@ -967,18 +963,7 @@ class SegmentationFragment:
         self.polylines_xy = [pts for pts, _ in pairs]
         self.polylines_radii = [radii for _, radii in pairs]
         self.parent_fiber_id = int(self.parent_fiber_id)
-
-        self._endpoints = (
-            FragmentEndpoint(self, "a"),
-            FragmentEndpoint(self, "b"),
-        )
-
-    def endpoints(self) -> Tuple["FragmentEndpoint", "FragmentEndpoint"]:
-        """Orchestrate endpoints within the current module workflow.
-        
-        Returns:
-            Tuple['FragmentEndpoint', 'FragmentEndpoint']: Tuple grouping the endpoints outputs in a stable positional order."""
-        return self._endpoints
+        self.has_measurement_centerlines = bool(self.has_measurement_centerlines)
 
     @property
     def points_xy(self) -> np.ndarray:
@@ -1038,190 +1023,3 @@ class MeasurementFragment:
     @property
     def points_xy(self) -> np.ndarray:
         return self.polyline_xy
-
-
-class FragmentEndpoint:
-    """Endpoint with local direction estimation suitable for stitching heuristics."""
-
-    __slots__ = ("fragment", "end", "connected_to", "dir", "_fit_N")
-
-    def __init__(self, fragment: SegmentationFragment, end: str, fit_N: int = 100) -> None:
-        """Initialize fragment endpoint and establish required runtime state.
-        
-        Args:
-            fragment (SegmentationFragment): Value for fragment interpreted by this routine.
-            end (str): Value for end interpreted by this routine.
-            fit_N (int): Value for fit n interpreted by this routine.
-        
-        Returns:
-            None: Result object produced by the init routine.
-        
-        Raises:
-            ValueError: If provided values violate validation or domain constraints."""
-        self.fragment = fragment
-        if end not in ("a", "b"):
-            raise ValueError("Endpoint end must be either 'a' or 'b'.")
-        self.end = end
-        self.connected_to: Optional["FragmentEndpoint"] = None
-        self._fit_N = int(max(2, fit_N))
-        self.dir = self._estimate_direction()
-
-    def _points_for_fit(self) -> np.ndarray:
-        """Provide an internal helper for points for fit.
-        
-        Returns:
-            np.ndarray: Array containing the points for fit output aligned with downstream expectations."""
-        pts = self.fragment.centerline_xy
-        n = min(len(pts), self._fit_N)
-        if self.end == "a":
-            return pts[:n].copy()
-        return pts[-n:][::-1].copy()
-
-    def _estimate_direction(self) -> np.ndarray:
-        """Provide an internal helper for estimate direction.
-        
-        Returns:
-            np.ndarray: Array containing the estimate direction output aligned with downstream expectations."""
-        pts = self._points_for_fit()
-        mu = pts.mean(axis=0)
-        centered = pts - mu
-        try:
-            _, _, Vt = np.linalg.svd(centered, full_matrices=False)
-            direction = Vt[0]
-        except np.linalg.LinAlgError:
-            direction = pts[-1] - pts[0]
-        direction = direction / (np.linalg.norm(direction) + 1e-12)
-        seed = pts[0] - pts[1] if len(pts) >= 2 else np.array([1.0, 0.0], np.float32)
-        if np.dot(direction, seed) < 0:
-            direction = -direction
-        return direction.astype(np.float32)
-
-    def index(self) -> int:
-        """Orchestrate index within the current module workflow.
-        
-        Returns:
-            int: Result object produced by the index routine."""
-        return 0 if self.end == "a" else len(self.fragment.centerline_xy) - 1
-
-    def pos(self) -> np.ndarray:
-        """Orchestrate pos within the current module workflow.
-        
-        Returns:
-            np.ndarray: Array containing the pos output aligned with downstream expectations."""
-        return self.fragment.centerline_xy[self.index()]
-
-    def shifted_pos(self, offset_px: float = 0.0) -> np.ndarray:
-        """
-        Return a point offset from the endpoint along the fragment by offset_px.
-        Falls back to the true endpoint if the fragment is too short.
-        """
-        offset_px = float(max(0.0, offset_px))
-        if offset_px <= 0.0:
-            return self.pos()
-
-        pts = self.fragment.centerline_xy
-        # travel inward from this endpoint
-        if self.end == "a":
-            walk_pts = pts
-        else:
-            walk_pts = pts[::-1]
-
-        if len(walk_pts) < 2:
-            return self.pos()
-
-        seg_vecs = np.diff(walk_pts, axis=0)
-        seg_lens = np.linalg.norm(seg_vecs, axis=1)
-        accum = 0.0
-        for i, seg_len in enumerate(seg_lens):
-            next_accum = accum + float(seg_len)
-            if offset_px <= next_accum and seg_len > 0:
-                t = (offset_px - accum) / seg_len
-                return (1.0 - t) * walk_pts[i] + t * walk_pts[i + 1]
-            accum = next_accum
-
-        # ran out of length; return the far end in walked order (which is the same coordinate space)
-        return walk_pts[-1]
-
-    def radius(self) -> float:
-        """Orchestrate radius within the current module workflow.
-        
-        Returns:
-            float: Result object produced by the radius routine."""
-        return float(self.fragment.radii[self.index()])
-
-    def last_n_points(self, n: int) -> np.ndarray:
-        """Orchestrate last n points within the current module workflow.
-        
-        Args:
-            n (int): Value for n interpreted by this routine.
-        
-        Returns:
-            np.ndarray: Array containing the last n points output aligned with downstream expectations."""
-        pts = self.fragment.centerline_xy
-        if self.end == "a":
-            return pts[: min(n, len(pts))].copy()
-        return pts[-min(n, len(pts)) :][::-1].copy()
-
-    def same_fragment(self, other: "FragmentEndpoint") -> bool:
-        """Orchestrate same fragment within the current module workflow.
-        
-        Args:
-            other ('FragmentEndpoint'): Value for other interpreted by this routine.
-        
-        Returns:
-            bool: True when the validation or availability check succeeds; otherwise False."""
-        return self.fragment.fragment_id == other.fragment.fragment_id
-
-    def is_facing(
-        self,
-        other: "FragmentEndpoint",
-        *,
-        cos_min: float = 0.95,
-    ) -> bool:
-        """Return whether facing satisfies the required condition.
-        
-        Args:
-            other ('FragmentEndpoint'): Value for other interpreted by this routine.
-            cos_min (float): Value for cos min interpreted by this routine.
-        
-        Returns:
-            bool: True when the validation or availability check succeeds; otherwise False."""
-        p1 = self.pos().astype(np.float32)
-        p2 = other.pos().astype(np.float32)
-        v = p2 - p1
-        d = float(np.linalg.norm(v))
-        if d < 1e-9:
-            return False
-        u12 = v / d
-        u21 = -u12
-        d1 = self.dir / (np.linalg.norm(self.dir) + 1e-12)
-        d2 = other.dir / (np.linalg.norm(other.dir) + 1e-12)
-        return (float(np.dot(d1, u12)) >= cos_min) and (float(np.dot(d2, u21)) >= cos_min)
-
-    def disconnect(self) -> None:
-        """Orchestrate disconnect within the current module workflow.
-        
-        Returns:
-            None: Result object produced by the disconnect routine."""
-        if self.connected_to is not None:
-            other = self.connected_to
-            self.connected_to = None
-            if other.connected_to is self:
-                other.connected_to = None
-
-    def connect(self, other: "FragmentEndpoint") -> None:
-        """Orchestrate connect within the current module workflow.
-        
-        Args:
-            other ('FragmentEndpoint'): Value for other interpreted by this routine.
-        
-        Returns:
-            None: Result object produced by the connect routine."""
-        if other is self or self.same_fragment(other):
-            return
-        if self.connected_to is other and other.connected_to is self:
-            return
-        self.disconnect()
-        other.disconnect()
-        self.connected_to = other
-        other.connected_to = self

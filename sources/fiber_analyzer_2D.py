@@ -11,7 +11,6 @@ import numpy as np
 from scipy.ndimage import gaussian_filter, laplace
 from skimage.segmentation import watershed, find_boundaries
 
-from .clustering import stitch_and_cluster
 from .datastructures import MeasurementFragment, SegmentationFragment
 from .models import FiberposeModel
 from .ridge_detector import RidgeDetector
@@ -59,7 +58,6 @@ class FiberAnalyzer_2D:
 
         defaults: Dict[str, Any] = {
             "nbase": "1,32,64,128,256",
-            "nout": 3,
             "sz": 3,
             "dilation": 1,
             "pool_kernel": 2,
@@ -84,16 +82,6 @@ class FiberAnalyzer_2D:
         self._centerline_kwargs: Dict[str, Any] = self._default_centerline_kwargs()
         self._last_max_angle: float = 0.0
         self._segment_counter: int = 0
-        self._cluster_fibers: bool = False
-        self._segmentation_cluster_connection_pairs: List[Tuple[np.ndarray, np.ndarray]] = []
-        self._cluster_config: Dict[str, Any] = {
-            "d_max": 150.0,
-            "threshold": 10.0,
-            "max_neighbors": None,
-            "length_weight": 0.1,
-            "radius_weight": 0.0,
-            "skip_endpoint_px": 5.0,
-        }
 
         self.scale_factor: float = 1.0
         self._reset_prediction_state()
@@ -124,7 +112,6 @@ class FiberAnalyzer_2D:
         self._segmentation_expansion_factor: Optional[float] = None
         self._labels: Optional[np.ndarray] = None
         self._segment_counter = 0
-        self._segmentation_cluster_connection_pairs = []
         self._style_vec: Optional[np.ndarray] = None
 
     @staticmethod
@@ -150,18 +137,6 @@ class FiberAnalyzer_2D:
         Args:
             strict (bool): Boolean flag that toggles strict behavior."""
         self._strict_centerlines = bool(strict)
-
-    def enable_fiber_clustering(self, enabled: bool, **cluster_kwargs: Any) -> None:
-        """Toggle clustering of centerline fragments before segmentation."""
-        self._cluster_fibers = bool(enabled)
-        if cluster_kwargs:
-            self._cluster_config.update(cluster_kwargs)
-        # force downstream consumers to refresh markers if clustering state changes
-        self._segmentation_markers = None
-
-    def get_cluster_config(self) -> Dict[str, Any]:
-        """Return a shallow copy of the current clustering configuration."""
-        return dict(self._cluster_config)
 
     def set_device(self, device: Any):
         """Update device and keep dependent state synchronized.
@@ -344,24 +319,7 @@ class FiberAnalyzer_2D:
         )
         self._segment_counter += len(segmentation_fragments)
 
-        cluster_connections: List[Tuple[np.ndarray, np.ndarray]] = []
-        if segmentation_fragments and self._cluster_fibers:
-            # Keep overlap-based label ids stable; clustering is used only for debug links.
-            original_parent_ids = [int(seg.parent_fiber_id) for seg in segmentation_fragments]
-            cluster_connections = self._cluster_segments(
-                segments=segmentation_fragments,
-                cluster_config=self._cluster_config,
-            )
-            for seg, parent_id in zip(segmentation_fragments, original_parent_ids):
-                seg.parent_fiber_id = int(parent_id)
-
-        expanded_labels = self._rasterize_segmentation_fragments(
-            fragments=segmentation_fragments,
-            shape=self._dt_u8.shape,
-            segmentation_expansion_factor=float(segmentation_expansion_factor),
-        )
-
-        measurement_fragments = self._filter_measurement_centerlines(
+        measurement_fragments, active_segmentation_fragments = self._filter_measurement_centerlines(
             segmentation_fragments=segmentation_fragments,
             dt_u8=self._dt_u8,
             dt=self._dt,
@@ -375,32 +333,35 @@ class FiberAnalyzer_2D:
         )
         self._segment_counter += len(measurement_fragments)
 
+        expanded_labels = self._rasterize_segmentation_fragments(
+            fragments=active_segmentation_fragments,
+            shape=self._dt_u8.shape,
+            segmentation_expansion_factor=float(segmentation_expansion_factor),
+        )
+
         markers = (
-            self._render_markers(self._dt_u8.shape, segmentation_fragments)
-            if segmentation_fragments
+            self._render_markers(self._dt_u8.shape, active_segmentation_fragments)
+            if active_segmentation_fragments
             else np.zeros(self._dt_u8.shape, dtype=np.int32)
         )
 
         segmentation_centerlines_rgb = self._render_centerlines_rgb(
             dt_u8=self._dt_u8,
-            segments=segmentation_fragments,
-            cluster_connections=cluster_connections,
+            segments=active_segmentation_fragments,
             centerline_color=(255, 0, 0),
         )
         measurement_centerlines_rgb = self._render_centerlines_rgb(
             dt_u8=self._dt_u8,
             segments=measurement_fragments,
-            cluster_connections=None,
             centerline_color=(0, 255, 0),
         )
         centerlines_comparison_rgb = self._render_centerline_comparison_rgb(
             dt_u8=self._dt_u8,
-            segmentation_segments=segmentation_fragments,
+            segmentation_segments=active_segmentation_fragments,
             measurement_segments=measurement_fragments,
-            cluster_connections=cluster_connections,
         )
 
-        self._segmentation_centerlines = segmentation_fragments
+        self._segmentation_centerlines = active_segmentation_fragments
         self._measurement_centerlines = measurement_fragments
         self._measurement_normals_xy = [self._polyline_normals(seg.points_xy) for seg in measurement_fragments]
         self._segmentation_centerlines_rgb = segmentation_centerlines_rgb
@@ -409,13 +370,13 @@ class FiberAnalyzer_2D:
         self._segmentation_markers = markers
         self._radial_expansion_labels = expanded_labels
         self._segmentation_expansion_factor = float(segmentation_expansion_factor)
-        self._segmentation_cluster_connection_pairs = cluster_connections
 
         measurement_segments_xy: List[np.ndarray] = [
             seg.points_xy.reshape(-1, 1, 2) for seg in measurement_fragments
         ]
         logger.info(
-            "Centerlines built: segmentation=%d measurement=%d",
+            "Centerlines built: segmentation=%d/%d measurement=%d",
+            len(active_segmentation_fragments),
             len(segmentation_fragments),
             len(measurement_fragments),
         )
@@ -569,11 +530,14 @@ class FiberAnalyzer_2D:
         std_thresh: float,
         strict: bool,
         segment_id_start: int,
-    ) -> List[MeasurementFragment]:
-        """Initialize measurement centerlines by filtering segmentation centerlines."""
+    ) -> Tuple[List[MeasurementFragment], List[SegmentationFragment]]:
+        """Initialize measurement centerlines and mark supported segmentation fragments."""
         measurement_fragments: List[MeasurementFragment] = []
+        active_segmentation_fragments: List[SegmentationFragment] = []
         segment_counter = int(segment_id_start)
         for seg in segmentation_fragments:
+            seg.has_measurement_centerlines = False
+            accepted_for_measurement = False
             for polyline_xy in seg.polylines_xy:
                 seg_xy = polyline_xy.reshape(-1, 1, 2)
                 windows_xy = cls._sliding_window_filter(
@@ -603,13 +567,16 @@ class FiberAnalyzer_2D:
                             radii=radii,
                         )
                     )
-        return measurement_fragments
+                    accepted_for_measurement = True
+            seg.has_measurement_centerlines = accepted_for_measurement
+            if accepted_for_measurement:
+                active_segmentation_fragments.append(seg)
+        return measurement_fragments, active_segmentation_fragments
 
     @staticmethod
     def _render_centerlines_rgb(
         dt_u8: np.ndarray,
         segments: List[Any],
-        cluster_connections: List[Tuple[np.ndarray, np.ndarray]] | None = None,
         centerline_color: Tuple[int, int, int] = (255, 0, 0),
     ) -> np.ndarray:
         """Provide an internal helper for render centerlines rgb.
@@ -617,7 +584,6 @@ class FiberAnalyzer_2D:
         Args:
             dt_u8 (np.ndarray): Value for dt u8 interpreted by this routine.
             segments (List[Any]): Value for segments interpreted by this routine.
-            cluster_connections (List[Tuple[np.ndarray, np.ndarray]] | None): Value for cluster connections interpreted by this routine.
         
         Returns:
             np.ndarray: Array containing the render centerlines rgb output aligned with downstream expectations."""
@@ -648,15 +614,6 @@ class FiberAnalyzer_2D:
                         lineType=cv2.LINE_AA,
                     )
 
-        if cluster_connections:
-            connection_color = (0, 255, 0)
-            for p_xy, q_xy in cluster_connections:
-                px = int(round(float(p_xy[0])))
-                py = int(round(float(p_xy[1])))
-                qx = int(round(float(q_xy[0])))
-                qy = int(round(float(q_xy[1])))
-                cv2.line(centerlines_rgb, (px, py), (qx, qy), connection_color, 1, cv2.LINE_AA)
-
         return centerlines_rgb
 
     @staticmethod
@@ -664,7 +621,6 @@ class FiberAnalyzer_2D:
         dt_u8: np.ndarray,
         segmentation_segments: List[SegmentationFragment],
         measurement_segments: List[MeasurementFragment],
-        cluster_connections: List[Tuple[np.ndarray, np.ndarray]] | None = None,
     ) -> np.ndarray:
         """Render segmentation and measurement centerlines together for debugging."""
         base_dt = to_uint8_for_view(dt_u8)
@@ -678,13 +634,6 @@ class FiberAnalyzer_2D:
             pts = seg.points_xy.reshape(-1, 1, 2).astype(np.int32)
             if len(pts) >= 2:
                 cv2.polylines(out, [pts], isClosed=False, color=(0, 255, 0), thickness=1, lineType=cv2.LINE_AA)
-        if cluster_connections:
-            for p_xy, q_xy in cluster_connections:
-                px = int(round(float(p_xy[0])))
-                py = int(round(float(p_xy[1])))
-                qx = int(round(float(q_xy[0])))
-                qy = int(round(float(q_xy[1])))
-                cv2.line(out, (px, py), (qx, qy), (255, 255, 0), 1, cv2.LINE_AA)
         return out
 
     def segment(
@@ -779,48 +728,6 @@ class FiberAnalyzer_2D:
         self._labels = labels
         return labels
 
-    # ------------------------------------------------------------------ #
-    # Clustering helpers
-
-    @staticmethod
-    def _cluster_segments(
-        segments: List[SegmentationFragment],
-        cluster_config: Dict[str, Any],
-    ) -> List[Tuple[np.ndarray, np.ndarray]]:
-        """Provide an internal helper for cluster segments.
-        
-        Args:
-            segments (List[SegmentationFragment]): Value for segments interpreted by this routine.
-            cluster_config (Dict[str, Any]): Configuration values that control how cluster config is processed.
-        
-        Returns:
-            List[Tuple[np.ndarray, np.ndarray]]: Array containing the cluster segments output aligned with downstream expectations."""
-        if not segments:
-            return []
-
-        try:
-            stitch_and_cluster(segments, **cluster_config)
-        except Exception as exc:
-            logger.warning("Fiber clustering failed: %s", exc)
-            return []
-
-        connections: List[Tuple[np.ndarray, np.ndarray]] = []
-        seen_pairs: set[tuple[int, int]] = set()
-        skip_px = float(cluster_config.get("skip_endpoint_px", 0.0))
-        for frag in segments:
-            for ep in frag.endpoints():
-                other = ep.connected_to
-                if other is None:
-                    continue
-                fid = frag.fragment_id
-                oid = other.fragment.fragment_id
-                key = (min(fid, oid), max(fid, oid))
-                if key in seen_pairs:
-                    continue
-                seen_pairs.add(key)
-                connections.append((ep.shifted_pos(skip_px).copy(), other.shifted_pos(skip_px).copy()))
-        return connections
-
     @staticmethod
     def _render_markers(shape: Tuple[int, int], segments: List[SegmentationFragment]) -> np.ndarray:
         """Provide an internal helper for render markers.
@@ -909,12 +816,6 @@ class FiberAnalyzer_2D:
     def get_centerlines_image(self) -> Optional[np.ndarray]:
         """Backward-compatible alias for segmentation centerline image."""
         return self.get_segmentation_centerlines_image()
-
-    def get_cluster_connections(self) -> List[Tuple[np.ndarray, np.ndarray]]:
-        """Return copies of clustered connection endpoints (x,y) pairs, if any."""
-        if not self._segmentation_cluster_connection_pairs:
-            return []
-        return [(p.copy(), q.copy()) for p, q in self._segmentation_cluster_connection_pairs]
 
     def get_segmentation_centerline_segments(self) -> List[np.ndarray]:
         if not self._segmentation_centerlines:

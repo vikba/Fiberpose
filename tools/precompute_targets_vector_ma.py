@@ -11,14 +11,14 @@ from tqdm import tqdm
 # ==========================================
 # Configuration
 # ==========================================
-ROOT_DIR = Path("/home/vk/workspace/Training/dataset_original_256")
-INPUT_DIR = ROOT_DIR / "masks"
-OUTPUT_DIR = ROOT_DIR / "targets"
+ROOT_DIR = Path("/home/vk/workspace/Training/dataset_extended")
+INPUT_DIR = ROOT_DIR / "val_masks"
+OUTPUT_DIR = ROOT_DIR / "val_targets"
 PREVIEW_DIR = OUTPUT_DIR / "previews"
-IMAGE_DIR = ROOT_DIR / "images"   # original images folder
+IMAGE_DIR = ROOT_DIR / "val_images"   # original images folder
 
-MIN_MEAN_BRIGHTNESS = 25.0        # tune to your image scale
-MIN_ASPECT_RATIO = 3.0            # major/minor axis or bbox ratio
+MIN_MEAN_BRIGHTNESS = 1.0        # tune to your image scale
+MIN_ASPECT_RATIO = 1.0            # major/minor axis or bbox ratio
 MIN_AREA = 10
 
 # Contour Smoothing Settings
