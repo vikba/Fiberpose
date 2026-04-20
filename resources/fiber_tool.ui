@@ -443,7 +443,7 @@
           <pointsize>8</pointsize>
          </font>
         </property>
-       <property name="text">
+        <property name="text">
          <string>Radial expansion</string>
         </property>
        </widget>
@@ -502,7 +502,22 @@
         </property>
         <item>
          <property name="text">
+          <string>0.5x</string>
+         </property>
+        </item>
+        <item>
+         <property name="text">
           <string>1x</string>
+         </property>
+        </item>
+        <item>
+         <property name="text">
+          <string>2x</string>
+         </property>
+        </item>
+        <item>
+         <property name="text">
+          <string>4x</string>
          </property>
         </item>
        </widget>

@@ -498,11 +498,37 @@ class MainWindow(QMainWindow):
 
     def _segmentation_centerlines_view(self) -> np.ndarray | None:
         """Return cached segmentation-centerline view."""
-        return ensure_rgb_u8(self.current_frame.segmentation_centerlines_overlay_img)
+        img = ensure_rgb_u8(self.current_frame.segmentation_centerlines_overlay_img)
+        if img is None:
+            return None
+        labels = self.current_frame.labels_2d
+        if labels is None or img.shape[:2] != labels.shape[:2]:
+            return img
+        out = img.copy()
+        try:
+            boundaries = find_boundaries(labels, mode="outer")
+        except Exception:
+            boundaries = None
+        if boundaries is not None and boundaries.any():
+            out[boundaries] = (0, 0, 255)
+        return out
 
     def _measurement_centerlines_view(self) -> np.ndarray | None:
         """Return cached measurement-centerline view."""
-        return ensure_rgb_u8(self.current_frame.measurement_centerlines_overlay_img)
+        img = ensure_rgb_u8(self.current_frame.measurement_centerlines_overlay_img)
+        if img is None:
+            return None
+        labels = self.current_frame.labels_2d
+        if labels is None or img.shape[:2] != labels.shape[:2]:
+            return img
+        out = img.copy()
+        try:
+            boundaries = find_boundaries(labels, mode="outer")
+        except Exception:
+            boundaries = None
+        if boundaries is not None and boundaries.any():
+            out[boundaries] = (0, 0, 255)
+        return out
 
     def _centerlines_comparison_view(self) -> np.ndarray | None:
         """Return combined centerline comparison debug view."""
@@ -599,13 +625,13 @@ class MainWindow(QMainWindow):
         payload = {
             "prediction_sig": prediction_sig,
             "merge_expansion_factor": float(getattr(self.config, "merge_expansion_factor", 0.7)),
+            "min_fragment_centerline_length_px": float(
+                getattr(self.config, "min_fragment_centerline_length_px", 10.0)
+            ),
             "keep_segments_without_measurement_centerlines": bool(
                 getattr(self.config, "keep_segments_without_measurement_centerlines", False)
             ),
-            "centerline_kwargs": dict(
-                getattr(self.analyzer, "_centerline_kwargs", None)
-                or FiberAnalyzer_2D._default_centerline_kwargs()
-            ),
+            "centerline_kwargs": self._configured_centerline_kwargs(),
         }
         return json.dumps(payload, sort_keys=True, default=str)
 
@@ -682,11 +708,15 @@ class MainWindow(QMainWindow):
     def _prediction_params(self) -> dict[str, Any]:
         return {
             "max_angle_deg": float(getattr(self.config, "max_angle_deg", 30.0)),
-            "centerline_kwargs": dict(
-                getattr(self.analyzer, "_centerline_kwargs", None)
-                or FiberAnalyzer_2D._default_centerline_kwargs()
-            ),
+            "centerline_kwargs": self._configured_centerline_kwargs(),
         }
+
+    def _configured_centerline_kwargs(self) -> dict[str, Any]:
+        kwargs = dict(FiberAnalyzer_2D._default_centerline_kwargs())
+        kwargs["sigma"] = float(getattr(self.config, "ridge_sigma", kwargs["sigma"]))
+        kwargs["low"] = float(getattr(self.config, "ridge_low", kwargs["low"]))
+        kwargs["high"] = float(getattr(self.config, "ridge_high", kwargs["high"]))
+        return kwargs
 
     def _centerline_params(self) -> dict[str, Any]:
         params = self._prediction_params()
@@ -697,6 +727,9 @@ class MainWindow(QMainWindow):
                     getattr(self.config, "keep_segments_without_measurement_centerlines", False)
                 ),
                 "merge_expansion_factor": float(getattr(self.config, "merge_expansion_factor", 0.7)),
+                "min_fragment_centerline_length_px": float(
+                    getattr(self.config, "min_fragment_centerline_length_px", 10.0)
+                ),
                 "segmentation_expansion_factor": float(getattr(self.config, "segmentation_expansion_factor", 1.0)),
             }
         )
@@ -707,13 +740,6 @@ class MainWindow(QMainWindow):
             "sample_spacing": max(1.0, float(getattr(self.config, "sample_spacing", 5.0))),
             "seg_threshold": int(getattr(self.config, "seg_threshold", 1)),
         }
-
-    def _analyzer_matches_frame_prediction(self, fr: Frame) -> bool:
-        if self.analyzer is None or fr.dt is None or fr.gx is None or fr.gy is None:
-            return False
-        dt = self.analyzer.get_dt()
-        gx, gy = self.analyzer.get_gradients()
-        return dt is fr.dt and gx is fr.gx and gy is fr.gy
 
     def _hydrate_analyzer_from_prediction(self, fr: Frame, *, max_angle_deg: float, centerline_kwargs: dict[str, Any]) -> None:
         if self.analyzer is None or fr.dt is None or fr.gx is None or fr.gy is None:
@@ -859,9 +885,8 @@ class MainWindow(QMainWindow):
         if (
             fr.segmentation_centerline_sig == segmentation_sig
             and fr.measurement_centerline_sig == measurement_sig
-            and self._analyzer_matches_frame_prediction(fr)
-            and self.analyzer.get_segmentation_centerline_segments()
-            and self.analyzer.get_measurement_centerline_segments()
+            and fr.segmentation_centerlines_overlay_img is not None
+            and fr.measurement_centerlines_overlay_img is not None
         ):
             return True
 
@@ -893,8 +918,7 @@ class MainWindow(QMainWindow):
         if (
             fr.measurement_centerline_sig == target_sig
             and self.analyzer is not None
-            and self._analyzer_matches_frame_prediction(fr)
-            and self.analyzer.get_measurement_centerline_segments()
+            and fr.measurement_centerlines_overlay_img is not None
         ):
             return True
         # Recompute both centerline sets when measurement filtering settings changed.
@@ -2239,14 +2263,8 @@ class MainWindow(QMainWindow):
                 self._set_progress_bar(0.0)
                 QtWidgets.QApplication.processEvents()
                 cached_frame = None
-                if cached_batch is not None:
-                    frame_pos = int(processed_images)
-                    if 0 <= frame_pos < len(cached_batch.frame_results):
-                        candidate = cached_batch.frame_at(frame_pos)
-                        if int(candidate.z_index) == int(z_index):
-                            cached_frame = candidate
-                    if cached_frame is None and 0 <= int(z_index) < len(cached_batch.frame_results):
-                        cached_frame = cached_batch.frame_at(int(z_index))
+                if cached_batch is not None and 0 <= int(z_index) < len(cached_batch.frame_results):
+                    cached_frame = cached_batch.frame_at(int(z_index))
                 if cached_frame is None:
                     self.current_frame = Frame.empty(
                         frame_id=str(frame_id),
@@ -3368,21 +3386,11 @@ class MainWindow(QMainWindow):
             self.graph_diameters.clear()
             self.graph_angles.clear()
 
-        labels = self.current_frame.labels_2d
-        if labels is None:
+        if self.current_frame.labels_2d is not None:
+            labels_rgb = labels_to_color(self.current_frame.labels_2d)
+            self.current_frame.labels_rgb_cache = (id(self.current_frame.labels_2d), labels_rgb)
+        else:
             self.current_frame.labels_rgb_cache = (None, None)
-            self.current_frame.segmentation_outline_cache = (None, None)
-            return
-
-        current_id = id(labels)
-        cache_id, cache_img = self.current_frame.labels_rgb_cache
-        if cache_id != current_id or cache_img is None:
-            cache_img = labels_to_color(labels)
-            self.current_frame.labels_rgb_cache = (current_id, cache_img)
-
-        outline_id, outline_img = self.current_frame.segmentation_outline_cache
-        if outline_id != current_id and outline_img is not None:
-            # Keep outline generation lazy, but prevent carrying an outline for unrelated labels.
             self.current_frame.segmentation_outline_cache = (None, None)
 
     def _set_current_slice(self, index: int, update_view: bool = True):
@@ -3658,6 +3666,12 @@ class MainWindow(QMainWindow):
         prev_checkpoint = str(getattr(self.config, "checkpoint_path", ""))
         prev_scale_label = str(getattr(self.config, "scale_label", "1x"))
         prev_max_angle = float(getattr(self.config, "max_angle_deg", 30.0))
+        prev_ridge_sigma = float(getattr(self.config, "ridge_sigma", 1.0))
+        prev_ridge_low = float(getattr(self.config, "ridge_low", 0.01))
+        prev_ridge_high = float(getattr(self.config, "ridge_high", 0.4))
+        prev_min_fragment_centerline_length_px = float(
+            getattr(self.config, "min_fragment_centerline_length_px", 10.0)
+        )
         prev_strict = bool(getattr(self.config, "strict_centerlines", False))
         prev_mode = str(getattr(self.config, "segmentation_mode", "watershed"))
         prev_merge_expansion_factor = float(getattr(self.config, "merge_expansion_factor", 0.7))
@@ -3675,6 +3689,12 @@ class MainWindow(QMainWindow):
             self.config.max_angle_deg = float(self.sp_max_cent_angle.value())
         else:
             self.config.max_angle_deg = float(getattr(self.config, "max_angle_deg", 30.0))
+        self.config.ridge_sigma = float(getattr(self.config, "ridge_sigma", 1.0))
+        self.config.ridge_low = float(getattr(self.config, "ridge_low", 0.01))
+        self.config.ridge_high = float(getattr(self.config, "ridge_high", 0.4))
+        self.config.min_fragment_centerline_length_px = float(
+            getattr(self.config, "min_fragment_centerline_length_px", 10.0)
+        )
         self.config.strict_centerlines = self.chb_strict.isChecked()
 
         # Segmentation Mode
@@ -3711,8 +3731,36 @@ class MainWindow(QMainWindow):
             rel_tol=1e-9,
             abs_tol=1e-9,
         )
+        ridge_sigma_changed = not math.isclose(
+            prev_ridge_sigma,
+            float(self.config.ridge_sigma),
+            rel_tol=1e-9,
+            abs_tol=1e-9,
+        )
+        ridge_low_changed = not math.isclose(
+            prev_ridge_low,
+            float(self.config.ridge_low),
+            rel_tol=1e-9,
+            abs_tol=1e-9,
+        )
+        ridge_high_changed = not math.isclose(
+            prev_ridge_high,
+            float(self.config.ridge_high),
+            rel_tol=1e-9,
+            abs_tol=1e-9,
+        )
+        min_fragment_centerline_length_changed = not math.isclose(
+            prev_min_fragment_centerline_length_px,
+            float(self.config.min_fragment_centerline_length_px),
+            rel_tol=1e-9,
+            abs_tol=1e-9,
+        )
         segmentation_changed = (
             max_angle_changed
+            or ridge_sigma_changed
+            or ridge_low_changed
+            or ridge_high_changed
+            or min_fragment_centerline_length_changed
             or prev_strict != bool(self.config.strict_centerlines)
             or prev_mode != str(self.config.segmentation_mode)
             or not math.isclose(
@@ -3742,6 +3790,10 @@ class MainWindow(QMainWindow):
             self._invalidate_segmentation(
                 invalidate_centerlines=(
                     max_angle_changed
+                    or ridge_sigma_changed
+                    or ridge_low_changed
+                    or ridge_high_changed
+                    or min_fragment_centerline_length_changed
                     or prev_strict != bool(self.config.strict_centerlines)
                     or not math.isclose(
                         prev_merge_expansion_factor,

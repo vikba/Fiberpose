@@ -23,6 +23,10 @@ class AppConfig:
     
     # --- Centerline Params ---
     max_angle_deg: float = 30.0
+    ridge_sigma: float = 1.0
+    ridge_low: float = 0.01
+    ridge_high: float = 0.4
+    min_fragment_centerline_length_px: float = 10.0
     strict_centerlines: bool = False
     keep_segments_without_measurement_centerlines: bool = False
     
@@ -915,112 +919,111 @@ class Frame:
 
 
 @dataclass
-class SegmentationFragment:
-    """Segmentable fiber object formed by one or more merged detected polylines."""
+class FiberFragment:
+    """Unified 2D fragment carrying both segmentation and measurement centerlines."""
 
     fragment_id: int
-    polylines_xy: list[np.ndarray]
-    polylines_radii: Optional[list[np.ndarray]] = None
+    segment_centerlines_xy: list[np.ndarray]
+    segment_radii: Optional[list[np.ndarray]] = None
     parent_fiber_id: int = -1
-    has_measurement_centerlines: bool = False
+    measurement_centerline_xy: Optional[np.ndarray] = None
+    measurement_radii: Optional[np.ndarray] = None
+    measurement_source_index: Optional[int] = None
+    measurement_score: float = float("-inf")
+
+    @staticmethod
+    def _normalize_centerline(points_raw: np.ndarray, label: str) -> np.ndarray:
+        points_xy = np.asarray(points_raw, dtype=np.float32)
+        if points_xy.ndim != 2 or points_xy.shape[1] != 2:
+            raise ValueError(f"{label} must be an array of shape (N, 2).")
+        if points_xy.shape[0] < 2:
+            raise ValueError(f"{label} must contain at least two points.")
+        return points_xy
+
+    @staticmethod
+    def _normalize_radii(radii_raw: Optional[np.ndarray], n_points: int, label: str) -> np.ndarray:
+        if radii_raw is None:
+            return np.zeros(n_points, dtype=np.float32)
+        radii = np.asarray(radii_raw, dtype=np.float32).reshape(-1)
+        if radii.shape[0] != n_points:
+            raise ValueError(f"{label} length must match centerline length.")
+        return radii
+
+    @staticmethod
+    def _centerline_length(points_xy: np.ndarray) -> float:
+        if points_xy.shape[0] < 2:
+            return 0.0
+        return float(np.linalg.norm(np.diff(points_xy, axis=0), axis=1).sum())
 
     def __post_init__(self) -> None:
-        """Normalize and validate dataclass fields after instance construction.
-        
-        Returns:
-            None: Result object produced by the post init routine.
-        
-        Raises:
-            ValueError: If provided values violate validation or domain constraints."""
-        if not self.polylines_xy:
-            raise ValueError("SegmentationFragment must contain at least one polyline.")
+        if not self.segment_centerlines_xy:
+            raise ValueError("FiberFragment must contain at least one segmentation centerline.")
 
-        polylines_xy: list[np.ndarray] = []
-        for pts_raw in self.polylines_xy:
-            pts = np.asarray(pts_raw, dtype=np.float32)
-            if pts.ndim != 2 or pts.shape[1] != 2:
-                raise ValueError("Each polyline must be an array of shape (N, 2).")
-            if pts.shape[0] < 2:
-                raise ValueError("Each polyline must contain at least two points.")
-            polylines_xy.append(pts)
-        if self.polylines_radii is None:
-            polylines_radii = [np.zeros(len(pts), dtype=np.float32) for pts in polylines_xy]
+        centerlines_xy = [
+            self._normalize_centerline(points_raw, "Segmentation centerline")
+            for points_raw in self.segment_centerlines_xy
+        ]
+        if not self.segment_radii:
+            centerlines_radii = [
+                np.zeros(points_xy.shape[0], dtype=np.float32) for points_xy in centerlines_xy
+            ]
         else:
-            if len(self.polylines_radii) != len(self.polylines_xy):
-                raise ValueError("polylines_radii length must match polylines_xy length.")
-            radii_list: list[np.ndarray] = []
-            for pts, radii_raw in zip(polylines_xy, self.polylines_radii):
-                radii = np.asarray(radii_raw, dtype=np.float32).reshape(-1)
-                if radii.shape[0] != pts.shape[0]:
-                    raise ValueError("Polyline radii length must match polyline length.")
-                radii_list.append(radii)
-            polylines_radii = radii_list
+            if len(self.segment_radii) != len(centerlines_xy):
+                raise ValueError("segment_radii length must match segment_centerlines_xy length.")
+            centerlines_radii = [
+                self._normalize_radii(radii_raw, points_xy.shape[0], "Segmentation radii")
+                for points_xy, radii_raw in zip(centerlines_xy, self.segment_radii)
+            ]
 
-        pairs = list(zip(polylines_xy, polylines_radii))
-        pairs.sort(
-            key=lambda pair: float(np.linalg.norm(np.diff(pair[0], axis=0), axis=1).sum()),
-            reverse=True,
-        )
-        self.polylines_xy = [pts for pts, _ in pairs]
-        self.polylines_radii = [radii for _, radii in pairs]
+        pairs = list(zip(centerlines_xy, centerlines_radii))
+        pairs.sort(key=lambda pair: self._centerline_length(pair[0]), reverse=True)
+        self.segment_centerlines_xy = [points_xy for points_xy, _ in pairs]
+        self.segment_radii = [radii for _, radii in pairs]
+
+        if self.measurement_centerline_xy is None:
+            if self.measurement_radii is not None:
+                raise ValueError("measurement_radii requires measurement_centerline_xy.")
+            self.measurement_radii = None
+            self.measurement_source_index = (
+                None if self.measurement_source_index is None else int(self.measurement_source_index)
+            )
+        else:
+            measurement_xy = self._normalize_centerline(
+                self.measurement_centerline_xy,
+                "Measurement centerline",
+            )
+            self.measurement_centerline_xy = measurement_xy
+            self.measurement_radii = self._normalize_radii(
+                self.measurement_radii,
+                measurement_xy.shape[0],
+                "Measurement radii",
+            )
+            if self.measurement_source_index is None:
+                raise ValueError("measurement_source_index is required when measurement_centerline_xy is set.")
+            source_index = int(self.measurement_source_index)
+            if source_index < 0 or source_index >= len(self.segment_centerlines_xy):
+                raise ValueError("measurement_source_index must reference a segmentation centerline.")
+            self.measurement_source_index = source_index
+
+        self.fragment_id = int(self.fragment_id)
         self.parent_fiber_id = int(self.parent_fiber_id)
-        self.has_measurement_centerlines = bool(self.has_measurement_centerlines)
+        self.measurement_score = float(self.measurement_score)
+
+    @property
+    def has_measurement_centerline(self) -> bool:
+        return self.measurement_centerline_xy is not None
 
     @property
     def points_xy(self) -> np.ndarray:
-        """Orchestrate points xy within the current module workflow.
-        
-        Returns:
-            np.ndarray: Array containing the points xy output aligned with downstream expectations."""
-        return self.polylines_xy[0]
+        return self.measurement_centerline_xy if self.measurement_centerline_xy is not None else self.segment_centerlines_xy[0]
 
     @property
     def centerline_xy(self) -> np.ndarray:
-        """Backward-compatible access to the primary polyline."""
-        return self.polylines_xy[0]
+        return self.points_xy
 
     @property
     def radii(self) -> np.ndarray:
-        """Backward-compatible access to the primary polyline radii."""
-        return self.polylines_radii[0]
+        return self.measurement_radii if self.measurement_radii is not None else self.segment_radii[0]
 
     def length(self) -> float:
-        """Orchestrate length within the current module workflow.
-        
-        Returns:
-            float: Result object produced by the length routine."""
-        if len(self.points_xy) < 2:
-            return 0.0
-        diffs = np.diff(self.points_xy, axis=0)
-        return float(np.linalg.norm(diffs, axis=1).sum())
-
-
-@dataclass
-class MeasurementFragment:
-    """Single usable polyline derived from a segmentation fragment for measurement."""
-
-    fragment_id: int
-    segmentation_fragment_id: int
-    polyline_xy: np.ndarray
-    radii: Optional[np.ndarray] = None
-
-    def __post_init__(self) -> None:
-        pts = np.asarray(self.polyline_xy, dtype=np.float32)
-        if pts.ndim != 2 or pts.shape[1] != 2:
-            raise ValueError("polyline_xy must be an array of shape (N, 2).")
-        if pts.shape[0] < 2:
-            raise ValueError("MeasurementFragment must contain at least two points.")
-        self.polyline_xy = pts
-
-        if self.radii is None:
-            self.radii = np.zeros(len(pts), dtype=np.float32)
-        else:
-            radii = np.asarray(self.radii, dtype=np.float32).reshape(-1)
-            if radii.shape[0] != pts.shape[0]:
-                raise ValueError("radii length must match polyline length.")
-            self.radii = radii
-        self.segmentation_fragment_id = int(self.segmentation_fragment_id)
-
-    @property
-    def points_xy(self) -> np.ndarray:
-        return self.polyline_xy
+        return self._centerline_length(self.points_xy)

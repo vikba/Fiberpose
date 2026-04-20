@@ -205,6 +205,16 @@ class ConfigEditorDialog(QtWidgets.QDialog):
             "editable": True,
         },
         "max_angle_deg": {"label": "Max angle (deg)", "kind": "float", "min": 0.0, "max": 180.0, "step": 1.0},
+        "ridge_sigma": {"label": "Ridge sigma", "kind": "float", "min": 0.0, "max": 1e6, "step": 0.1},
+        "ridge_low": {"label": "Ridge low", "kind": "float", "min": 0.0, "max": 1e6, "step": 0.01},
+        "ridge_high": {"label": "Ridge high", "kind": "float", "min": 0.0, "max": 1e6, "step": 0.01},
+        "min_fragment_centerline_length_px": {
+            "label": "Min fragment centerline length (px)",
+            "kind": "float",
+            "min": 0.0,
+            "max": 1e6,
+            "step": 1.0,
+        },
         "strict_centerlines": {"label": "Strict centerlines", "kind": "bool"},
         "keep_segments_without_measurement_centerlines": {
             "label": "Keep segments without measurement centerlines",

@@ -2,6 +2,7 @@
 
 # run.py
 import sys, os
+os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 from sources.gui_mainwindow import MainWindow
 from PyQt6.QtWidgets import QApplication
 from PyQt6.QtGui import QPalette, QColor
