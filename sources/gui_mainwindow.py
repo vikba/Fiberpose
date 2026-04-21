@@ -1015,13 +1015,17 @@ class MainWindow(QMainWindow):
             mean_thickness = float("nan")
             std_thickness = float("nan")
         orientation_index, mean_angle_deg, std_angle_deg = self._compute_orientation_stats(angles_arr)
+        fragments_with_centerlines = (
+            len(self.analyzer.get_measurement_centerline_segments()) if self.analyzer is not None else 0
+        )
         info_text = (
             f"Mean diameter: {mean_thickness:.2f} {units_label}\n"
             f"Std diameter: {std_thickness:.2f} {units_label}\n"
             f"Orientation index: {orientation_index:.2f}\n"
             f"Mean angle: {mean_angle_deg:.2f} deg\n"
             f"Std angle: {std_angle_deg:.2f} deg\n"
-            f"Porosity (area fraction): {porosity*100:.1f} %"
+            f"Porosity (area fraction): {porosity*100:.1f} %\n"
+            f"Fragments with centerlines: {int(fragments_with_centerlines)}"
         )
         fiber_summary = {
             "mean_diameter": mean_thickness,
@@ -1031,6 +1035,7 @@ class MainWindow(QMainWindow):
             "std_angle_deg": float(std_angle_deg),
             "porosity": float(porosity),
             "sample_count": len(measurement_samples),
+            "fragments_with_centerlines": int(fragments_with_centerlines),
             "units": units_label,
         }
         return {
@@ -3377,7 +3382,8 @@ class MainWindow(QMainWindow):
                 f"Orientation index: {self.current_frame.fiber_summary.get('orientation_index', float('nan')):.2f}\n"
                 f"Mean angle: {self.current_frame.fiber_summary.get('mean_angle_deg', float('nan')):.2f} deg\n"
                 f"Std angle: {self.current_frame.fiber_summary.get('std_angle_deg', float('nan')):.2f} deg\n"
-                f"Porosity (area fraction): {self.current_frame.fiber_summary.get('porosity', float('nan'))*100:.1f} %"
+                f"Porosity (area fraction): {self.current_frame.fiber_summary.get('porosity', float('nan'))*100:.1f} %\n"
+                f"Fragments with centerlines: {int(self.current_frame.fiber_summary.get('fragments_with_centerlines', 0))}"
             )
             self.text_edit2.setPlainText(info_text)
             self._update_distributions_pyqtgraph(units_label)

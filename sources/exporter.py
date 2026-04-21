@@ -475,6 +475,7 @@ class BatchResultExporter:
                     "std_angle_deg",
                     "porosity",
                     "sample_count",
+                    "fragments_with_centerlines",
                     "units",
                     "has_segmentation",
                     "has_measurements",
@@ -485,6 +486,7 @@ class BatchResultExporter:
                     self._measurement_summary_from_frame(frame)
                 )
                 summary = getattr(frame, "fiber_summary", None) or {}
+                fragments_with_centerlines = int(summary.get("fragments_with_centerlines", 0))
                 units = str(summary.get("units", "px"))
                 writer.writerow(
                     [
@@ -498,6 +500,7 @@ class BatchResultExporter:
                         f"{std_angle_deg:.6f}",
                         f"{porosity:.6f}",
                         int(sample_count),
+                        fragments_with_centerlines,
                         units,
                         int(bool(getattr(frame, "has_segmentation", False))),
                         int(bool(getattr(frame, "has_measurements", False))),
@@ -678,6 +681,8 @@ class BatchResultExporter:
         )
 
         with open(path, "w", newline="") as handle:
+            summary = getattr(frame, "fiber_summary", None) or {}
+            fragments_with_centerlines = int(summary.get("fragments_with_centerlines", 0))
             handle.write("metric,value\n")
             handle.write(f"mean,{mean_val:.6f}\n")
             handle.write(f"std,{std_val:.6f}\n")
@@ -686,6 +691,7 @@ class BatchResultExporter:
             handle.write(f"std_angle_deg,{std_angle_deg:.6f}\n")
             handle.write(f"porosity,{porosity:.6f}\n")
             handle.write(f"sample_number,{sample_count}\n")
+            handle.write(f"fragments_with_centerlines,{fragments_with_centerlines}\n")
             handle.write("\n\n")
             handle.write("x,y,diameter,angle_deg\n")
 
