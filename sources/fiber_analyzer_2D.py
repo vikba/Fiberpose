@@ -377,9 +377,14 @@ class FiberAnalyzer_2D:
             fragments=active_fragments,
         )
 
-        measurement_fragments = [frag for frag in active_fragments if frag.has_measurement_centerline]
+        measurement_segments_xy: List[np.ndarray] = []
+        measurement_normals_xy: List[np.ndarray] = []
+        for seg in active_fragments:
+            for polyline_xy in seg.measurement_centerlines_xy:
+                measurement_segments_xy.append(polyline_xy.reshape(-1, 1, 2))
+                measurement_normals_xy.append(self._polyline_normals(polyline_xy))
         self._fiber_fragments = active_fragments
-        self._measurement_normals_xy = [self._polyline_normals(seg.points_xy) for seg in measurement_fragments]
+        self._measurement_normals_xy = measurement_normals_xy
         self._segmentation_centerlines_rgb = segmentation_centerlines_rgb
         self._measurement_centerlines_rgb = measurement_centerlines_rgb
         self._centerlines_comparison_rgb = centerlines_comparison_rgb
@@ -387,14 +392,11 @@ class FiberAnalyzer_2D:
         self._radial_expansion_labels = expanded_labels
         self._segmentation_expansion_factor = float(segmentation_expansion_factor)
 
-        measurement_segments_xy: List[np.ndarray] = [
-            seg.points_xy.reshape(-1, 1, 2) for seg in measurement_fragments
-        ]
         logger.info(
             "Centerlines built: segmentation=%d/%d measurement=%d",
             len(active_fragments),
             len(segmentation_fragments),
-            len(measurement_fragments),
+            len(measurement_segments_xy),
         )
         return measurement_segments_xy, self._measurement_normals_xy, measurement_centerlines_rgb, markers
 
@@ -553,13 +555,12 @@ class FiberAnalyzer_2D:
         strict: bool,
         keep_segments_without_measurement_centerlines: bool,
     ) -> List[FiberFragment]:
-        """Select the best measurement centerline per fragment and update fragments in place."""
+        """Collect measurement centerlines per fragment and update fragments in place."""
         active_segmentation_fragments: List[FiberFragment] = []
         for seg in segmentation_fragments:
-            seg.measurement_centerline_xy = None
-            seg.measurement_radii = None
-            seg.measurement_source_index = None
-            seg.measurement_score = float("-inf")
+            seg.measurement_centerlines_xy = []
+            seg.measurement_radii = []
+            seg.measurement_source_indices = []
             for source_index, polyline_xy in enumerate(seg.segment_centerlines_xy):
                 seg_xy = polyline_xy.reshape(-1, 1, 2)
                 windows_xy = cls._sliding_window_filter(
@@ -580,81 +581,14 @@ class FiberAnalyzer_2D:
                     x_idx = np.clip(np.rint(pts_xy[:, 0]).astype(np.int32), 0, dt.shape[1] - 1)
                     y_idx = np.clip(np.rint(pts_xy[:, 1]).astype(np.int32), 0, dt.shape[0] - 1)
                     radii = np.asarray(dt[y_idx, x_idx], dtype=np.float32)
-                    score = cls._score_measurement_candidate(
-                        pts_xy=pts_xy,
-                        radii=radii,
-                        dt=dt,
-                        gx=gx,
-                        gy=gy,
-                    )
-                    # Filtering now keeps exactly one measurement centerline per fragment.
-                    if score > seg.measurement_score:
-                        seg.measurement_centerline_xy = pts_xy
-                        seg.measurement_radii = radii
-                        seg.measurement_source_index = int(source_index)
-                        seg.measurement_score = score
+                    seg.measurement_centerlines_xy.append(pts_xy)
+                    seg.measurement_radii.append(radii)
+                    seg.measurement_source_indices.append(int(source_index))
             if seg.has_measurement_centerline:
                 active_segmentation_fragments.append(seg)
         if bool(keep_segments_without_measurement_centerlines):
             active_segmentation_fragments = list(segmentation_fragments)
         return active_segmentation_fragments
-
-    @staticmethod
-    def _score_measurement_candidate(
-        *,
-        pts_xy: np.ndarray,
-        radii: np.ndarray,
-        dt: np.ndarray,
-        gx: np.ndarray | None,
-        gy: np.ndarray | None,
-    ) -> float:
-        """Score a valid candidate so each fragment keeps only its best measurement centerline."""
-        pts_xy = np.asarray(pts_xy, dtype=np.float32).reshape(-1, 2)
-        radii = np.asarray(radii, dtype=np.float32).reshape(-1)
-        length_score = float(np.linalg.norm(np.diff(pts_xy, axis=0), axis=1).sum()) if len(pts_xy) >= 2 else 0.0
-
-        finite_radii = radii[np.isfinite(radii)]
-        if finite_radii.size:
-            mean_radius = float(np.mean(finite_radii))
-            radius_std = float(np.std(finite_radii))
-            radius_stability = 1.0 / (1.0 + (radius_std / max(mean_radius, 1e-6)))
-        else:
-            radius_stability = 0.0
-
-        gradient_alignment = 0.0
-        gradient_confidence = 0.0
-        if gx is not None and gy is not None and len(pts_xy) >= 2:
-            tangents = np.zeros_like(pts_xy, dtype=np.float32)
-            tangents[1:-1] = pts_xy[2:] - pts_xy[:-2]
-            tangents[0] = pts_xy[1] - pts_xy[0]
-            tangents[-1] = pts_xy[-1] - pts_xy[-2]
-            tangent_norm = np.linalg.norm(tangents, axis=1, keepdims=True) + 1e-6
-            tangents /= tangent_norm
-
-            alignments: list[float] = []
-            magnitudes: list[float] = []
-            for px, py, tangent_xy in zip(pts_xy[:, 0], pts_xy[:, 1], tangents):
-                grad_vec = _sample_vec2(gx, gy, float(py), float(px))
-                grad_mag = float(np.linalg.norm(grad_vec))
-                if grad_mag <= 1e-6 or not np.isfinite(grad_mag):
-                    continue
-                grad_unit = grad_vec / (grad_mag + 1e-6)
-                tangent_unit = tangent_xy / (float(np.linalg.norm(tangent_xy)) + 1e-6)
-                # Good centerlines are roughly orthogonal to the DT gradient.
-                alignments.append(1.0 - abs(float(np.dot(grad_unit, tangent_unit))))
-                magnitudes.append(grad_mag)
-
-            if alignments:
-                gradient_alignment = float(np.mean(alignments))
-            if magnitudes:
-                gradient_confidence = float(np.mean(magnitudes))
-
-        return (
-            length_score
-            + 10.0 * radius_stability
-            + 10.0 * gradient_alignment
-            + gradient_confidence
-        )
 
     @staticmethod
     def _render_centerlines_rgb(
@@ -676,13 +610,11 @@ class FiberAnalyzer_2D:
 
         for seg in segments:
             polylines = (
-                [seg.measurement_centerline_xy]
+                seg.measurement_centerlines_xy
                 if measurement_only
                 else seg.segment_centerlines_xy
             )
             for polyline_xy in polylines:
-                if polyline_xy is None:
-                    continue
                 pts = np.asarray(polyline_xy, dtype=np.float32).reshape(-1, 1, 2).astype(np.int32)
                 if len(pts) < 2:
                     x, y = pts[0, 0]
@@ -722,9 +654,10 @@ class FiberAnalyzer_2D:
         for seg in fragments:
             if not seg.has_measurement_centerline:
                 continue
-            pts = seg.measurement_centerline_xy.reshape(-1, 1, 2).astype(np.int32)
-            if len(pts) >= 2:
-                cv2.polylines(out, [pts], isClosed=False, color=(0, 255, 0), thickness=1, lineType=cv2.LINE_AA)
+            for polyline_xy in seg.measurement_centerlines_xy:
+                pts = polyline_xy.reshape(-1, 1, 2).astype(np.int32)
+                if len(pts) >= 2:
+                    cv2.polylines(out, [pts], isClosed=False, color=(0, 255, 0), thickness=1, lineType=cv2.LINE_AA)
         return out
 
     def segment(
@@ -919,11 +852,15 @@ class FiberAnalyzer_2D:
     def get_measurement_centerline_segments(self) -> List[np.ndarray]:
         if not self._fiber_fragments:
             return []
-        return [
-            seg.measurement_centerline_xy.reshape(-1, 1, 2)
-            for seg in self._fiber_fragments
-            if seg.has_measurement_centerline
-        ]
+        segments_xy: List[np.ndarray] = []
+        for seg in self._fiber_fragments:
+            segments_xy.extend(polyline_xy.reshape(-1, 1, 2) for polyline_xy in seg.measurement_centerlines_xy)
+        return segments_xy
+
+    def get_measurement_fragment_count(self) -> int:
+        if not self._fiber_fragments:
+            return 0
+        return sum(1 for seg in self._fiber_fragments if seg.has_measurement_centerline)
 
     def get_centerline_segments(self) -> List[np.ndarray]:
         """Backward-compatible alias for measurement centerline segments."""
@@ -1216,11 +1153,11 @@ class FiberAnalyzer_2D:
         if constant_segments is not None:
             constant_segments_xy = constant_segments
         elif self._fiber_fragments:
-            constant_segments_xy = [
-                seg.measurement_centerline_xy.reshape(-1, 1, 2)
-                for seg in self._fiber_fragments
-                if seg.has_measurement_centerline
-            ]
+            constant_segments_xy = []
+            for seg in self._fiber_fragments:
+                constant_segments_xy.extend(
+                    polyline_xy.reshape(-1, 1, 2) for polyline_xy in seg.measurement_centerlines_xy
+                )
         else:
             constant_segments_xy = []
 

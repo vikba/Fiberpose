@@ -1,5 +1,5 @@
 {
-    "checkpoint_path": "checkpoints/fiber_epoch_4500.pt",
+    "checkpoint_path": "checkpoints/fiber_2000_epoch.pt",
     "use_gpu": true,
     "scale_label": "1x",
     "max_angle_deg": 30.0,

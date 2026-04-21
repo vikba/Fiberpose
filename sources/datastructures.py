@@ -926,10 +926,9 @@ class FiberFragment:
     segment_centerlines_xy: list[np.ndarray]
     segment_radii: Optional[list[np.ndarray]] = None
     parent_fiber_id: int = -1
-    measurement_centerline_xy: Optional[np.ndarray] = None
-    measurement_radii: Optional[np.ndarray] = None
-    measurement_source_index: Optional[int] = None
-    measurement_score: float = float("-inf")
+    measurement_centerlines_xy: list[np.ndarray] = field(default_factory=list)
+    measurement_radii: list[np.ndarray] = field(default_factory=list)
+    measurement_source_indices: list[int] = field(default_factory=list)
 
     @staticmethod
     def _normalize_centerline(points_raw: np.ndarray, label: str) -> np.ndarray:
@@ -980,42 +979,57 @@ class FiberFragment:
         self.segment_centerlines_xy = [points_xy for points_xy, _ in pairs]
         self.segment_radii = [radii for _, radii in pairs]
 
-        if self.measurement_centerline_xy is None:
-            if self.measurement_radii is not None:
-                raise ValueError("measurement_radii requires measurement_centerline_xy.")
-            self.measurement_radii = None
-            self.measurement_source_index = (
-                None if self.measurement_source_index is None else int(self.measurement_source_index)
-            )
+        measurement_centerlines_xy = [
+            self._normalize_centerline(points_raw, "Measurement centerline")
+            for points_raw in (self.measurement_centerlines_xy or [])
+        ]
+        if not measurement_centerlines_xy:
+            if self.measurement_radii:
+                raise ValueError("measurement_radii requires measurement_centerlines_xy.")
+            if self.measurement_source_indices:
+                raise ValueError("measurement_source_indices requires measurement_centerlines_xy.")
+            self.measurement_centerlines_xy = []
+            self.measurement_radii = []
+            self.measurement_source_indices = []
         else:
-            measurement_xy = self._normalize_centerline(
-                self.measurement_centerline_xy,
-                "Measurement centerline",
-            )
-            self.measurement_centerline_xy = measurement_xy
-            self.measurement_radii = self._normalize_radii(
-                self.measurement_radii,
-                measurement_xy.shape[0],
-                "Measurement radii",
-            )
-            if self.measurement_source_index is None:
-                raise ValueError("measurement_source_index is required when measurement_centerline_xy is set.")
-            source_index = int(self.measurement_source_index)
-            if source_index < 0 or source_index >= len(self.segment_centerlines_xy):
-                raise ValueError("measurement_source_index must reference a segmentation centerline.")
-            self.measurement_source_index = source_index
+            if not self.measurement_radii:
+                measurement_radii = [
+                    np.zeros(points_xy.shape[0], dtype=np.float32)
+                    for points_xy in measurement_centerlines_xy
+                ]
+            else:
+                if len(self.measurement_radii) != len(measurement_centerlines_xy):
+                    raise ValueError("measurement_radii length must match measurement_centerlines_xy length.")
+                measurement_radii = [
+                    self._normalize_radii(radii_raw, points_xy.shape[0], "Measurement radii")
+                    for points_xy, radii_raw in zip(measurement_centerlines_xy, self.measurement_radii)
+                ]
+            if len(self.measurement_source_indices) != len(measurement_centerlines_xy):
+                raise ValueError(
+                    "measurement_source_indices length must match measurement_centerlines_xy length."
+                )
+            measurement_source_indices: list[int] = []
+            for source_index_raw in self.measurement_source_indices:
+                source_index = int(source_index_raw)
+                if source_index < 0 or source_index >= len(self.segment_centerlines_xy):
+                    raise ValueError(
+                        "measurement_source_indices entries must reference segmentation centerlines."
+                    )
+                measurement_source_indices.append(source_index)
+            self.measurement_centerlines_xy = measurement_centerlines_xy
+            self.measurement_radii = measurement_radii
+            self.measurement_source_indices = measurement_source_indices
 
         self.fragment_id = int(self.fragment_id)
         self.parent_fiber_id = int(self.parent_fiber_id)
-        self.measurement_score = float(self.measurement_score)
 
     @property
     def has_measurement_centerline(self) -> bool:
-        return self.measurement_centerline_xy is not None
+        return bool(self.measurement_centerlines_xy)
 
     @property
     def points_xy(self) -> np.ndarray:
-        return self.measurement_centerline_xy if self.measurement_centerline_xy is not None else self.segment_centerlines_xy[0]
+        return self.measurement_centerlines_xy[0] if self.measurement_centerlines_xy else self.segment_centerlines_xy[0]
 
     @property
     def centerline_xy(self) -> np.ndarray:
@@ -1023,7 +1037,7 @@ class FiberFragment:
 
     @property
     def radii(self) -> np.ndarray:
-        return self.measurement_radii if self.measurement_radii is not None else self.segment_radii[0]
+        return self.measurement_radii[0] if self.measurement_radii else self.segment_radii[0]
 
     def length(self) -> float:
         return self._centerline_length(self.points_xy)

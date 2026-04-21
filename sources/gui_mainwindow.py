@@ -1016,7 +1016,7 @@ class MainWindow(QMainWindow):
             std_thickness = float("nan")
         orientation_index, mean_angle_deg, std_angle_deg = self._compute_orientation_stats(angles_arr)
         fragments_with_centerlines = (
-            len(self.analyzer.get_measurement_centerline_segments()) if self.analyzer is not None else 0
+            self.analyzer.get_measurement_fragment_count() if self.analyzer is not None else 0
         )
         info_text = (
             f"Mean diameter: {mean_thickness:.2f} {units_label}\n"
