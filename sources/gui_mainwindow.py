@@ -839,17 +839,23 @@ class MainWindow(QMainWindow):
             return False
 
         self.sync_ui_to_config()
+        prediction_params = self._prediction_params()
         target_sig = self._prediction_signature()
         if target_sig is None:
             return False
         if fr.has_prediction and fr.dt is not None and fr.prediction_sig == target_sig:
+            self._hydrate_analyzer_from_prediction(
+                fr,
+                max_angle_deg=float(prediction_params["max_angle_deg"]),
+                centerline_kwargs=dict(prediction_params["centerline_kwargs"]),
+            )
             return True
 
         try:
             processing_img = self._processing_image()
             if processing_img is None:
                 raise RuntimeError("Missing input image.")
-            prediction = self.predict(processing_img, self._prediction_params())
+            prediction = self.predict(processing_img, prediction_params)
         except Exception as exc:
             fr.fail(str(exc))
             self._show_error("Prediction failed", str(exc))
@@ -888,6 +894,18 @@ class MainWindow(QMainWindow):
             and fr.segmentation_centerlines_overlay_img is not None
             and fr.measurement_centerlines_overlay_img is not None
         ):
+            # Keep frame-specific analyzer internals in sync when cached overlays are reused.
+            params = self._centerline_params()
+            try:
+                outputs = self.build_centerlines(fr, params)
+            except Exception as exc:
+                fr.fail(str(exc))
+                self._show_error("Centerline computation failed", str(exc))
+                logger.error("Centerline computation failed: %s", exc)
+                return False
+            fr.segmentation_centerlines_overlay_img = outputs["segmentation_centerlines_overlay_img"]
+            fr.measurement_centerlines_overlay_img = outputs["measurement_centerlines_overlay_img"]
+            fr.centerlines_comparison_overlay_img = outputs["centerlines_comparison_overlay_img"]
             return True
 
         params = self._centerline_params()

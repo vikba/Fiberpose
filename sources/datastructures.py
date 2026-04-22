@@ -907,6 +907,40 @@ class Frame:
         Returns:
             'Frame': Result object produced by the snapshot routine."""
         clone: Frame = copy(self)
+        def _clone_array(value: Any) -> Any:
+            if isinstance(value, np.ndarray):
+                return value.copy()
+            return value
+
+        clone.dt = _clone_array(clone.dt)
+        clone.dt_u8 = _clone_array(clone.dt_u8)
+        clone.dt_normalized = _clone_array(clone.dt_normalized)
+        clone.lapl_img = _clone_array(clone.lapl_img)
+        clone.gx = _clone_array(clone.gx)
+        clone.gy = _clone_array(clone.gy)
+        clone.style_vec = _clone_array(clone.style_vec)
+
+        clone.labels_2d = _clone_array(clone.labels_2d)
+        clone.segmentation_centerlines_overlay_img = _clone_array(clone.segmentation_centerlines_overlay_img)
+        clone.measurement_centerlines_overlay_img = _clone_array(clone.measurement_centerlines_overlay_img)
+        clone.centerlines_comparison_overlay_img = _clone_array(clone.centerlines_comparison_overlay_img)
+        clone.overlay_img = _clone_array(clone.overlay_img)
+        clone.sampling_overlay = _clone_array(clone.sampling_overlay)
+        clone.diameters_overlay = _clone_array(clone.diameters_overlay)
+        clone.orientations_overlay = _clone_array(clone.orientations_overlay)
+        clone.pores_overlay = _clone_array(clone.pores_overlay)
+
+        clone.samples_table = _clone_array(clone.samples_table)
+        clone.thickness_units = _clone_array(clone.thickness_units)
+        clone.pore_diams_units = _clone_array(clone.pore_diams_units)
+        clone.void_mask = _clone_array(clone.void_mask)
+        clone.pore_dt = _clone_array(clone.pore_dt)
+
+        labels_cache_id, labels_cache_img = clone.labels_rgb_cache
+        clone.labels_rgb_cache = (labels_cache_id, _clone_array(labels_cache_img))
+        outline_cache_id, outline_cache_img = clone.segmentation_outline_cache
+        clone.segmentation_outline_cache = (outline_cache_id, _clone_array(outline_cache_img))
+
         if clone.fiber_summary is not None:
             clone.fiber_summary = dict(clone.fiber_summary)
         if frame_id is not None:
