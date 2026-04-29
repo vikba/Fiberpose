@@ -12,7 +12,7 @@ from scipy.ndimage import gaussian_filter, laplace
 from skimage.segmentation import watershed, find_boundaries
 
 from .datastructures import FiberFragment
-from .models import FiberposeModel
+from .models import OnnxFiberposeModel
 from .ridge_detector import RidgeDetector
 from .utils import (
     _bilinear,
@@ -41,7 +41,7 @@ class FiberAnalyzer_2D:
 
     def __init__(
         self,
-        ckpt_path: str,
+        model_path: str,
         device: Any,
         model_kwargs: Optional[Dict[str, Any]] = None,
         strict: bool | None = None,
@@ -50,36 +50,24 @@ class FiberAnalyzer_2D:
         """Initialize fiber analyzer 2 d and establish required runtime state.
         
         Args:
-            ckpt_path (str): Filesystem location describing where ckpt path is read or written.
+            model_path (str): Filesystem location describing where model path is read or written.
             device (Any): Execution target device (for example CPU or CUDA).
             model_kwargs (Optional[Dict[str, Any]]): Value for model kwargs interpreted by this routine.
             strict (bool | None): Boolean flag that toggles strict behavior.
             keep_segments_without_measurement_centerlines (bool | None): Keep/remove behavior for segments
                 that do not produce measurement centerlines."""
-        self.ckpt_path = ckpt_path
+        self.model_path = model_path
         self.device = device
 
         defaults: Dict[str, Any] = {
             "nbase": "1,32,64,128,256",
-            "sz": 3,
-            "dilation": 1,
-            "pool_kernel": 2,
-            "scale": 2,
-            "residual_on": True,
-            "style_on": True,
-            "concat_style": False,
-            "checkpointing": False,
-            "dropout": False,
-            "cpu": False,
-            "amp": True,
-            "fp16": True,
         }
         if model_kwargs:
             defaults.update(model_kwargs)
         defaults["device"] = device
         self._model_kwargs = defaults
 
-        self._predictor: Optional[FiberposeModel] = None
+        self._predictor: Optional[OnnxFiberposeModel] = None
         self._strict_centerlines = bool(strict) if strict is not None else False
         self._keep_segments_without_measurement_centerlines = (
             bool(keep_segments_without_measurement_centerlines)
@@ -119,7 +107,6 @@ class FiberAnalyzer_2D:
         self._segmentation_expansion_factor: Optional[float] = None
         self._labels: Optional[np.ndarray] = None
         self._segment_counter = 0
-        self._style_vec: Optional[np.ndarray] = None
 
     @staticmethod
     def _default_centerline_kwargs() -> Dict[str, Any]:
@@ -160,30 +147,30 @@ class FiberAnalyzer_2D:
         if device == self.device:
             return
         self.device = device
-        self._model_kwargs["device"] = device
+        self._model_kwargs["device"] = str(device)
         self._predictor = None  # force re-init on next predict
         logger.info("FiberAnalyzer_2D device set to %s", device)
 
-    def set_checkpoint_path(self, ckpt_path: str):
-        """Update model checkpoint and reset predictor/predictions."""
-        if ckpt_path == self.ckpt_path:
+    def set_model_path(self, model_path: str):
+        """Update model path and reset predictor/predictions."""
+        if model_path == self.model_path:
             return
-        self.ckpt_path = ckpt_path
+        self.model_path = model_path
         self._predictor = None
         self._reset_prediction_state()
-        logger.info("FiberAnalyzer_2D checkpoint switched to %s", ckpt_path)
+        logger.info("FiberAnalyzer_2D model switched to %s", model_path)
 
-    def _ensure_predictor(self) -> FiberposeModel:
+    def _ensure_predictor(self) -> OnnxFiberposeModel:
         """Provide an internal helper for ensure predictor.
         
         Returns:
-            FiberposeModel: Result object produced by the ensure predictor routine."""
+            OnnxFiberposeModel: Result object produced by the ensure predictor routine."""
         if self._predictor is not None:
             return self._predictor
         kwargs = dict(self._model_kwargs)
         kwargs["device"] = self.device
-        self._predictor = FiberposeModel(
-            ckpt_path=self.ckpt_path,
+        self._predictor = OnnxFiberposeModel(
+            model_path=self.model_path,
             **kwargs,
         )
         return self._predictor
@@ -208,7 +195,7 @@ class FiberAnalyzer_2D:
             pass
         return stride
 
-    def _run_model(self, image: np.ndarray) -> Tuple[np.ndarray, Optional[np.ndarray]]:
+    def _run_model(self, image: np.ndarray) -> np.ndarray:
 
         """Provide an internal helper for run model.
         
@@ -216,7 +203,7 @@ class FiberAnalyzer_2D:
             image (np.ndarray): Array-like data carrying image values for analysis.
         
         Returns:
-            Tuple[np.ndarray, Optional[np.ndarray]]: Array containing the run model output aligned with downstream expectations."""
+            np.ndarray: Array containing the run model output aligned with downstream expectations."""
         predictor = self._ensure_predictor()
         stride = self._infer_model_stride()
         H, W = image.shape[:2]
@@ -230,9 +217,9 @@ class FiberAnalyzer_2D:
             image_pad = np.pad(image, pad_width, mode="reflect")
         else:
             image_pad = image
-        dt_pad, style_vec = predictor.predict(image_pad, return_style=True)
+        dt_pad = predictor.predict(image_pad)
         dt = dt_pad[:H, :W] if dt_pad.ndim == 2 else dt_pad[:H, :W, 0]
-        return np.asarray(dt, dtype=np.float32), style_vec
+        return np.asarray(dt, dtype=np.float32)
 
     def _set_dt_and_gradients(self, dt: np.ndarray, gx: np.ndarray, gy: np.ndarray):
         """Provide an internal helper for set dt and gradients.
@@ -274,7 +261,7 @@ class FiberAnalyzer_2D:
 
         self._reset_prediction_state()
 
-        dt, style_vec = self._run_model(image)
+        dt = self._run_model(image)
         dt_smooth = gaussian_filter(dt, sigma=float(smooth_sigma))
         gy, gx = np.gradient(dt_smooth)
         gy = gaussian_filter(gy, sigma=float(grad_sigma))
@@ -283,7 +270,6 @@ class FiberAnalyzer_2D:
 
         self._set_dt_and_gradients(dt, gx, gy)
         self._laplacian = lapl_img
-        self._style_vec = style_vec
 
         if centerline_kwargs:
             self._centerline_kwargs = centerline_kwargs
@@ -803,13 +789,6 @@ class FiberAnalyzer_2D:
         Returns:
             Optional[np.ndarray]: Array containing the transformed or derived data."""
         return self._dt_norm
-
-    def get_style_vector(self) -> Optional[np.ndarray]:
-        """Return style vector in the format expected by downstream consumers.
-        
-        Returns:
-            Optional[np.ndarray]: Array containing the transformed or derived data."""
-        return self._style_vec
 
     def get_gradients(self) -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]:
         """Return gradients in the format expected by downstream consumers.

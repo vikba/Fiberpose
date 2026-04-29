@@ -15,11 +15,11 @@ from .utils import labels_to_color
 class BatchResultExporter:
     """Persist batch/frame outputs using a small dict-based export config."""
 
-    _ALL_ARTIFACTS = ("dt", "labels", "overlay", "diameters", "orientations", "outline", "tables", "style_vector")
+    _ALL_ARTIFACTS = ("dt", "labels", "overlay", "diameters", "orientations", "outline", "tables")
     _PRESET_ARTIFACTS = {
         "predictions": {"dt", "labels", "overlay", "diameters", "orientations", "outline"},
         "measurements": {"tables"},
-        "full": {"dt", "labels", "overlay", "diameters", "orientations", "outline", "tables", "style_vector"},
+        "full": {"dt", "labels", "overlay", "diameters", "orientations", "outline", "tables"},
     }
 
     def __init__(self, export_config: dict[str, Any] | None = None):
@@ -195,13 +195,6 @@ class BatchResultExporter:
                         path = self._resolve_output_path(output_dir, base_name, "_samples", ".csv", cfg)
                         self._write_samples_csv(frame, path)
                         written_files.append(path)
-                    elif artifact == "style_vector":
-                        if frame.style_vec is None:
-                            skipped.append(self._skip_item(frame_index, artifact, "missing_data"))
-                            continue
-                        path = self._resolve_output_path(output_dir, base_name, "_style", ".npy", cfg)
-                        np.save(path, np.asarray(frame.style_vec, dtype=np.float32))
-                        written_files.append(path)
                 except Exception as exc:
                     errors.append(
                         {
@@ -299,17 +292,6 @@ class BatchResultExporter:
                         continue
                     path = self._resolve_output_path(output_dir, base_name, "_samples", ".csv", cfg)
                     self._write_stack_samples_csv(frames, path)
-                    written_files.append(path)
-                elif artifact == "style_vector":
-                    if not all(frame.style_vec is not None for frame in frames):
-                        skipped.append(self._skip_item(-1, artifact, "missing_data"))
-                        continue
-                    path = self._resolve_output_path(output_dir, base_name, "_style", ".npy", cfg)
-                    stack = np.stack(
-                        [np.asarray(frame.style_vec, dtype=np.float32) for frame in frames],
-                        axis=0,
-                    )
-                    np.save(path, stack)
                     written_files.append(path)
             except Exception as exc:
                 errors.append(

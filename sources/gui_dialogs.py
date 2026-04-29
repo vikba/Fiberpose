@@ -127,7 +127,6 @@ class SaveOptionsDialog(QtWidgets.QDialog):
             "orientations": QtWidgets.QCheckBox("Orientation measurements overlay"),
             "outline": QtWidgets.QCheckBox("Segmentation outline image"),
             "tables": QtWidgets.QCheckBox("Measurements table (CSV)"),
-            "style_vector": QtWidgets.QCheckBox("Style vector (.npy)"),
         }
 
         defaults = initial_options if isinstance(initial_options, dict) else {}
@@ -139,7 +138,6 @@ class SaveOptionsDialog(QtWidgets.QDialog):
             "orientations": True,
             "outline": False,
             "tables": True,
-            "style_vector": False,
         }
         for key, checkbox in self._checkboxes.items():
             checkbox.setChecked(defaults.get(key, default_states.get(key, True)))
@@ -192,10 +190,10 @@ class ConfigEditorDialog(QtWidgets.QDialog):
     """Schema-driven editor for AppConfig with load/save-as support."""
 
     _FIELD_SPEC: Dict[str, Dict[str, Any]] = {
-        "checkpoint_path": {
-            "label": "Checkpoint path",
+        "model_path": {
+            "label": "Model path",
             "kind": "str",
-            "tooltip": "Relative or absolute path to the model checkpoint (.pt).",
+            "tooltip": "Relative or absolute path to the ONNX model (.onnx).",
         },
         "use_gpu": {"label": "Use GPU", "kind": "bool"},
         "scale_label": {

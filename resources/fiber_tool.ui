@@ -809,8 +809,8 @@
     <property name="title">
      <string>Models</string>
     </property>
-    <addaction name="actionAdd_custom_torch_model"/>
-    <addaction name="actionRemove_torch_model"/>
+    <addaction name="actionAdd_custom_model"/>
+    <addaction name="actionRemove_model"/>
    </widget>
    <widget class="QMenu" name="menuHelp_2">
     <property name="title">
@@ -838,14 +838,14 @@
     <string>Save measurements (CSV)</string>
    </property>
   </action>
-  <action name="actionAdd_custom_torch_model">
+  <action name="actionAdd_custom_model">
    <property name="text">
-    <string>Add torch model</string>
+    <string>Add model</string>
    </property>
   </action>
-  <action name="actionRemove_torch_model">
+  <action name="actionRemove_model">
    <property name="text">
-    <string>Remove torch model</string>
+    <string>Remove model</string>
    </property>
   </action>
   <action name="action_batch_processing">

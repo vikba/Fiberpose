@@ -1,6 +1,5 @@
 pyqt6
-torch
-torchvision
+onnxruntime
 numpy
 scipy
 numba

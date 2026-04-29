@@ -7,7 +7,8 @@ Example:
         --checkpoint checkpoints/fiber_2000_epoch.pt \
         --output models/fiberpose_resunet.onnx \
         --height 512 \
-        --width 512
+        --width 512 \
+        --test-onnxruntime
 
 Notes:
     - Input must be float32 tensor in NCHW format: [1, C, H, W].
@@ -171,7 +172,7 @@ def export_onnx(args: argparse.Namespace) -> None:
     )
 
     dynamic_axes = None
-    if args.dynamic:
+    if not args.static:
         dynamic_axes = {
             "input": {0: "batch", 2: "height", 3: "width"},
             "output": {0: "batch", 2: "height", 3: "width"},
@@ -184,7 +185,7 @@ def export_onnx(args: argparse.Namespace) -> None:
             str(output_path),
             export_params=True,
             opset_version=args.opset,
-            do_constant_folding=True,
+            do_constant_folding=False,
             input_names=["input"],
             output_names=["output"],
             dynamic_axes=dynamic_axes,
@@ -204,10 +205,12 @@ def export_onnx(args: argparse.Namespace) -> None:
         import numpy as np
 
         session = ort.InferenceSession(str(output_path), providers=["CPUExecutionProvider"])
-        y = session.run(None, {"input": dummy.numpy().astype(np.float32)})[0]
-
-        print(f"ONNX Runtime output shape: {y.shape}")
-        print(f"DT output shape: {y[:, dt_ch:dt_ch + 1].shape}")
+        smoke_shapes = [(args.height, args.width), (args.smoke_height, args.smoke_width)]
+        for h, w in smoke_shapes:
+            sample = np.random.randn(1, args.in_channels, h, w).astype(np.float32)
+            y = session.run(None, {"input": sample})[0]
+            print(f"ONNX Runtime output shape for {h}x{w}: {y.shape}")
+            print(f"DT output shape for {h}x{w}: {y[:, dt_ch:dt_ch + 1].shape}")
 
 
 def parse_args() -> argparse.Namespace:
@@ -231,9 +234,19 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--no-residual", action="store_true", help="Disable residual blocks")
 
     parser.add_argument("--opset", type=int, default=18, help="ONNX opset version")
-    parser.add_argument("--dynamic", action="store_true", help="Export dynamic H/W axes")
+    parser.add_argument(
+        "--static",
+        action="store_true",
+        help="Export fixed H/W axes from --height/--width (dynamic is default).",
+    )
+    parser.add_argument("--smoke-height", type=int, default=240, help="Second ONNX Runtime smoke-test height")
+    parser.add_argument("--smoke-width", type=int, default=320, help="Second ONNX Runtime smoke-test width")
     parser.add_argument("--check", action="store_true", help="Validate exported ONNX with onnx.checker")
-    parser.add_argument("--test-onnxruntime", action="store_true", help="Run one test inference with ONNX Runtime")
+    parser.add_argument(
+        "--test-onnxruntime",
+        action="store_true",
+        help="Run ONNX Runtime smoke tests for two input sizes.",
+    )
 
     return parser.parse_args()
 

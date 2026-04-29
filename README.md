@@ -36,5 +36,8 @@ conda activate fiberpose
 # Install dependencies
 pip install -r requirements.txt
 
+# Optional: install training-only dependencies (PyTorch stack)
+pip install -r requirements-train.txt
+
 ```
 

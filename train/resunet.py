@@ -8,7 +8,6 @@ from typing import Any, Sequence
 import numpy as np
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 
 
 __all__ = [
@@ -407,13 +406,17 @@ class make_style(nn.Module):
     def __init__(self, parent: "ResUnet"):
         super().__init__()
         self.dim = parent.dim
-        self.flatten = nn.Flatten()
-        self.avg_pool = F.avg_pool2d if self.dim == 2 else F.avg_pool3d
+        self.pool = (
+            nn.AdaptiveAvgPool2d((1, 1))
+            if self.dim == 2
+            else nn.AdaptiveAvgPool3d((1, 1, 1))
+        )
 
     def forward(self, x0: torch.Tensor) -> torch.Tensor:
-        style = self.avg_pool(x0, kernel_size=tuple(x0.shape[-self.dim :]))
-        style = self.flatten(style)
-        style = style / torch.sum(style**2, axis=1, keepdim=True).sqrt()
+        style = self.pool(x0)
+        style = torch.flatten(style, start_dim=1)
+        denom = torch.linalg.vector_norm(style, ord=2, dim=1, keepdim=True).clamp_min(1e-12)
+        style = style / denom
         return style
 
 

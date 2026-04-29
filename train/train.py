@@ -54,14 +54,8 @@ import tifffile as tiff
 # -------------------------
 # Model import
 # -------------------------
-try:
-    from sources.resunet import ResUnet
-except ModuleNotFoundError:
-    import sys
-    repo_root = Path(__file__).resolve().parents[1]
-    if str(repo_root) not in sys.path:
-        sys.path.insert(0, str(repo_root))
-    from sources.resunet import ResUnet
+from train.resunet import ResUnet
+
 
 
 # -------------------------

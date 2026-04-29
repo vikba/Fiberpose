@@ -19,7 +19,7 @@
 - `Frame`: per-slice state container (`orig_img`, prediction outputs, segmentation outputs, measurement outputs).
 - `BatchResult`: `frame_results: list[Frame]`.
 - `dt`: model output distance transform (`float32`).
-- `dt_u8`, `dt_normalized`, `gx`, `gy`, `laplacian`, `style_vec`: cached prediction products.
+- `dt_u8`, `dt_normalized`, `gx`, `gy`, `laplacian`: cached prediction products.
 - `segmentation_centerlines`: `list[FiberFragment]` built directly from raw ridges.
 - `measurement_centerlines`: `list[FiberFragment]` filtered from `segmentation_centerlines`.
 - `markers`: `int32` marker image rendered from `segmentation_centerlines` and used by watershed.
@@ -53,7 +53,7 @@
 4. Sync UI config into `pipeline_config`.
 5. If no cached DT prediction, run:
 - `FiberAnalyzer.predict_dt(...)`
-- internally: `_run_model()` -> `FiberposeModel.predict(...)`
+- internally: `_run_model()` -> `OnnxFiberposeModel.predict(...)`
 - then smooth DT, compute gradients/laplacian, cache outputs
 6. Always run `FiberAnalyzer.process_centerlines(...)`:
 - `RidgeDetector.detect_ridges(...)` (raw ridge lines)

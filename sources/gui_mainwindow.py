@@ -23,7 +23,6 @@ from PyQt6.QtWidgets import (
 from PyQt6.uic import loadUi
 
 import pyqtgraph as pg
-import torch
 from scipy.spatial import cKDTree
 from skimage.measure import profile_line
 from skimage.segmentation import find_boundaries
@@ -39,6 +38,7 @@ from .gui_dialogs import (
     ConfigEditorDialog,
 )
 from .fiber_analyzer_2D import FiberAnalyzer_2D
+from .models import onnx_cuda_available
 from .datastructures import BatchResult, Frame, ImageBatch, AppConfig, SampleProperties
 from .batch_pipeline import BatchAnalyzer, StackAnalyzer_3D
 from .utils import ensure_rgb_u8, labels_to_color, to_uint8_for_view
@@ -49,8 +49,8 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.dirname(HERE)
 DEFAULT_UI_PATH = os.path.join(PROJECT_ROOT, "resources", "fiber_tool.ui")
 DEFAULT_CONFIG_PATH = os.path.join(PROJECT_ROOT, "resources", "config.json")
-DEFAULT_CKPT_PATH = os.path.join(PROJECT_ROOT, "checkpoints", "fiber_2000_epoch.pt")
-CHECKPOINTS_DIR = os.path.join(PROJECT_ROOT, "checkpoints")
+DEFAULT_MODEL_PATH = os.path.join(PROJECT_ROOT, "checkpoints", "fiber_2000_epoch.onnx")
+MODELS_DIR = os.path.join(PROJECT_ROOT, "checkpoints")
 
 # ------------------- MainWindow -------------------
 
@@ -176,8 +176,8 @@ class MainWindow(QMainWindow):
         # Remove connection of radiobutton signals and instead hook up the combobox change
         self.cb_view.currentIndexChanged.connect(self.refresh_view)
 
-        # Set default checkpoint
-        self._init_checkpoint_selector()
+        # Set default model
+        self._init_model_selector()
 
         # Disable saves initially.
         self._refresh_save_actions()
@@ -188,15 +188,15 @@ class MainWindow(QMainWindow):
         # Delay loading default image until the UI is fully shown.
         QTimer.singleShot(0, self.load_default_image)
 
-        self.ckpt_path = self._current_checkpoint_path() or DEFAULT_CKPT_PATH
+        self.model_path = self._current_model_path() or DEFAULT_MODEL_PATH
 
         # ---- device / CUDA handling ----
-        self.device = torch.device('cpu')   # default
+        self.device = "cpu"   # default
         self._init_device_from_checkbox()   # sets checkbox + self.device accordingly
 
         # Analyzer instantiated once and reused
         self.analyzer = FiberAnalyzer_2D(
-            ckpt_path=self.ckpt_path,
+            model_path=self.model_path,
             device=self.device,
             strict=self.config.strict_centerlines, 
             keep_segments_without_measurement_centerlines=bool(
@@ -261,76 +261,88 @@ class MainWindow(QMainWindow):
         if hasattr(self, "le_voxeldepth"):
             self.le_voxeldepth.editingFinished.connect(self.sync_ui_to_sample_properties)
 
-    def _init_checkpoint_selector(self) -> None:
-        """Provide an internal helper for init checkpoint selector.
+    def _init_model_selector(self) -> None:
+        """Provide an internal helper for init model selector.
         
         Returns:
-            None: Result object produced by the init checkpoint selector routine."""
-        checkpoints = self._discover_checkpoint_files()
-        rel_default = os.path.relpath(DEFAULT_CKPT_PATH, PROJECT_ROOT)
+            None: Result object produced by the init model selector routine."""
+        models = self._discover_model_files()
+        configured_entry = str(getattr(self.config, "model_path", "") or "").strip()
+        rel_default = os.path.relpath(DEFAULT_MODEL_PATH, PROJECT_ROOT)
         self.cb_model.blockSignals(True)
         self.cb_model.clear()
-        if not checkpoints:
-            self.cb_model.addItem(rel_default)
-        else:
-            for rel_path in checkpoints:
+        if models:
+            for rel_path in models:
                 self.cb_model.addItem(rel_path)
+        else:
+            self.cb_model.addItem(rel_default)
+
+        # Keep explicit config choice first; fallback to default, then first available model.
+        if configured_entry:
+            if self.cb_model.findText(configured_entry) < 0:
+                self.cb_model.addItem(configured_entry)
+            configured_index = self.cb_model.findText(configured_entry)
+            if configured_index >= 0:
+                self.cb_model.setCurrentIndex(configured_index)
+            else:
+                self.cb_model.setCurrentIndex(0)
+        else:
             default_index = self.cb_model.findText(rel_default)
             if default_index >= 0:
                 self.cb_model.setCurrentIndex(default_index)
             else:
                 self.cb_model.setCurrentIndex(0)
         self.cb_model.blockSignals(False)
-        if not getattr(self, "_ckpt_selector_connected", False):
-            self.cb_model.currentIndexChanged.connect(self._on_checkpoint_selection_changed)
-            self._ckpt_selector_connected = True
+        if not getattr(self, "_model_selector_connected", False):
+            self.cb_model.currentIndexChanged.connect(self._on_model_selection_changed)
+            self._model_selector_connected = True
 
-    def _on_checkpoint_selection_changed(self, index: int):
-        """Handle the heckpoint selection changed event and propagate UI state updates.
+    def _on_model_selection_changed(self, index: int):
+        """Handle model selection changed and propagate UI state updates.
         
         Args:
             index (int): Zero-based position used to select an item."""
-        new_path = self._current_checkpoint_path()
+        new_path = self._current_model_path()
         if not new_path:
             return
         if not os.path.isfile(new_path):
             QMessageBox.warning(
                 self,
-                "Checkpoint missing",
-                f"Selected checkpoint was not found:\n{new_path}",
+                "Model missing",
+                f"Selected model was not found:\n{new_path}",
             )
             return
-        prev_path = getattr(self, "ckpt_path", None)
+        prev_path = getattr(self, "model_path", None)
         if new_path == prev_path:
             return
-        self.ckpt_path = new_path
+        self.model_path = new_path
         if self.analyzer is not None:
-            self.analyzer.set_checkpoint_path(new_path)
+            self.analyzer.set_model_path(new_path)
         else:
-            logger.info("Checkpoint selection stored for later init: %s", new_path)
+            logger.info("Model selection stored for later init: %s", new_path)
         self._invalidate_prediction()
 
-    def _discover_checkpoint_files(self) -> list[str]:
-        """Provide an internal helper for discover checkpoint files.
+    def _discover_model_files(self) -> list[str]:
+        """Provide an internal helper for discover model files.
         
         Returns:
-            list[str]: List of discover checkpoint files results produced for downstream iteration."""
-        if not os.path.isdir(CHECKPOINTS_DIR):
+            list[str]: List of discover model files results produced for downstream iteration."""
+        if not os.path.isdir(MODELS_DIR):
             return []
         candidates = []
-        for name in sorted(os.listdir(CHECKPOINTS_DIR)):
-            if not name.lower().endswith(".pt"):
+        for name in sorted(os.listdir(MODELS_DIR)):
+            if not name.lower().endswith(".onnx"):
                 continue
-            abs_path = os.path.join(CHECKPOINTS_DIR, name)
+            abs_path = os.path.join(MODELS_DIR, name)
             rel_path = os.path.relpath(abs_path, PROJECT_ROOT)
             candidates.append(rel_path)
         return candidates
 
-    def _current_checkpoint_path(self) -> str | None:
-        """Provide an internal helper for current checkpoint path.
+    def _current_model_path(self) -> str | None:
+        """Provide an internal helper for current model path.
         
         Returns:
-            str | None: Result object produced by the current checkpoint path routine."""
+            str | None: Result object produced by the current model path routine."""
         entry = self.cb_model.currentText().strip()
         if not entry:
             return None
@@ -612,7 +624,7 @@ class MainWindow(QMainWindow):
             "image_id": int(id(image)),
             "shape": tuple(int(v) for v in image.shape),
             "dtype": str(image.dtype),
-            "checkpoint_path": str(getattr(self.config, "checkpoint_path", "")),
+            "model_path": str(getattr(self.config, "model_path", "")),
             "invert_input": bool(self.chb_invert.isChecked()),
             "scale_factor": float(self._effective_scale_factor()),
         }
@@ -748,7 +760,6 @@ class MainWindow(QMainWindow):
         self.analyzer.scale_factor = float(fr.scale_factor)
         self.analyzer._set_dt_and_gradients(fr.dt, fr.gx, fr.gy)
         self.analyzer._laplacian = fr.lapl_img
-        self.analyzer._style_vec = fr.style_vec
         self.analyzer._last_max_angle = float(max_angle_deg)
         self.analyzer._centerline_kwargs = dict(centerline_kwargs)
 
@@ -771,7 +782,6 @@ class MainWindow(QMainWindow):
             "dt_u8": np.asarray(self.analyzer.get_dt_u8(), dtype=np.uint8, copy=False),
             "dt_normalized": np.asarray(self.analyzer.get_dt_norm(), dtype=np.float32, copy=False),
             "lapl_img": np.asarray(self.analyzer.get_laplacian(), dtype=np.float32, copy=False),
-            "style_vec": np.asarray(self.analyzer.get_style_vector(), dtype=np.float32, copy=False),
         }
 
     def build_centerlines(self, prediction: Frame, centerline_params: dict[str, Any]) -> dict[str, Any]:
@@ -869,7 +879,6 @@ class MainWindow(QMainWindow):
             dt_u8=prediction["dt_u8"],
             dt_normalized=prediction["dt_normalized"],
             lapl_img=prediction["lapl_img"],
-            style_vec=prediction["style_vec"],
             orig_img_scaled=fr.orig_img_scaled,
             scale_factor=fr.scale_factor,
             invalidate_downstream=True,
@@ -1227,15 +1236,15 @@ class MainWindow(QMainWindow):
         
         Returns:
             None: Result object produced by the apply runtime after config change routine."""
-        checkpoint_entry = str(getattr(self.config, "checkpoint_path", "") or "").strip()
-        if checkpoint_entry and self.cb_model.findText(checkpoint_entry) < 0:
-            self.cb_model.addItem(checkpoint_entry)
+        model_entry = str(getattr(self.config, "model_path", "") or "").strip()
+        if model_entry and self.cb_model.findText(model_entry) < 0:
+            self.cb_model.addItem(model_entry)
 
         self.sync_config_to_ui()
         self.sync_ui_to_config()
 
         if self.analyzer is not None:
-            self._on_checkpoint_selection_changed(self.cb_model.currentIndex())
+            self._on_model_selection_changed(self.cb_model.currentIndex())
             self._on_usegpu_toggled(self.chb_usegpu.isChecked())
             self.analyzer.set_strict_centerline_filter(self.config.strict_centerlines)
             self.analyzer.set_keep_segments_without_measurement_centerlines(
@@ -1439,7 +1448,7 @@ class MainWindow(QMainWindow):
                 "z_tail": z_indices[-5:] if len(z_indices) > 5 else [],
             },
             "config": {
-                "checkpoint_path": str(self.config.checkpoint_path),
+                "model_path": str(self.config.model_path),
                 "scale_label": str(self.config.scale_label),
                 "max_angle_deg": float(self.config.max_angle_deg),
                 "strict_centerlines": bool(self.config.strict_centerlines),
@@ -1701,7 +1710,7 @@ class MainWindow(QMainWindow):
         
         Returns:
             tuple[str, ...]: Tuple grouping the save artifact keys outputs in a stable positional order."""
-        return ("dt", "labels", "overlay", "diameters", "orientations", "outline", "tables", "style_vector")
+        return ("dt", "labels", "overlay", "diameters", "orientations", "outline", "tables")
 
     def _current_save_layout(self) -> str:
         """Return export layout based on loaded source type."""
@@ -3511,20 +3520,20 @@ class MainWindow(QMainWindow):
 
     def _init_device_from_checkbox(self):
         """On startup: if CUDA is available, check the box and use cuda; else uncheck and use cpu."""
-        cuda_ok = torch.cuda.is_available()
+        cuda_ok = onnx_cuda_available()
 
         if cuda_ok:
             # user prefers GPU by default when available
             self.chb_usegpu.setChecked(True)
-            self.device = torch.device('cuda')
+            self.device = "cuda"
         else:
             self.chb_usegpu.setChecked(False)
-            self.device = torch.device('cpu')
+            self.device = "cpu"
             # notify once at init if the UI is asking for GPU (edge case: pre-checked in .ui)
             if getattr(self.chb_usegpu, "isChecked", lambda: False)():
                 self._show_info(
                     "CUDA not available",
-                    "No CUDA-capable GPU detected. Falling back to CPU."
+                    "ONNX CUDA provider not available. Falling back to CPU."
                 )
 
     def _on_usegpu_toggled(self, checked: bool):
@@ -3532,16 +3541,16 @@ class MainWindow(QMainWindow):
         
         Args:
             checked (bool): Value for checked interpreted by this routine."""
-        cuda_ok = torch.cuda.is_available()
+        cuda_ok = onnx_cuda_available()
         if checked and not cuda_ok:
-            QMessageBox.warning(self, "CUDA not available", "No CUDA GPU detected. Using CPU.")
+            QMessageBox.warning(self, "CUDA not available", "ONNX CUDA provider not available. Using CPU.")
             self.chb_usegpu.setChecked(False)
             self.config.use_gpu = False
         else:
             self.config.use_gpu = checked
             
         if self.analyzer is not None:
-            device = torch.device('cuda' if self.config.use_gpu else 'cpu')
+            device = "cuda" if self.config.use_gpu else "cpu"
             self.analyzer.set_device(device)
 
     def _on_invert_toggled(self, checked: bool):
@@ -3687,7 +3696,7 @@ class MainWindow(QMainWindow):
         if not hasattr(self, "config"):
             self.config = AppConfig()
 
-        prev_checkpoint = str(getattr(self.config, "checkpoint_path", ""))
+        prev_model_path = str(getattr(self.config, "model_path", ""))
         prev_scale_label = str(getattr(self.config, "scale_label", "1x"))
         prev_max_angle = float(getattr(self.config, "max_angle_deg", 30.0))
         prev_ridge_sigma = float(getattr(self.config, "ridge_sigma", 1.0))
@@ -3704,7 +3713,7 @@ class MainWindow(QMainWindow):
         prev_spacing = float(getattr(self.config, "sample_spacing", 5.0))
 
         # Model & Hardware
-        self.config.checkpoint_path = self.cb_model.currentText().strip()
+        self.config.model_path = self.cb_model.currentText().strip()
         self.config.use_gpu = self.chb_usegpu.isChecked()
         self.config.scale_label = self.cb_scale.currentText().strip()
 
@@ -3746,7 +3755,7 @@ class MainWindow(QMainWindow):
             self.config.sample_spacing = float(getattr(self.config, "sample_spacing", 5.0))
 
         prediction_changed = (
-            prev_checkpoint != str(self.config.checkpoint_path)
+            prev_model_path != str(self.config.model_path)
             or prev_scale_label != str(self.config.scale_label)
         )
         max_angle_changed = not math.isclose(
@@ -3852,7 +3861,7 @@ class MainWindow(QMainWindow):
             cb.blockSignals(False)
 
         # --- Model & Hardware ---
-        set_combo_text(self.cb_model, cfg.checkpoint_path)
+        set_combo_text(self.cb_model, cfg.model_path)
         
         self.chb_usegpu.blockSignals(True)
         self.chb_usegpu.setChecked(bool(cfg.use_gpu))

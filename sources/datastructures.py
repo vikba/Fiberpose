@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 class AppConfig:
     # --- Model & Hardware ---
     """Store configuration values for app."""
-    checkpoint_path: str = ""
+    model_path: str = ""
     use_gpu: bool = True
     scale_label: str = "1x"
     
@@ -60,7 +60,6 @@ class AppConfig:
             "orientations": True,
             "outline": False,
             "tables": True,
-            "style_vector": False,
             "image_format": "png",
             "collision": "suffix",
             "write_manifest": True,
@@ -622,7 +621,6 @@ class Frame:
     lapl_img: Optional[np.ndarray] = None
     gx: Optional[np.ndarray] = None
     gy: Optional[np.ndarray] = None
-    style_vec: Optional[np.ndarray] = None
 
     # Segmentation products
     labels_2d: Optional[np.ndarray] = None
@@ -689,7 +687,6 @@ class Frame:
         self.lapl_img = None
         self.gx = None
         self.gy = None
-        self.style_vec = None
         self.orig_img_scaled = None
         self.scale_factor = 1.0
         self.prediction_sig = None
@@ -769,7 +766,6 @@ class Frame:
         dt_u8: Optional[np.ndarray],
         dt_normalized: Optional[np.ndarray],
         lapl_img: Optional[np.ndarray],
-        style_vec: Optional[np.ndarray],
         orig_img_scaled: Optional[np.ndarray],
         scale_factor: float,
         invalidate_downstream: bool = True,
@@ -783,7 +779,6 @@ class Frame:
             dt_u8 (Optional[np.ndarray]): Value for dt u8 interpreted by this routine.
             dt_normalized (Optional[np.ndarray]): Value for dt normalized interpreted by this routine.
             lapl_img (Optional[np.ndarray]): Value for lapl img interpreted by this routine.
-            style_vec (Optional[np.ndarray]): Value for style vec interpreted by this routine.
             orig_img_scaled (Optional[np.ndarray]): Numeric control parameter for orig img scaled during computation.
             scale_factor (float): Numeric control parameter for scale factor during computation.
             invalidate_downstream (bool): Value for invalidate downstream interpreted by this routine.
@@ -796,7 +791,6 @@ class Frame:
         self.dt_u8 = dt_u8
         self.dt_normalized = dt_normalized
         self.lapl_img = lapl_img
-        self.style_vec = style_vec
         self.orig_img_scaled = orig_img_scaled
         self.scale_factor = float(scale_factor)
         self.has_prediction = self.dt is not None
@@ -918,7 +912,6 @@ class Frame:
         clone.lapl_img = _clone_array(clone.lapl_img)
         clone.gx = _clone_array(clone.gx)
         clone.gy = _clone_array(clone.gy)
-        clone.style_vec = _clone_array(clone.style_vec)
 
         clone.labels_2d = _clone_array(clone.labels_2d)
         clone.segmentation_centerlines_overlay_img = _clone_array(clone.segmentation_centerlines_overlay_img)
