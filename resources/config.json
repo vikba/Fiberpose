@@ -23,15 +23,15 @@
         0.35
     ],
     "save_options": {
-        "collision": "suffix",
-        "diameters": false,
         "dt": true,
-        "image_format": "png",
         "labels": true,
+        "overlay": true,
+        "diameters": true,
         "orientations": true,
         "outline": true,
-        "overlay": true,
-        "tables": false,
+        "tables": true,
+        "image_format": "png",
+        "collision": "suffix",
         "write_manifest": false
     }
 }

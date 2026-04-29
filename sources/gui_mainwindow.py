@@ -24,7 +24,6 @@ from PyQt6.uic import loadUi
 
 import pyqtgraph as pg
 from scipy.spatial import cKDTree
-from skimage.measure import profile_line
 from skimage.segmentation import find_boundaries
 
 import logging
@@ -40,8 +39,15 @@ from .gui_dialogs import (
 from .fiber_analyzer_2D import FiberAnalyzer_2D
 from .models import onnx_cuda_available
 from .datastructures import BatchResult, Frame, ImageBatch, AppConfig, SampleProperties
-from .batch_pipeline import BatchAnalyzer, StackAnalyzer_3D
+from .batch_pipeline import StackAnalyzer_3D
 from .utils import ensure_rgb_u8, labels_to_color, to_uint8_for_view
+from .frame_pipeline_service import FramePipelineService, PipelineOutcome
+from .view_renderer import ViewRenderer
+from .view_state import ViewState
+from .ui_config_binder import UiConfigBinder
+from .batch_service import BatchService, BatchCallbacks
+from .export_service import ExportService
+from .interaction_tools import ScalebarTool, ProfileTool
 
 # ------------------- Paths -------------------
 
@@ -77,6 +83,14 @@ class MainWindow(QMainWindow):
         # Load config and sync to UI
         self.config = AppConfig.load_from_json(self.config_filepath)
         self.sample_props = SampleProperties.defaults()
+        self._ui_binder = UiConfigBinder()
+        self._export_service = ExportService()
+        self._view_state = ViewState()
+        self._scalebar_tool = ScalebarTool()
+        self._profile_tool = ProfileTool()
+        self._pipeline_service = FramePipelineService(None)
+        self._batch_service = BatchService()
+        self._view_renderer = ViewRenderer(grad_error_builder=self._signed_grad_error_rgb_for_frame)
         self.sync_config_to_ui()
         self.sync_sample_properties_to_ui()
 
@@ -215,6 +229,8 @@ class MainWindow(QMainWindow):
         self.rb_ridge.toggled.connect(self._on_segmentation_mode_changed)
         self.chb_strict.toggled.connect(self._on_strict_checkbox_toggled)
         self._update_strict_checkbox_state()
+
+        self._pipeline_service.set_analyzer(self.analyzer)
 
         # Connect toggled signals of rb_show_diam and rb_show_direct to update overlay
         self.rb_show_diam.toggled.connect(self._render_vector_overlay)
@@ -687,31 +703,15 @@ class MainWindow(QMainWindow):
         return json.dumps(payload, sort_keys=True, default=str)
 
     def _invalidate_prediction(self) -> None:
-        if self.analyzer is not None:
-            self.analyzer._reset_prediction_state()
-        self.current_frame.clear_prediction()
+        self._pipeline_service.invalidate_prediction(self.current_frame, analyzer=self.analyzer)
         self._invalidate_measurements()
 
     def _invalidate_segmentation(self, invalidate_centerlines: bool = False) -> None:
-        fr = self.current_frame
-        if invalidate_centerlines:
-            fr.clear_segmentation()
-        else:
-            keep_seg_overlay = fr.segmentation_centerlines_overlay_img
-            keep_meas_overlay = fr.measurement_centerlines_overlay_img
-            keep_cmp_overlay = fr.centerlines_comparison_overlay_img
-            keep_seg_sig = fr.segmentation_centerline_sig
-            keep_meas_sig = fr.measurement_centerline_sig
-            fr.clear_segmentation()
-            fr.segmentation_centerlines_overlay_img = keep_seg_overlay
-            fr.measurement_centerlines_overlay_img = keep_meas_overlay
-            fr.centerlines_comparison_overlay_img = keep_cmp_overlay
-            fr.segmentation_centerline_sig = keep_seg_sig
-            fr.measurement_centerline_sig = keep_meas_sig
+        self._pipeline_service.invalidate_segmentation(self.current_frame, invalidate_centerlines=invalidate_centerlines)
         self._invalidate_measurements()
 
     def _invalidate_measurements(self) -> None:
-        self.current_frame.clear_measurements()
+        self._pipeline_service.invalidate_measurements(self.current_frame)
         self.text_edit2.clear()
         self.graph_diameters.clear()
         self.graph_angles.clear()
@@ -840,170 +840,40 @@ class MainWindow(QMainWindow):
         }
 
     def _ensure_prediction_ready(self) -> bool:
-        fr = self.current_frame
-        if fr.orig_img is None:
-            self._show_info("Load original", "Load an image before using the profile tool.")
-            return False
-        if self.analyzer is None:
-            self._show_error("Analyzer unavailable", "Fiber analyzer has not been initialized.")
-            return False
-
         self.sync_ui_to_config()
-        prediction_params = self._prediction_params()
-        target_sig = self._prediction_signature()
-        if target_sig is None:
-            return False
-        if fr.has_prediction and fr.dt is not None and fr.prediction_sig == target_sig:
-            self._hydrate_analyzer_from_prediction(
-                fr,
-                max_angle_deg=float(prediction_params["max_angle_deg"]),
-                centerline_kwargs=dict(prediction_params["centerline_kwargs"]),
-            )
-            return True
-
-        try:
-            processing_img = self._processing_image()
-            if processing_img is None:
-                raise RuntimeError("Missing input image.")
-            prediction = self.predict(processing_img, prediction_params)
-        except Exception as exc:
-            fr.fail(str(exc))
-            self._show_error("Prediction failed", str(exc))
-            logger.error("Prediction ensure failed: %s", exc)
-            return False
-
-        fr.set_prediction_outputs(
-            dt=prediction["dt"],
-            gx=prediction["gx"],
-            gy=prediction["gy"],
-            dt_u8=prediction["dt_u8"],
-            dt_normalized=prediction["dt_normalized"],
-            lapl_img=prediction["lapl_img"],
-            orig_img_scaled=fr.orig_img_scaled,
-            scale_factor=fr.scale_factor,
-            invalidate_downstream=True,
+        outcome = self._pipeline_service.ensure_prediction(
+            self.current_frame,
+            self.config,
+            invert_input=bool(self.chb_invert.isChecked()),
         )
-        fr.prediction_sig = target_sig
-        return True
+        return self._handle_pipeline_outcome(outcome)
 
     def _ensure_segmentation_centerlines_ready(self) -> bool:
-        fr = self.current_frame
-        if not self._ensure_prediction_ready():
-            return False
-        if self.analyzer is None:
-            return False
-
-        segmentation_sig = self._segmentation_centerline_signature()
-        measurement_sig = self._measurement_centerline_signature()
-        if segmentation_sig is None or measurement_sig is None:
-            return False
-        if (
-            fr.segmentation_centerline_sig == segmentation_sig
-            and fr.measurement_centerline_sig == measurement_sig
-            and fr.segmentation_centerlines_overlay_img is not None
-            and fr.measurement_centerlines_overlay_img is not None
-        ):
-            # Keep frame-specific analyzer internals in sync when cached overlays are reused.
-            params = self._centerline_params()
-            try:
-                outputs = self.build_centerlines(fr, params)
-            except Exception as exc:
-                fr.fail(str(exc))
-                self._show_error("Centerline computation failed", str(exc))
-                logger.error("Centerline computation failed: %s", exc)
-                return False
-            fr.segmentation_centerlines_overlay_img = outputs["segmentation_centerlines_overlay_img"]
-            fr.measurement_centerlines_overlay_img = outputs["measurement_centerlines_overlay_img"]
-            fr.centerlines_comparison_overlay_img = outputs["centerlines_comparison_overlay_img"]
-            return True
-
-        params = self._centerline_params()
-        try:
-            outputs = self.build_centerlines(fr, params)
-        except Exception as exc:
-            fr.fail(str(exc))
-            self._show_error("Centerline computation failed", str(exc))
-            logger.error("Centerline computation failed: %s", exc)
-            return False
-
-        fr.segmentation_centerlines_overlay_img = outputs["segmentation_centerlines_overlay_img"]
-        fr.measurement_centerlines_overlay_img = outputs["measurement_centerlines_overlay_img"]
-        fr.centerlines_comparison_overlay_img = outputs["centerlines_comparison_overlay_img"]
-        fr.segmentation_centerline_sig = segmentation_sig
-        fr.measurement_centerline_sig = measurement_sig
-        fr.segmentation_sig = None
-        fr.measurement_sig = None
-        return True
+        self.sync_ui_to_config()
+        outcome = self._pipeline_service.ensure_segmentation_centerlines(
+            self.current_frame,
+            self.config,
+            invert_input=bool(self.chb_invert.isChecked()),
+        )
+        return self._handle_pipeline_outcome(outcome)
 
     def _ensure_measurement_centerlines_ready(self) -> bool:
-        if not self._ensure_segmentation_centerlines_ready():
-            return False
-        fr = self.current_frame
-        target_sig = self._measurement_centerline_signature()
-        if target_sig is None:
-            return False
-        if (
-            fr.measurement_centerline_sig == target_sig
-            and self.analyzer is not None
-            and fr.measurement_centerlines_overlay_img is not None
-        ):
-            return True
-        # Recompute both centerline sets when measurement filtering settings changed.
-        fr.segmentation_centerline_sig = None
-        fr.measurement_centerline_sig = None
-        return self._ensure_segmentation_centerlines_ready()
+        self.sync_ui_to_config()
+        outcome = self._pipeline_service.ensure_measurement_centerlines(
+            self.current_frame,
+            self.config,
+            invert_input=bool(self.chb_invert.isChecked()),
+        )
+        return self._handle_pipeline_outcome(outcome)
 
     def _ensure_segmentation_ready(self) -> bool:
-        fr = self.current_frame
-        if fr.orig_img is None:
-            self._show_info("Load original", "Please load an original image first.")
-            return False
-        if self.analyzer is None:
-            self._show_error("Analyzer unavailable", "Fiber analyzer has not been initialized.")
-            return False
-
         self.sync_ui_to_config()
-        fr.error_message = None
-
-        target_sig = self._segmentation_signature()
-        if target_sig is None:
-            return False
-        if fr.has_segmentation and fr.labels_2d is not None and fr.segmentation_sig == target_sig:
-            return True
-        if not self._ensure_segmentation_centerlines_ready():
-            return False
-
-        self._invalidate_segmentation(invalidate_centerlines=False)
-        mode, params = self._segmentation_params()
-        try:
-            outputs = self.segment_stage(
-                fr,
-                {
-                    "segmentation_centerlines_overlay_img": fr.segmentation_centerlines_overlay_img,
-                    "measurement_centerlines_overlay_img": fr.measurement_centerlines_overlay_img,
-                    "centerlines_comparison_overlay_img": fr.centerlines_comparison_overlay_img,
-                },
-                {"mode": mode, "params": params},
-            )
-        except Exception as exc:
-            fr.fail(str(exc))
-            self._show_error("Segmentation failed", str(exc))
-            logger.error("Segmentation failed: %s", exc)
-            return False
-
-        fr.set_segmentation_outputs(
-            labels_2d=outputs["labels_2d"],
-            segmentation_centerlines_overlay_img=outputs["segmentation_centerlines_overlay_img"],
-            measurement_centerlines_overlay_img=outputs["measurement_centerlines_overlay_img"],
-            centerlines_comparison_overlay_img=outputs["centerlines_comparison_overlay_img"],
-            overlay_img=outputs["overlay_img"],
-            sampling_overlay=fr.sampling_overlay,
-            labels_rgb_cache=outputs["labels_rgb_cache"],
-            segmentation_outline_cache=outputs["segmentation_outline_cache"],
-            invalidate_measurements=True,
+        outcome = self._pipeline_service.ensure_segmentation(
+            self.current_frame,
+            self.config,
+            invert_input=bool(self.chb_invert.isChecked()),
         )
-        fr.segmentation_sig = target_sig
-        return True
+        return self._handle_pipeline_outcome(outcome)
 
     def _build_measurement_outputs(
         self,
@@ -1132,62 +1002,29 @@ class MainWindow(QMainWindow):
         return outputs
 
     def _ensure_measurements_ready(self) -> bool:
-        fr = self.current_frame
-        if not self._ensure_prediction_ready():
-            return False
-        if self.analyzer is None:
-            self._show_info("No analyzer", "Measurement data unavailable.")
-            return False
-
-        target_sig = self._measurement_signature()
-        if target_sig is None:
-            return False
-        if fr.has_measurements and fr.fiber_summary is not None and fr.measurement_sig == target_sig:
-            return True
-
-        self._invalidate_measurements()
-        if not self._ensure_measurement_centerlines_ready() or not self.analyzer.get_measurement_centerline_segments():
-            self._show_info("No centerlines", "No measurement centerlines available.")
-            return False
-
-        fr.error_message = None
-        measurement_params = self._measurement_params()
-        try:
-            outputs = self.measure(
-                prediction=fr,
-                centerlines={
-                    "segmentation_centerlines_overlay_img": fr.segmentation_centerlines_overlay_img,
-                    "measurement_centerlines_overlay_img": fr.measurement_centerlines_overlay_img,
-                    "centerlines_comparison_overlay_img": fr.centerlines_comparison_overlay_img,
-                },
-                segmentation={"labels_2d": fr.labels_2d},
-                measurement_params=measurement_params,
-                sample_props=self.sample_props,
-            )
-        except Exception as exc:
-            self._show_error("Analysis failed", str(exc))
-            fr.fail(str(exc))
-            logger.error("Fiber analysis failed: %s", exc)
-            return False
-
-        fr.set_measurement_outputs(
-            samples_table=outputs["samples_table"],
-            fiber_summary=outputs["fiber_summary"],
-            measurement_samples=outputs["measurement_samples"],
-            drawing_samples=outputs["drawing_samples"],
-            thickness_units=outputs["thickness_units"],
-            porosity=outputs["porosity"],
-            pore_diams_units=outputs["pore_diams_units"],
-            void_mask=outputs["void_mask"],
-            pore_dt=outputs["pore_dt"],
-            pores=outputs["pores"],
-            sampling_overlay=fr.sampling_overlay,
+        self.sync_ui_to_config()
+        self.sync_ui_to_sample_properties()
+        outcome = self._pipeline_service.ensure_measurements(
+            self.current_frame,
+            self.config,
+            self.sample_props,
+            invert_input=bool(self.chb_invert.isChecked()),
         )
-        self._build_measurement_overlays()
-        self.text_edit2.setPlainText(outputs["info_text"])
-        units_label = str(outputs["fiber_summary"].get("units", "px"))
+        if not self._handle_pipeline_outcome(outcome):
+            return False
+        summary = self.current_frame.fiber_summary or {}
+        units_label = str(summary.get("units", "px"))
+        info_text = (
+            f"Mean diameter: {summary.get('mean_diameter', float('nan')):.2f} {units_label}\n"
+            f"Std diameter: {summary.get('std_diameter', float('nan')):.2f} {units_label}\n"
+            f"Orientation index: {summary.get('orientation_index', float('nan')):.2f}\n"
+            f"Mean angle: {summary.get('mean_angle_deg', float('nan')):.2f} deg\n"
+            f"Std angle: {summary.get('std_angle_deg', float('nan')):.2f} deg\n"
+            f"Porosity (area fraction): {summary.get('porosity', float('nan'))*100:.1f} %\n"
+            f"Fragments with centerlines: {int(summary.get('fragments_with_centerlines', 0))}"
+        )
+        self.text_edit2.setPlainText(info_text)
         self._update_distributions_pyqtgraph(units_label)
-        fr.measurement_sig = target_sig
         return True
 
     def _show_info(self, title: str, message: str):
@@ -1200,6 +1037,15 @@ class MainWindow(QMainWindow):
             logger.info("[Batch] %s: %s", title, message)
         else:
             QtWidgets.QMessageBox.information(self, title, message)
+
+    def _handle_pipeline_outcome(self, outcome: PipelineOutcome) -> bool:
+        if outcome.ok:
+            return True
+        if outcome.error_title and outcome.error_message:
+            self._show_error(outcome.error_title, outcome.error_message)
+        elif outcome.info_title and outcome.info_message:
+            self._show_info(outcome.info_title, outcome.info_message)
+        return False
 
     def _image_for_inference(self, image: np.ndarray | None) -> np.ndarray | None:
         if image is None or not bool(self.chb_invert.isChecked()):
@@ -1675,7 +1521,7 @@ class MainWindow(QMainWindow):
         
         Returns:
             Dict[str, Any]: Mapping containing named default save options outputs and metadata."""
-        return dict(AppConfig().save_options)
+        return ExportService.default_save_options()
 
     @classmethod
     def _normalize_save_options(cls, raw_options: Any) -> Dict[str, Any]:
@@ -1686,23 +1532,7 @@ class MainWindow(QMainWindow):
         
         Returns:
             Dict[str, Any]: Mapping of computed keys and values."""
-        defaults = cls._default_save_options()
-        if not isinstance(raw_options, dict):
-            return defaults
-
-        normalized = dict(defaults)
-        for key in cls._save_artifact_keys():
-            if key in raw_options:
-                normalized[key] = bool(raw_options.get(key))
-
-        image_format = str(raw_options.get("image_format", defaults["image_format"])).strip().lower()
-        normalized["image_format"] = image_format if image_format in {"png", "tiff"} else defaults["image_format"]
-
-        collision = str(raw_options.get("collision", defaults["collision"])).strip().lower()
-        normalized["collision"] = collision if collision in {"suffix", "overwrite", "error"} else defaults["collision"]
-
-        normalized["write_manifest"] = bool(raw_options.get("write_manifest", defaults["write_manifest"]))
-        return normalized
+        return ExportService.normalize_save_options(raw_options)
 
     @staticmethod
     def _save_artifact_keys() -> tuple[str, ...]:
@@ -1710,29 +1540,18 @@ class MainWindow(QMainWindow):
         
         Returns:
             tuple[str, ...]: Tuple grouping the save artifact keys outputs in a stable positional order."""
-        return ("dt", "labels", "overlay", "diameters", "orientations", "outline", "tables")
+        return ExportService.save_artifact_keys()
 
     def _current_save_layout(self) -> str:
         """Return export layout based on loaded source type."""
-        if self._image_batch is None:
-            return "single"
-        source_type = str((self._image_batch.metadata or {}).get("source_type", "")).strip().lower()
-        if source_type == "folder":
-            return "frames"
-        if source_type == "stack":
-            return "stack"
-        return "single"
+        return ExportService.current_save_layout(self._image_batch)
 
     def _current_source_base_name(self) -> str:
         """Provide an internal helper for current source base name.
         
         Returns:
             str: String value representing the normalized current source base name outcome."""
-        if self._image_batch is not None:
-            source_path = str((self._image_batch.metadata or {}).get("source_path", "")).strip()
-            if source_path:
-                return os.path.splitext(os.path.basename(os.path.normpath(source_path)))[0] or "fiberpose"
-        return self.current_image_name or "fiberpose"
+        return ExportService.current_source_base_name(self._image_batch, self.current_image_name)
 
     @staticmethod
     def _artifact_exclude_from_save_options(options: Dict[str, Any]) -> list[str]:
@@ -1743,33 +1562,19 @@ class MainWindow(QMainWindow):
         
         Returns:
             list[str]: List of artifact exclude from save options results produced for downstream iteration."""
-        return [name for name in MainWindow._save_artifact_keys() if not bool(options.get(name, False))]
+        return ExportService.artifact_exclude_from_save_options(options)
 
     def _effective_batch_result_for_save(self) -> BatchResult | None:
         """Provide an internal helper for effective batch result for save.
         
         Returns:
             BatchResult | None: Result object produced by the effective batch result for save routine."""
-        layout = self._current_save_layout()
-        if layout != "single":
-            if self._image_batch is None or self._batch_result is None:
-                return None
-            if len(self._batch_result.frame_results) != len(self._image_batch):
-                return None
-            return self._batch_result
-
-        if self._batch_result is not None and len(self._batch_result.frame_results) == 1:
-            return self._batch_result
-
-        if self.current_frame.orig_img is None:
-            return None
-
-        frame_result = self.current_frame.snapshot(
-            include_measurements=True,
-            frame_id=str(self.current_frame.frame_id),
-            z_index=int(self.current_frame.z_index),
+        return ExportService.effective_batch_result_for_save(
+            layout=self._current_save_layout(),
+            image_batch=self._image_batch,
+            batch_result=self._batch_result,
+            current_frame=self.current_frame,
         )
-        return BatchResult(frame_results=[frame_result])
 
     def _build_export_config(
         self,
@@ -1794,41 +1599,14 @@ class MainWindow(QMainWindow):
         
         Raises:
             ValueError: If provided values violate validation or domain constraints."""
-        if kind not in {"results", "csv"}:
-            raise ValueError(f"Unsupported save kind: {kind}")
-        image_format = image_format_override or str(save_options.get("image_format", "png"))
-        export_config: Dict[str, Any] = {
-            "preset": "full" if kind == "results" else "measurements",
-            "collision": str(save_options.get("collision", "suffix")),
-            "write_manifest": bool(save_options.get("write_manifest", True)),
-            "layout": layout,
-            "source_base_name": self._current_source_base_name(),
-        }
-        if kind == "results":
-            export_config["exclude"] = self._artifact_exclude_from_save_options(save_options)
-
-        if layout == "single":
-            export_config.update(
-                {
-                    "naming": "frame_id",
-                    "collision": "overwrite",
-                    "base_name": base_name or self._current_source_base_name(),
-                    "write_manifest": False,
-                }
-            )
-            if kind == "results":
-                export_config["image_format"] = "tiff" if image_format == "tiff" else "png"
-        elif layout == "frames":
-            export_config["naming"] = "frame_id_z"
-            if kind == "results":
-                export_config["image_format"] = "tiff" if image_format == "tiff" else "png"
-        elif layout == "stack":
-            if base_name:
-                export_config["base_name"] = str(base_name)
-        else:
-            raise ValueError(f"Unsupported save layout: {layout}")
-
-        return export_config
+        return ExportService.build_export_config(
+            kind=kind,
+            layout=layout,
+            save_options=save_options,
+            source_base_name=self._current_source_base_name(),
+            base_name=base_name,
+            image_format_override=image_format_override,
+        )
 
     def _prompt_save_destination(
         self,
@@ -1933,16 +1711,7 @@ class MainWindow(QMainWindow):
         
         Returns:
             bool: True when the validation or availability check succeeds; otherwise False."""
-        if batch_result is None:
-            return False
-        if kind == "results":
-            return any(fr.has_prediction or fr.has_segmentation for fr in batch_result.frame_results)
-        if kind == "csv":
-            return any(
-                fr.has_measurements and fr.samples_table is not None and len(fr.samples_table) > 0
-                for fr in batch_result.frame_results
-            )
-        return False
+        return ExportService.has_export_data(kind, batch_result)
 
     def _refresh_save_actions(self) -> None:
         """Provide an internal helper for refresh save actions.
@@ -2062,7 +1831,7 @@ class MainWindow(QMainWindow):
 
         self._scalebar_length_value = length_value
         self._scalebar_unit = combo.currentText()
-
+        self._scalebar_tool.start(self._scalebar_length_value, self._scalebar_unit)
         self._scalebar_points = []
         self._scalebar_pending = True
         self.graphicsView.viewport().setCursor(Qt.CursorShape.CrossCursor)
@@ -2095,22 +1864,23 @@ class MainWindow(QMainWindow):
         if x < 0 or y < 0 or x >= width or y >= height:
             return
 
+        px_size = self._scalebar_tool.add_point(x, y)
         self._scalebar_points.append((x, y))
-        if len(self._scalebar_points) == 2:
-            self._finalize_scalebar_selection()
+        if px_size is not None:
+            self._finalize_scalebar_selection(pixel_size=px_size)
 
-    def _finalize_scalebar_selection(self):
+    def _finalize_scalebar_selection(self, pixel_size: float | None = None):
         """Provide an internal helper for finalize scalebar selection."""
-        if len(self._scalebar_points) < 2:
+        if pixel_size is None and len(self._scalebar_points) < 2:
             return
-        (x0, y0), (x1, y1) = self._scalebar_points[:2]
-        pixel_length = math.hypot(x1 - x0, y1 - y0)
-        if pixel_length <= 0:
-            self._show_warning("Invalid selection", "Select two distinct points for the scalebar.")
-            self._cancel_scalebar_selection()
-            return
-
-        pixel_size = self._scalebar_length_value / pixel_length
+        if pixel_size is None:
+            (x0, y0), (x1, y1) = self._scalebar_points[:2]
+            pixel_length = math.hypot(x1 - x0, y1 - y0)
+            if pixel_length <= 0:
+                self._show_warning("Invalid selection", "Select two distinct points for the scalebar.")
+                self._cancel_scalebar_selection()
+                return
+            pixel_size = self._scalebar_length_value / pixel_length
         self.sample_props.pixel_size_x = float(pixel_size)
         self.sample_props.pixel_size_y = float(pixel_size)
         self.sample_props.unit = str(self._scalebar_unit or "px")
@@ -2131,6 +1901,7 @@ class MainWindow(QMainWindow):
             reset_cursor (bool): Value for reset cursor interpreted by this routine.
             clear_points (bool): Value for clear points interpreted by this routine."""
         self._scalebar_pending = False
+        self._scalebar_tool.cancel()
         if clear_points:
             self._scalebar_points = []
         if reset_cursor:
@@ -2224,19 +1995,7 @@ class MainWindow(QMainWindow):
         image_batch: ImageBatch | None = None,
         error_title: str | None = None,
     ) -> BatchResult | None:
-        # Resolve the active batch source. Most callers use the currently loaded batch.
-        """Provide an internal helper for run batch analysis.
-        
-        Args:
-            compute_measurements (bool): Value for compute measurements interpreted by this routine.
-            image_batch (ImageBatch | None): Array-like data carrying image batch values for analysis.
-            error_title (str | None): Value for error title interpreted by this routine.
-        
-        Returns:
-            BatchResult | None: Result object produced by the run batch analysis routine.
-        
-        Raises:
-            RuntimeError: If runtime state prevents the operation from completing."""
+        """Run batch processing via `BatchService` and mirror progress in the UI."""
         active_batch = image_batch if image_batch is not None else self._image_batch
         if active_batch is None or len(active_batch) == 0:
             self._show_info("Load original", "Please load an image or folder first.")
@@ -2250,53 +2009,58 @@ class MainWindow(QMainWindow):
         if self.cb_view.currentText() != target_view:
             self.cb_view.setCurrentText(target_view)
 
+        cached_batch = (
+            self._batch_result
+            if (
+                self._batch_result is not None
+                and active_batch is self._image_batch
+                and len(self._batch_result.frame_results) == len(active_batch)
+            )
+            else None
+        )
+
         QtWidgets.QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        previous_batch_state = self._suppress_batch_dialogs
+        previous_processing_state = self._is_batch_processing
+        self._is_batch_processing = True
+        if len(active_batch) > 1:
+            self._suppress_batch_dialogs = True
         try:
-            total_images = len(active_batch)
-            self.statusbar.showMessage(f"Processing 0/{total_images} images")
-            self._batch_total_samples = total_images
-            self._batch_processed_samples = 0
-            self._batch_collects_measurements = bool(compute_measurements)
-            self._set_progress_bar(0.0)
             if self.analyzer is None:
                 raise RuntimeError("Fiber analyzer has not been initialized.")
-            cached_batch = (
-                self._batch_result
-                if (
-                    self._batch_result is not None
-                    and active_batch is self._image_batch
-                    and len(self._batch_result.frame_results) == len(active_batch)
-                )
-                else None
-            )
 
-            # Enter internal batch execution mode so frame callbacks can call segment/analyze safely.
-            batch_analyzer = BatchAnalyzer()
-            previous_batch_state = self._suppress_batch_dialogs
-            previous_processing_state = self._is_batch_processing
-            self._is_batch_processing = True
-            if len(active_batch) > 1:
-                self._suppress_batch_dialogs = True
+            def _on_started(total: int) -> None:
+                self.statusbar.showMessage(f"Processing 0/{total} images")
+                self._batch_total_samples = int(total)
+                self._batch_processed_samples = 0
+                self._batch_collects_measurements = bool(compute_measurements)
+                self._set_progress_bar(0.0)
 
-            processed_images = 0
-
-            def _process_frame(frame: np.ndarray, frame_id: str, z_index: int) -> Frame:
-                """Provide an internal helper for process frame.
-                
-                Args:
-                    frame (np.ndarray): Array-like data carrying frame values for analysis.
-                    frame_id (str): Array-like data carrying frame id values for analysis.
-                    z_index (int): Coordinate component representing the z index axis value.
-                
-                Returns:
-                    Frame: Result object produced by the process frame routine."""
-                nonlocal processed_images
-                self.statusbar.showMessage(f"Processing {processed_images + 1}/{total_images} images")
+            def _on_frame_started(index: int, total: int) -> None:
+                self.statusbar.showMessage(f"Processing {index + 1}/{total} images")
                 self._set_progress_bar(0.0)
                 QtWidgets.QApplication.processEvents()
-                cached_frame = None
-                if cached_batch is not None and 0 <= int(z_index) < len(cached_batch.frame_results):
-                    cached_frame = cached_batch.frame_at(int(z_index))
+
+            def _on_frame_finished(processed: int, _total: int, _result: Frame) -> None:
+                self._batch_processed_samples = int(processed)
+                self._set_progress_bar(0.0)
+                self.refresh_view()
+                QtWidgets.QApplication.processEvents()
+
+            callbacks = BatchCallbacks(
+                on_started=_on_started,
+                on_frame_started=_on_frame_started,
+                on_frame_finished=_on_frame_finished,
+                on_finished=lambda _result: None,
+            )
+
+            def _process_frame(
+                frame: np.ndarray,
+                frame_id: str,
+                z_index: int,
+                cached_frame: Frame | None,
+                do_measurements: bool,
+            ) -> Frame:
                 if cached_frame is None:
                     self.current_frame = Frame.empty(
                         frame_id=str(frame_id),
@@ -2311,36 +2075,30 @@ class MainWindow(QMainWindow):
                     )
                     seeded_frame.orig_img = frame
                     self.current_frame = seeded_frame
-
                 self.current_image_name = self._frame_base_name(frame_id, z_index)
-                ok = self._run_current_frame_pipeline(compute_measurements)
+                ok = self._run_current_frame_pipeline(do_measurements)
                 if not ok and not self.current_frame.error_message:
                     self.current_frame.fail("Processing failed.")
-                self.refresh_view()
-                QtWidgets.QApplication.processEvents()
-                result = self.current_frame.snapshot(
+                return self.current_frame.snapshot(
                     include_measurements=True,
                     frame_id=str(frame_id),
                     z_index=int(z_index),
                 )
-                processed_images += 1
-                self._batch_processed_samples = processed_images
-                self._set_progress_bar(0.0)
-                return result
 
-            try:
-                batch_result = batch_analyzer.analyze(active_batch, _process_frame)
-                batch_result.stack3d_meta = {
-                    "info": "3D post-processing not run yet. Click 'Analyze 3D' to merge labels across slices."
-                }
-            finally:
-                self._suppress_batch_dialogs = previous_batch_state
-                self._is_batch_processing = previous_processing_state
+            batch_result = self._batch_service.run_batch(
+                active_batch,
+                compute_measurements,
+                process_frame=_process_frame,
+                callbacks=callbacks,
+                cached_result=cached_batch,
+            )
         except Exception as exc:
             self._show_error(title, str(exc))
             logger.error("%s: %s", title, exc)
             return None
         finally:
+            self._suppress_batch_dialogs = previous_batch_state
+            self._is_batch_processing = previous_processing_state
             QtWidgets.QApplication.restoreOverrideCursor()
             self.statusbar.clearMessage()
             self._batch_total_samples = 0
@@ -2616,6 +2374,7 @@ class MainWindow(QMainWindow):
         dialog.show()
         dialog.raise_()
         dialog.activateWindow()
+        self._profile_tool.start()
         self._profile_mode_active = True
         self._reset_profile_selection(keep_dialog=True)
 
@@ -2626,6 +2385,7 @@ class MainWindow(QMainWindow):
     def _on_profile_dialog_closed(self):
         """Handle the rofile dialog closed event and propagate UI state updates."""
         self._profile_mode_active = False
+        self._profile_tool.stop()
         self._profile_dialog = None
         self._reset_profile_selection()
 
@@ -2634,6 +2394,7 @@ class MainWindow(QMainWindow):
         
         Args:
             keep_dialog (bool): Value for keep dialog interpreted by this routine."""
+        self._profile_tool.reset()
         self._profile_points_scene = []
         self._profile_points_img = []
         self._remove_profile_items()
@@ -2749,14 +2510,12 @@ class MainWindow(QMainWindow):
         if ix < 0 or iy < 0 or ix >= src_w or iy >= src_h:
             return
 
-        if len(self._profile_points_scene) >= 2:
-            self._reset_profile_selection(keep_dialog=True)
-
-        self._profile_points_scene.append((sx, sy))
-        self._profile_points_img.append((ix, iy))
+        complete = self._profile_tool.add_point((sx, sy), (ix, iy))
+        self._profile_points_scene = list(self._profile_tool.points_scene)
+        self._profile_points_img = list(self._profile_tool.points_img)
         self._add_profile_marker(sx, sy)
 
-        if len(self._profile_points_scene) == 2:
+        if complete:
             self._finalize_profile_selection()
 
     def _finalize_profile_selection(self):
@@ -2771,26 +2530,15 @@ class MainWindow(QMainWindow):
         if not self.current_frame.has_prediction or len(self._profile_points_img) < 2:
             return
         (x0, y0), (x1, y1) = self._profile_points_img[:2]
-        length_px = float(np.hypot(x1 - x0, y1 - y0))
-        if length_px <= 0:
-            return
-        profile_vals = profile_line(self.current_frame.dt, (y0, x0), (y1, x1), mode="reflect", order=1)
-        if profile_vals is None or profile_vals.size == 0:
-            return
-
-        profile_vals = np.asarray(profile_vals, dtype=np.float32, copy=False)
-        scale = float(self.current_frame.scale_factor)
-        if not np.isfinite(scale) or scale <= 0:
-            scale = 1.0
-        true_length_px = length_px / scale
-        # DT magnitudes are in processing-pixel units; map them back to original scale.
-        profile_vals_true = profile_vals / scale
-        distances = np.linspace(0.0, true_length_px, profile_vals.size, dtype=np.float32)
-        delta = float(profile_vals_true[-1] - profile_vals_true[0])
-        summary = (
-            f"Length: {true_length_px:.2f} px · ΔDT: {delta:+.2f} · "
-            f"Min/Max: {float(profile_vals_true.min()):.2f} / {float(profile_vals_true.max()):.2f}"
+        profile = self._profile_tool.compute_profile(
+            self.current_frame.dt,
+            (x0, y0),
+            (x1, y1),
+            scale_factor=float(self.current_frame.scale_factor),
         )
+        if profile is None:
+            return
+        distances, profile_vals_true, summary = profile
         dialog = self._ensure_profile_dialog()
         dialog.update_profile(distances, profile_vals_true, summary)
 
@@ -2865,56 +2613,7 @@ class MainWindow(QMainWindow):
         logger.info("Fiber analysis completed successfully.")
 
     def _build_measurement_overlays(self):
-        fr = self.current_frame
-        sampling_base = ensure_rgb_u8(fr.dt_u8 if fr.dt_u8 is not None else fr.dt_normalized)
-        if sampling_base is None and fr.overlay_img is not None:
-            sampling_base = ensure_rgb_u8(fr.overlay_img)
-
-        base_img = fr.orig_img if fr.scale_factor == 1.0 or fr.orig_img_scaled is None else fr.orig_img_scaled
-        base_rgb = ensure_rgb_u8(base_img)
-
-        fr.sampling_overlay = sampling_base.copy() if sampling_base is not None else None
-        fr.diameters_overlay = (
-            fr.overlay_img.copy()
-            if fr.overlay_img is not None
-            else (base_rgb.copy() if base_rgb is not None else None)
-        )
-        fr.orientations_overlay = base_rgb.copy() if base_rgb is not None else None
-        fr.pores_overlay = self._pore_dt_to_rgb(fr.pore_dt, fr.void_mask)
-
-        pts = list(fr.drawing_samples or [])
-        if len(pts) > 15000:
-            step = int(np.ceil(len(pts) / 15000))
-            pts = pts[::step]
-
-        if pts and fr.sampling_overlay is not None:
-            height, width = fr.sampling_overlay.shape[:2]
-            for idx, (y, x, ny, nx, r, _angle_deg) in enumerate(pts):
-                if not (0 <= y < height and 0 <= x < width) or r <= 0:
-                    continue
-
-                p0 = (y - ny * r, x - nx * r)
-                p1 = (y + ny * r, x + nx * r)
-                self._draw_line(fr.sampling_overlay, p0, p1, color=(255, 255, 0))
-                self._draw_circle(
-                    fr.sampling_overlay,
-                    (int(round(x)), int(round(y))),
-                    radius_px=1,
-                    color=(255, 0, 0),
-                    thickness=-1,
-                )
-                if fr.diameters_overlay is not None and (idx % 10) == 0:
-                    self._draw_line(fr.diameters_overlay, p0, p1, color=(255, 255, 0))
-
-        self._fill_orientation_overlay_by_label()
-
-        if fr.pores_overlay is not None and fr.pores:
-            fr.pores_overlay = fr.pores_overlay.copy()
-            for pore in fr.pores:
-                x, y = int(pore["x"]), int(pore["y"])
-                r = int(round(pore["r_px"]))
-                if r > 0:
-                    self._draw_circle(fr.pores_overlay, (x, y), r, color=(255, 255, 255), thickness=1)
+        self._pipeline_service.build_measurement_overlays(self.current_frame)
 
     def _fill_orientation_overlay_by_label(self):
         fr = self.current_frame
@@ -3118,7 +2817,7 @@ class MainWindow(QMainWindow):
             return default
         return (p0, p1, p2, p3)
 
-    def _signed_grad_error_rgb(self) -> np.ndarray | None:
+    def _signed_grad_error_rgb_for_frame(self, frame: Frame) -> np.ndarray | None:
         """
         Signed DT-gradient error view using s = |grad(dt)| - 1.
         Colors on valid mask (dt > 0):
@@ -3129,9 +2828,9 @@ class MainWindow(QMainWindow):
           - s >= p3: red
         Outside valid mask is black.
         """
-        dt = self.current_frame.dt
-        gx = self.current_frame.gx
-        gy = self.current_frame.gy
+        dt = frame.dt
+        gx = frame.gx
+        gy = frame.gy
         if dt is None or gx is None or gy is None:
             return None
 
@@ -3194,6 +2893,9 @@ class MainWindow(QMainWindow):
 
         return out
 
+    def _signed_grad_error_rgb(self) -> np.ndarray | None:
+        return self._signed_grad_error_rgb_for_frame(self.current_frame)
+
 
     # ------------------- Plotting -------------------
 
@@ -3210,7 +2912,7 @@ class MainWindow(QMainWindow):
         pw.setTitle(title, color="k", size="12pt")
         pw.showGrid(x=True, y=True, alpha=0.25)
         ax = pw.getAxis("bottom"); ax.setPen("k"); ax.setTextPen("k"); ax.setLabel(xlab, color="k")
-        ay = pw.getAxis("left");   ay.setPen("k"); ay.setTextPen("k"); ax.setLabel(ylab, color="k")
+        ay = pw.getAxis("left");   ay.setPen("k"); ay.setTextPen("k"); ay.setLabel(ylab, color="k")
         pw.setAntialiasing(True)
 
     def _update_distributions_pyqtgraph(self, units_label: str):
@@ -3284,46 +2986,11 @@ class MainWindow(QMainWindow):
 
     def refresh_view(self):
         """Orchestrate refresh view within the current module workflow."""
-        img = None
-        # Use the combo box text to select appropriate view.
-        view = self.cb_view.currentText()
-        if view == "Original":
-            img = ensure_rgb_u8(self.current_frame.orig_img)
-        elif view == "DT":
-            img = to_uint8_for_view(self.current_frame.dt_normalized)
-        elif view == "Laplacian":
-            img = to_uint8_for_view(self.current_frame.lapl_img)
-        elif view in ("Segmentation centerlines", "Centerlines"):
-            img = self._segmentation_centerlines_view()
-        elif view == "Measurement centerlines":
-            img = self._measurement_centerlines_view()
-        elif view == "Centerline comparison":
-            img = self._centerlines_comparison_view()
-        elif view == "Segmentation":
-            img = self._labels_rgb()
-        elif view == "Segmentation outline":
-            img = self._segmentation_outline_view()
-        elif view == "Overlay":
-            img = self.current_frame.overlay_img
-        elif view == "Sampling":
-            img = self.current_frame.sampling_overlay if self.current_frame.sampling_overlay is not None else ensure_rgb_u8(self.current_frame.dt_u8)
-        elif view == "Measurements overlay":
-            fallback = self.current_frame.overlay_img if self.current_frame.overlay_img is not None else self._labels_rgb()
-            if self.rb_show_pores.isChecked():
-                img = self.current_frame.pores_overlay
-            elif self.rb_show_direct.isChecked():
-                img = self.current_frame.orientations_overlay
-            else:
-                img = self.current_frame.diameters_overlay
-            if img is None:
-                img = fallback
-        elif view == "gx": 
-            img = to_uint8_for_view(self.current_frame.gx)
-        elif view == "gy":
-            img = to_uint8_for_view(self.current_frame.gy)
-        elif view == "DT grad error":
-            img = self._signed_grad_error_rgb()
-
+        self._view_state.mode = self.cb_view.currentText()
+        self._view_state.show_pores = bool(self.rb_show_pores.isChecked())
+        self._view_state.show_orientation = bool(self.rb_show_direct.isChecked())
+        self._view_state.zoom = float(self._current_zoom)
+        img = self._view_renderer.render(self.current_frame, self._view_state)
         self._set_pixmap_from_array(img)
 
     def _configure_z_scroll(self, frame_count: int):
@@ -3622,54 +3289,7 @@ class MainWindow(QMainWindow):
         """Reads sample-specific calibration fields from the UI."""
         if not hasattr(self, "sample_props") or self.sample_props is None:
             self.sample_props = SampleProperties.defaults()
-
-        prev_px = float(getattr(self.sample_props, "pixel_size_x", 1.0))
-        prev_py = float(getattr(self.sample_props, "pixel_size_y", 1.0))
-        prev_z = float(getattr(self.sample_props, "voxel_size_z", 1.0))
-        prev_unit = str(getattr(self.sample_props, "unit", "px"))
-
-        def _parse_positive(text: str, fallback: float) -> float:
-            """Provide an internal helper for parse positive.
-            
-            Args:
-                text (str): Value for text interpreted by this routine.
-                fallback (float): Value for fallback interpreted by this routine.
-            
-            Returns:
-                float: Result object produced by the parse positive routine."""
-            text = (text or "").strip()
-            if not text:
-                return float(fallback)
-            try:
-                value = float(text)
-            except ValueError:
-                return float(fallback)
-            if value > 0 and np.isfinite(value):
-                return float(value)
-            return float(fallback)
-
-        px = _parse_positive(
-            self.le_pixelsize.text(),
-            self.sample_props.effective_pixel_size_xy(),
-        )
-        z = _parse_positive(
-            self.le_voxeldepth.text(),
-            self.sample_props.voxel_size_z,
-        )
-
-        self.sample_props.pixel_size_x = float(px)
-        self.sample_props.pixel_size_y = float(px)
-        self.sample_props.voxel_size_z = float(z)
-        unit_txt = self.cb_units.currentText().strip()
-        self.sample_props.unit = unit_txt if unit_txt else "px"
-        self.sample_props.source = "manual"
-
-        changed = (
-            not math.isclose(prev_px, float(self.sample_props.pixel_size_x), rel_tol=1e-9, abs_tol=1e-9)
-            or not math.isclose(prev_py, float(self.sample_props.pixel_size_y), rel_tol=1e-9, abs_tol=1e-9)
-            or not math.isclose(prev_z, float(self.sample_props.voxel_size_z), rel_tol=1e-9, abs_tol=1e-9)
-            or prev_unit != str(self.sample_props.unit)
-        )
+        self.sample_props, changed = self._ui_binder.sync_ui_to_sample_properties(self, self.sample_props)
         if changed:
             self._invalidate_measurements()
 
@@ -3677,230 +3297,22 @@ class MainWindow(QMainWindow):
         """Updates sample-specific calibration widgets from self.sample_props."""
         if not hasattr(self, "sample_props") or self.sample_props is None:
             self.sample_props = SampleProperties.defaults()
-
-        px = self.sample_props.effective_pixel_size_xy()
-        self.le_pixelsize.setText(f"{px:.6g}")
-        self.le_voxeldepth.setText(f"{self.sample_props.voxel_size_z:.6g}")
-
-        unit_txt = self.sample_props.unit if self.sample_props.unit else "px"
-        self.cb_units.blockSignals(True)
-        idx = self.cb_units.findText(unit_txt)
-        if idx >= 0:
-            self.cb_units.setCurrentIndex(idx)
-        else:
-            self.cb_units.setCurrentText(unit_txt)
-        self.cb_units.blockSignals(False)
+        self._ui_binder.sync_sample_properties_to_ui(self, self.sample_props)
 
     def sync_ui_to_config(self):
         """Reads the current state of the UI and stores it in self.config."""
         if not hasattr(self, "config"):
             self.config = AppConfig()
-
-        prev_model_path = str(getattr(self.config, "model_path", ""))
-        prev_scale_label = str(getattr(self.config, "scale_label", "1x"))
-        prev_max_angle = float(getattr(self.config, "max_angle_deg", 30.0))
-        prev_ridge_sigma = float(getattr(self.config, "ridge_sigma", 1.0))
-        prev_ridge_low = float(getattr(self.config, "ridge_low", 0.01))
-        prev_ridge_high = float(getattr(self.config, "ridge_high", 0.4))
-        prev_min_fragment_centerline_length_px = float(
-            getattr(self.config, "min_fragment_centerline_length_px", 10.0)
-        )
-        prev_strict = bool(getattr(self.config, "strict_centerlines", False))
-        prev_mode = str(getattr(self.config, "segmentation_mode", "watershed"))
-        prev_merge_expansion_factor = float(getattr(self.config, "merge_expansion_factor", 0.7))
-        prev_segmentation_expansion_factor = float(getattr(self.config, "segmentation_expansion_factor", 1.0))
-        prev_threshold = int(getattr(self.config, "seg_threshold", 1))
-        prev_spacing = float(getattr(self.config, "sample_spacing", 5.0))
-
-        # Model & Hardware
-        self.config.model_path = self.cb_model.currentText().strip()
-        self.config.use_gpu = self.chb_usegpu.isChecked()
-        self.config.scale_label = self.cb_scale.currentText().strip()
-
-        # Centerline Params
-        if hasattr(self, "sp_max_cent_angle"):
-            self.config.max_angle_deg = float(self.sp_max_cent_angle.value())
-        else:
-            self.config.max_angle_deg = float(getattr(self.config, "max_angle_deg", 30.0))
-        self.config.ridge_sigma = float(getattr(self.config, "ridge_sigma", 1.0))
-        self.config.ridge_low = float(getattr(self.config, "ridge_low", 0.01))
-        self.config.ridge_high = float(getattr(self.config, "ridge_high", 0.4))
-        self.config.min_fragment_centerline_length_px = float(
-            getattr(self.config, "min_fragment_centerline_length_px", 10.0)
-        )
-        self.config.strict_centerlines = self.chb_strict.isChecked()
-
-        # Segmentation Mode
-        if self.rb_ridge.isChecked():
-            self.config.segmentation_mode = "radial_expansion"
-        else:
-            self.config.segmentation_mode = "watershed"
-
-        self.config.seg_threshold = int(self.sp_segm_threshold.value())
-        self.config.merge_expansion_factor = float(getattr(self.config, "merge_expansion_factor", 0.7))
-        self.config.segmentation_expansion_factor = float(getattr(self.config, "segmentation_expansion_factor", 1.0))
-
-        # Analysis
-        if hasattr(self, "le_samspacing"):
-            text = self.le_samspacing.text().strip()
-            try:
-                spacing = float(text)
-            except Exception:
-                spacing = prev_spacing
-            if spacing > 0 and np.isfinite(spacing):
-                self.config.sample_spacing = float(spacing)
-            else:
-                self.config.sample_spacing = float(prev_spacing)
-        else:
-            self.config.sample_spacing = float(getattr(self.config, "sample_spacing", 5.0))
-
-        prediction_changed = (
-            prev_model_path != str(self.config.model_path)
-            or prev_scale_label != str(self.config.scale_label)
-        )
-        max_angle_changed = not math.isclose(
-            prev_max_angle,
-            float(self.config.max_angle_deg),
-            rel_tol=1e-9,
-            abs_tol=1e-9,
-        )
-        ridge_sigma_changed = not math.isclose(
-            prev_ridge_sigma,
-            float(self.config.ridge_sigma),
-            rel_tol=1e-9,
-            abs_tol=1e-9,
-        )
-        ridge_low_changed = not math.isclose(
-            prev_ridge_low,
-            float(self.config.ridge_low),
-            rel_tol=1e-9,
-            abs_tol=1e-9,
-        )
-        ridge_high_changed = not math.isclose(
-            prev_ridge_high,
-            float(self.config.ridge_high),
-            rel_tol=1e-9,
-            abs_tol=1e-9,
-        )
-        min_fragment_centerline_length_changed = not math.isclose(
-            prev_min_fragment_centerline_length_px,
-            float(self.config.min_fragment_centerline_length_px),
-            rel_tol=1e-9,
-            abs_tol=1e-9,
-        )
-        segmentation_changed = (
-            max_angle_changed
-            or ridge_sigma_changed
-            or ridge_low_changed
-            or ridge_high_changed
-            or min_fragment_centerline_length_changed
-            or prev_strict != bool(self.config.strict_centerlines)
-            or prev_mode != str(self.config.segmentation_mode)
-            or not math.isclose(
-                prev_merge_expansion_factor,
-                float(self.config.merge_expansion_factor),
-                rel_tol=1e-9,
-                abs_tol=1e-9,
-            )
-            or not math.isclose(
-                prev_segmentation_expansion_factor,
-                float(self.config.segmentation_expansion_factor),
-                rel_tol=1e-9,
-                abs_tol=1e-9,
-            )
-            or prev_threshold != int(self.config.seg_threshold)
-        )
-        measurements_changed = not math.isclose(
-            prev_spacing,
-            float(self.config.sample_spacing),
-            rel_tol=1e-9,
-            abs_tol=1e-9,
-        )
-
-        if prediction_changed:
+        self.config, flags = self._ui_binder.sync_ui_to_config(self, self.config)
+        if flags.prediction_changed:
             self._invalidate_prediction()
-        elif segmentation_changed:
-            self._invalidate_segmentation(
-                invalidate_centerlines=(
-                    max_angle_changed
-                    or ridge_sigma_changed
-                    or ridge_low_changed
-                    or ridge_high_changed
-                    or min_fragment_centerline_length_changed
-                    or prev_strict != bool(self.config.strict_centerlines)
-                    or not math.isclose(
-                        prev_merge_expansion_factor,
-                        float(self.config.merge_expansion_factor),
-                        rel_tol=1e-9,
-                        abs_tol=1e-9,
-                    )
-                )
-            )
-        elif measurements_changed:
+        elif flags.segmentation_changed:
+            self._invalidate_segmentation(invalidate_centerlines=bool(flags.invalidate_centerlines))
+        elif flags.measurements_changed:
             self._invalidate_measurements()
 
     def sync_config_to_ui(self):
         """Updates the UI widgets to reflect the values in self.config."""
         if not hasattr(self, "config"):
             return
-
-        cfg = self.config
-
-        def set_combo_text(cb, text):
-            """Update combo text and synchronize dependent runtime state.
-            
-            Args:
-                cb (Any): Value for cb interpreted by this routine.
-                text (Any): Value for text interpreted by this routine."""
-            cb.blockSignals(True)
-            idx = cb.findText(text)
-            if idx >= 0:
-                cb.setCurrentIndex(idx)
-            else:
-                cb.setCurrentText(text)
-            cb.blockSignals(False)
-
-        # --- Model & Hardware ---
-        set_combo_text(self.cb_model, cfg.model_path)
-        
-        self.chb_usegpu.blockSignals(True)
-        self.chb_usegpu.setChecked(bool(cfg.use_gpu))
-        self.chb_usegpu.blockSignals(False)
-        
-        set_combo_text(self.cb_scale, cfg.scale_label)
-
-        # --- Centerline Params ---
-        if hasattr(self, "sp_max_cent_angle"):
-            self.sp_max_cent_angle.blockSignals(True)
-            # PyQt6 QSpinBox strictly requires an integer. Cast the float to int.
-            self.sp_max_cent_angle.setValue(int(cfg.max_angle_deg))
-            self.sp_max_cent_angle.blockSignals(False)
-
-        self.chb_strict.blockSignals(True)
-        self.chb_strict.setChecked(bool(cfg.strict_centerlines))
-        self.chb_strict.blockSignals(False)
-
-        # --- Segmentation Mode ---
-        self.rb_watershed.blockSignals(True)
-        self.rb_ridge.blockSignals(True)
-
-        if str(cfg.segmentation_mode).strip().lower() == "radial_expansion":
-            self.rb_ridge.setChecked(True)
-        else:
-            self.rb_watershed.setChecked(True)
-
-        self.rb_watershed.blockSignals(False)
-        self.rb_ridge.blockSignals(False)
-
-        self.sp_segm_threshold.blockSignals(True)
-        # Cast to int to guarantee PyQt6 won't complain
-        self.sp_segm_threshold.setValue(int(cfg.seg_threshold))
-        self.sp_segm_threshold.blockSignals(False)
-
-        # --- Analysis & Units ---
-        if hasattr(self, "le_samspacing"):
-            self.le_samspacing.setText(str(cfg.sample_spacing))
-
-        # Trigger UI state updates that depend on these flags
-        if hasattr(self, "_update_strict_checkbox_state"):
-            self._update_strict_checkbox_state()
+        self._ui_binder.sync_config_to_ui(self, self.config)
