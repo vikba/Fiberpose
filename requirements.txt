@@ -11,3 +11,4 @@ matplotlib
 Pillow
 pyqtgraph
 opencv-python
+tqdm

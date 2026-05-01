@@ -1,8 +1,8 @@
 # Fiberpose Pipeline
 
 ## Scope
-- Documents runtime behavior in `sources/gui_mainwindow.py`, `sources/fiber_analyzer_2D.py`, and `sources/batch_pipeline.py`.
-- Covers segmentation, measurement, batch execution, and stack/3D visualization.
+- Documents runtime behavior in `run.py`, `sources/ui_main.py`, `sources/pipeline.py`, and `sources/fiber_analyzer_2D.py`.
+- Covers GUI and CLI startup, segmentation, measurement, and batch execution/export.
 
 ## Runtime Modes and Flags
 - `segmentation.mode=watershed` calls `FiberAnalyzer.segment(mode="watershed", params={"threshold_u8": ...})`.
@@ -27,30 +27,34 @@
 - `samples_table`, `thickness_units`, `angles_samples_deg`, `porosity`, `pores`, `pore_diams_units`: measurement outputs.
 
 ## Entry Flow
-1. `MainWindow.open_source(...)` loads file/folder into `ImageBatch` via `ImageBatch.from_source/from_path/from_folder`.
-2. `_set_image_batch(...)` sets current batch and selects slice 0.
-3. User action calls `segment()` or `analyze_fibers()`.
-4. If `_image_batch` exists and not already inside batch callback, GUI routes through `_run_batch_analysis(...)` (even single-frame cases).
+1. `run.py` dispatches mode:
+- GUI default (`python run.py` or `python run.py --gui`)
+- CLI (`python run.py --cli --input <path> ...`)
+2. GUI path:
+- `MainWindow.open_source(...)` loads input into `ImageBatch`.
+- User action calls `segment()` or `analyze_fibers()`.
+- If `_image_batch` exists and not already in callbacks, GUI routes through `_run_batch_analysis(...)`.
+3. CLI path:
+- `CliRunner` loads config and source via `ImageBatch.from_source(...)`.
+- It instantiates analyzer + `PipelineController`, processes each frame, builds `BatchResult`, and exports.
 
 ## Batch Execution Flow
-1. `_run_batch_analysis(...)` builds a `BatchAnalyzer`.
-2. `BatchAnalyzer.analyze(...)` loops frames and calls `self._analyzer.reset_prediction_state()` per frame.
+1. `_run_batch_analysis(...)` configures `BatchCallbacks` and calls `BatchService.run_batch(...)`.
+2. `BatchService.run_batch(...)` loops frames and invokes the provided per-frame callback.
 3. Per-frame callback in `_run_batch_analysis(...)`:
 - `_reset_internal_state(preserve_original=False)`
 - `current_frame.begin_frame(frame, frame_id, z_index)`
 - call `segment()` or `analyze_fibers()` (with `_is_batch_processing=True`, so no recursive batch dispatch)
 - capture result with `current_frame.snapshot(include_measurements=...)`
-- optionally write artifacts via `_save_batch_outputs(...)`
 4. Collected outputs become `BatchResult(frame_results=[...])`.
 5. GUI stores `_batch_result` and rehydrates selected slice with `_apply_frame_result(...)`.
+6. CLI uses the same controller stages (`ensure_segmentation` / `ensure_measurements`) and writes exports via `BatchResult.save_all(...)`.
 
 ## Per-Frame Segmentation Flow
 1. Validate `orig_img` and `analyzer`.
 2. Clear downstream frame state (`clear_segmentation`, `clear_measurements`).
-3. Resolve current scale:
-- if scale changed: `analyzer.reset_prediction_state()` and `frame.clear_prediction()`
-- build `orig_img_scaled` when needed (`cv2.resize`)
-4. Sync UI config into `pipeline_config`.
+3. Resolve current scale and processing image in `PipelineController`.
+4. Read runtime config from `AppConfig` (+ `invert_input` flag from GUI checkbox or CLI argument).
 5. If no cached DT prediction, run:
 - `FiberAnalyzer.predict_dt(...)`
 - internally: `_run_model()` -> `OnnxFiberposeModel.predict(...)`
@@ -71,18 +75,18 @@
 9. Build label colors + overlay and store via `set_segmentation_outputs(...)`.
 
 ## Per-Frame Measurement Flow
-1. `analyze_fibers()` ensures prediction + measurement centerlines are ready.
+1. GUI `analyze_fibers()` or CLI measurement mode ensures prediction + measurement centerlines are ready.
 2. Sets `analyzer.scale_factor = frame.scale_factor`.
 3. Calls `FiberAnalyzer.analyze(spacing_px_scaled)` returning:
 - `radius_samples` (center/radius mapped back to original scale)
 - `angles_samples_deg`
 - `overlay_samples`
-4. Builds thickness arrays/sample table and orientation stats in GUI.
+4. Builds thickness arrays/sample table and orientation stats in `PipelineController`.
 5. Computes porosity and pore sampling:
 - `void_mask_and_pore_dt(thr_u8)`
 - `sample_inscribed_circles(...)`
 6. Stores outputs in `Frame` via `set_measurement_outputs(...)`.
-7. Renders overlays and histograms:
+7. GUI renders overlays/histograms for display:
 - thickness histogram always
 - angles histogram or pore size histogram depending on pores view
 
@@ -101,13 +105,14 @@
 - optional semantic junction overlay
 
 ## Class Roles
-- `MainWindow` (`gui_mainwindow.py`): orchestration, UI state, view updates, CSV/image export.
-- `FiberAnalyzer`: prediction, centerline extraction, segmentation, pore and measurement math.
-- `BatchAnalyzer` (`batch_pipeline.py`): frame iteration orchestration.
-- `StackAnalyzer_3D` (`batch_pipeline.py`): semantic 3D volume merge from per-slice labels + native-grid 3D skeletonization.
-- `ImageBatch` / `Frame` / `BatchResult` (`datastructures.py`): runtime data transport/state.
+- `run.py`: top-level GUI/CLI dispatch and argument parsing.
+- `MainWindow` (`ui_main.py`): GUI orchestration, UI state, view updates, and user-triggered batch runs.
+- `CliRunner` (`cli_runner.py`): CLI orchestration for batch processing/export.
+- `PipelineController` (`pipeline.py`): shared processing engine for prediction, centerlines, segmentation, and measurements.
+- `BatchService` (`pipeline.py`): frame iteration orchestration using callbacks.
+- `FiberAnalyzer_2D`: prediction, centerline extraction, segmentation, pore and measurement math.
+- `ImageBatch` / `Frame` / `BatchResult` (`domain.py`): runtime data transport/state.
 - `RidgeDetector`: ridge/junction extraction backend.
-- `Stack3DWindow` (`gui_dialogs.py`): stack projection + 3D visualization.
 
 ## Notes
 - `centerline_kwargs` defaults from `FiberAnalyzer_2D._default_centerline_kwargs()` and are used by `process_centerlines()`.

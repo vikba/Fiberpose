@@ -37,6 +37,7 @@
 - [ ] Implement 3-stage cache approach
 - [ ] Progress bar
 - [ ] For folder analysis add summary file
+- [ ] CLI for folder analysis
 
 ## 🐞 Bugs
 - [x] Fix x,y order for arrow drawing

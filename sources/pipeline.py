@@ -30,7 +30,7 @@ class PipelineOutcome:
     info_message: str | None = None
 
 
-class FramePipelineService:
+class PipelineController:
     """Encapsulates prediction->segmentation->measurement orchestration for one frame."""
 
     def __init__(self, analyzer: FiberAnalyzer_2D | None = None):
@@ -263,7 +263,7 @@ class FramePipelineService:
         if analyzer is not None:
             analyzer._reset_prediction_state()
         frame.clear_prediction()
-        FramePipelineService.invalidate_measurements(frame)
+        PipelineController.invalidate_measurements(frame)
 
     @staticmethod
     def invalidate_segmentation(frame: Frame, invalidate_centerlines: bool = False) -> None:
@@ -281,7 +281,7 @@ class FramePipelineService:
             frame.centerlines_comparison_overlay_img = keep_cmp_overlay
             frame.segmentation_centerline_sig = keep_seg_sig
             frame.measurement_centerline_sig = keep_meas_sig
-        FramePipelineService.invalidate_measurements(frame)
+        PipelineController.invalidate_measurements(frame)
 
     @staticmethod
     def invalidate_measurements(frame: Frame) -> None:

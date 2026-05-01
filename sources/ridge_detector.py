@@ -20,31 +20,7 @@ from dataclasses import dataclass
 from typing import Any, Callable, Optional, List, Tuple
 import math
 import numpy as np
-
-# Optional numba
-try:
-    from numba import njit
-    _HAVE_NUMBA = True
-except Exception:
-    _HAVE_NUMBA = False
-
-    def njit(*args, **kwargs):  # type: ignore
-        """Return a pass-through decorator when Numba is unavailable.
-
-        Args:
-            *args (Any): Positional arguments accepted for API compatibility.
-            **kwargs (Any): Keyword arguments accepted for API compatibility.
-
-        Returns:
-            Callable[[Callable[..., Any]], Callable[..., Any]]: Decorator that
-                returns the wrapped function unchanged.
-        """
-
-        def wrap(fn: Callable[..., Any]) -> Callable[..., Any]:
-            """Return `fn` unchanged to mirror `numba.njit` semantics."""
-            return fn
-
-        return wrap
+from numba import njit
 
 
 # -------------------------
@@ -1275,7 +1251,7 @@ def main():
         vis[rr, cc] = (255, 0, 0)
 
     Image.fromarray(vis).save(args.output)
-    print(f"Saved {args.output}. Polylines={len(polylines)} NumPy+Numba={_HAVE_NUMBA}")
+    print(f"Saved {args.output}. Polylines={len(polylines)}")
 
 
 if __name__ == "__main__":

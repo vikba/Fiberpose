@@ -39,7 +39,7 @@ from .fiber_analyzer_2D import FiberAnalyzer_2D
 from .ml import onnx_cuda_available
 from .domain import BatchResult, Frame, ImageBatch, AppConfig, SampleProperties
 from .utils import ensure_rgb_u8, labels_to_color, to_uint8_for_view
-from .pipeline import FramePipelineService, PipelineOutcome
+from .pipeline import PipelineController, PipelineOutcome
 from .ui_support import ViewRenderer
 from .ui_support import ViewState
 from .ui_support import UiConfigBinder
@@ -86,7 +86,7 @@ class MainWindow(QMainWindow):
         self._view_state = ViewState()
         self._scalebar_tool = ScalebarTool()
         self._profile_tool = ProfileTool()
-        self._pipeline_service = FramePipelineService(None)
+        self._pipeline_service = PipelineController(None)
         self._batch_service = BatchService()
         self._view_renderer = ViewRenderer(grad_error_builder=self._signed_grad_error_rgb_for_frame)
         self.sync_config_to_ui()
@@ -571,132 +571,6 @@ class MainWindow(QMainWindow):
             self.current_frame.labels_rgb_cache = (current_id, cache_img)
         return cache_img
 
-    def _effective_scale_factor(self) -> float:
-        token = str(getattr(self.config, "scale_label", "1x") or "1x").strip().lower().replace("×", "x")
-        if token.endswith("x"):
-            token = token[:-1]
-        try:
-            scale = float(token)
-        except Exception:
-            scale = 1.0
-        if not np.isfinite(scale) or scale <= 0:
-            return 1.0
-        return float(scale)
-
-    def _processing_image(self) -> np.ndarray | None:
-        fr = self.current_frame
-        image = fr.orig_img
-        if image is None:
-            return None
-
-        scale = self._effective_scale_factor()
-        if math.isclose(scale, 1.0, rel_tol=1e-9, abs_tol=1e-9):
-            fr.scale_factor = 1.0
-            fr.orig_img_scaled = None
-            if self.analyzer is not None:
-                self.analyzer.scale_factor = 1.0
-            return image
-
-        needs_rescale = (
-            fr.orig_img_scaled is None
-            or not math.isclose(float(fr.scale_factor), float(scale), rel_tol=1e-9, abs_tol=1e-9)
-        )
-        if needs_rescale:
-            interp = cv2.INTER_AREA if scale < 1.0 else cv2.INTER_CUBIC
-            fr.orig_img_scaled = cv2.resize(
-                image,
-                None,
-                fx=float(scale),
-                fy=float(scale),
-                interpolation=interp,
-            )
-        fr.scale_factor = float(scale)
-        if self.analyzer is not None:
-            self.analyzer.scale_factor = float(scale)
-        return fr.orig_img_scaled
-
-    def _segmentation_params(self) -> tuple[str, dict[str, Any]]:
-        mode = str(getattr(self.config, "segmentation_mode", "watershed") or "watershed")
-        thr_u8 = int(getattr(self.config, "seg_threshold", 1))
-        if mode not in ("watershed", "radial_expansion"):
-            mode = "watershed"
-        params = (
-            {"threshold_u8": thr_u8}
-            if mode == "watershed"
-            else {"expansion_factor": float(getattr(self.config, "segmentation_expansion_factor", 1.0))}
-        )
-        return mode, params
-
-    def _prediction_signature(self) -> str | None:
-        image = self.current_frame.orig_img
-        if image is None:
-            return None
-        payload = {
-            "image_id": int(id(image)),
-            "shape": tuple(int(v) for v in image.shape),
-            "dtype": str(image.dtype),
-            "model_path": str(getattr(self.config, "model_path", "")),
-            "invert_input": bool(self.chb_invert.isChecked()),
-            "scale_factor": float(self._effective_scale_factor()),
-        }
-        return json.dumps(payload, sort_keys=True, default=str)
-
-    def _segmentation_centerline_signature(self) -> str | None:
-        prediction_sig = self._prediction_signature()
-        if prediction_sig is None:
-            return None
-        payload = {
-            "prediction_sig": prediction_sig,
-            "merge_expansion_factor": float(getattr(self.config, "merge_expansion_factor", 0.7)),
-            "min_fragment_centerline_length_px": float(
-                getattr(self.config, "min_fragment_centerline_length_px", 10.0)
-            ),
-            "keep_segments_without_measurement_centerlines": bool(
-                getattr(self.config, "keep_segments_without_measurement_centerlines", False)
-            ),
-            "centerline_kwargs": self._configured_centerline_kwargs(),
-        }
-        return json.dumps(payload, sort_keys=True, default=str)
-
-    def _measurement_centerline_signature(self) -> str | None:
-        segmentation_centerline_sig = self._segmentation_centerline_signature()
-        if segmentation_centerline_sig is None:
-            return None
-        payload = {
-            "segmentation_centerline_sig": segmentation_centerline_sig,
-            "max_angle_deg": float(getattr(self.config, "max_angle_deg", 30.0)),
-            "strict_centerlines": bool(getattr(self.config, "strict_centerlines", False)),
-        }
-        return json.dumps(payload, sort_keys=True, default=str)
-
-    def _segmentation_signature(self) -> str | None:
-        segmentation_centerline_sig = self._segmentation_centerline_signature()
-        if segmentation_centerline_sig is None:
-            return None
-        payload = {
-            "segmentation_centerline_sig": segmentation_centerline_sig,
-            "segmentation_mode": str(getattr(self.config, "segmentation_mode", "watershed")),
-            "seg_threshold": int(getattr(self.config, "seg_threshold", 1)),
-            "segmentation_expansion_factor": float(getattr(self.config, "segmentation_expansion_factor", 1.0)),
-        }
-        return json.dumps(payload, sort_keys=True, default=str)
-
-    def _measurement_signature(self) -> str | None:
-        measurement_centerline_sig = self._measurement_centerline_signature()
-        if measurement_centerline_sig is None:
-            return None
-        props = self.sample_props if self.sample_props is not None else SampleProperties.defaults()
-        payload = {
-            "measurement_centerline_sig": measurement_centerline_sig,
-            "sample_spacing": float(getattr(self.config, "sample_spacing", 5.0)),
-            "seg_threshold": int(getattr(self.config, "seg_threshold", 1)),
-            "pixel_size_x": float(props.pixel_size_x),
-            "pixel_size_y": float(props.pixel_size_y),
-            "voxel_size_z": float(props.voxel_size_z),
-            "unit": str(props.unit),
-        }
-        return json.dumps(payload, sort_keys=True, default=str)
-
     def _invalidate_prediction(self) -> None:
         self._pipeline_service.invalidate_prediction(self.current_frame, analyzer=self.analyzer)
         self._invalidate_measurements()
@@ -711,128 +585,6 @@ class MainWindow(QMainWindow):
         self.graph_diameters.clear()
         self.graph_angles.clear()
         self._refresh_save_actions()
-
-    def _prediction_params(self) -> dict[str, Any]:
-        return {
-            "max_angle_deg": float(getattr(self.config, "max_angle_deg", 30.0)),
-            "centerline_kwargs": self._configured_centerline_kwargs(),
-        }
-
-    def _configured_centerline_kwargs(self) -> dict[str, Any]:
-        kwargs = dict(FiberAnalyzer_2D._default_centerline_kwargs())
-        kwargs["sigma"] = float(getattr(self.config, "ridge_sigma", kwargs["sigma"]))
-        kwargs["low"] = float(getattr(self.config, "ridge_low", kwargs["low"]))
-        kwargs["high"] = float(getattr(self.config, "ridge_high", kwargs["high"]))
-        return kwargs
-
-    def _centerline_params(self) -> dict[str, Any]:
-        params = self._prediction_params()
-        params.update(
-            {
-                "strict_centerlines": bool(getattr(self.config, "strict_centerlines", False)),
-                "keep_segments_without_measurement_centerlines": bool(
-                    getattr(self.config, "keep_segments_without_measurement_centerlines", False)
-                ),
-                "merge_expansion_factor": float(getattr(self.config, "merge_expansion_factor", 0.7)),
-                "min_fragment_centerline_length_px": float(
-                    getattr(self.config, "min_fragment_centerline_length_px", 10.0)
-                ),
-                "segmentation_expansion_factor": float(getattr(self.config, "segmentation_expansion_factor", 1.0)),
-            }
-        )
-        return params
-
-    def _measurement_params(self) -> dict[str, Any]:
-        return {
-            "sample_spacing": max(1.0, float(getattr(self.config, "sample_spacing", 5.0))),
-            "seg_threshold": int(getattr(self.config, "seg_threshold", 1)),
-        }
-
-    def _hydrate_analyzer_from_prediction(self, fr: Frame, *, max_angle_deg: float, centerline_kwargs: dict[str, Any]) -> None:
-        if self.analyzer is None or fr.dt is None or fr.gx is None or fr.gy is None:
-            return
-        self.analyzer._reset_prediction_state()
-        self.analyzer.scale_factor = float(fr.scale_factor)
-        self.analyzer._set_dt_and_gradients(fr.dt, fr.gx, fr.gy)
-        self.analyzer._laplacian = fr.lapl_img
-        self.analyzer._last_max_angle = float(max_angle_deg)
-        self.analyzer._centerline_kwargs = dict(centerline_kwargs)
-
-    def predict(self, image: np.ndarray, prediction_params: dict[str, Any]) -> dict[str, Any]:
-        if self.analyzer is None:
-            raise RuntimeError("Fiber analyzer has not been initialized.")
-        self.analyzer.predict_dt(
-            image=self._image_for_inference(image),
-            max_angle_deg=float(prediction_params["max_angle_deg"]),
-            centerline_kwargs=dict(prediction_params["centerline_kwargs"]),
-        )
-        dt = self.analyzer.get_dt()
-        gx, gy = self.analyzer.get_gradients()
-        if dt is None or gx is None or gy is None:
-            raise RuntimeError("Distance transform or gradients unavailable.")
-        return {
-            "dt": np.asarray(dt, dtype=np.float32, copy=False),
-            "gx": np.asarray(gx, dtype=np.float32, copy=False),
-            "gy": np.asarray(gy, dtype=np.float32, copy=False),
-            "dt_u8": np.asarray(self.analyzer.get_dt_u8(), dtype=np.uint8, copy=False),
-            "dt_normalized": np.asarray(self.analyzer.get_dt_norm(), dtype=np.float32, copy=False),
-            "lapl_img": np.asarray(self.analyzer.get_laplacian(), dtype=np.float32, copy=False),
-        }
-
-    def build_centerlines(self, prediction: Frame, centerline_params: dict[str, Any]) -> dict[str, Any]:
-        if self.analyzer is None:
-            raise RuntimeError("Fiber analyzer has not been initialized.")
-        self._hydrate_analyzer_from_prediction(
-            prediction,
-            max_angle_deg=float(centerline_params["max_angle_deg"]),
-            centerline_kwargs=dict(centerline_params["centerline_kwargs"]),
-        )
-        self.analyzer.set_strict_centerline_filter(bool(centerline_params["strict_centerlines"]))
-        self.analyzer.set_keep_segments_without_measurement_centerlines(
-            bool(centerline_params["keep_segments_without_measurement_centerlines"])
-        )
-        self.analyzer.process_centerlines(
-            max_angle_deg=float(centerline_params["max_angle_deg"]),
-            **dict(centerline_params["centerline_kwargs"]),
-            merge_expansion_factor=float(centerline_params["merge_expansion_factor"]),
-            segmentation_expansion_factor=float(centerline_params["segmentation_expansion_factor"]),
-        )
-        return {
-            "segmentation_centerlines_overlay_img": self.analyzer.get_segmentation_centerlines_image(),
-            "measurement_centerlines_overlay_img": self.analyzer.get_measurement_centerlines_image(),
-            "centerlines_comparison_overlay_img": self.analyzer.get_centerlines_comparison_image(),
-        }
-
-    def segment_stage(
-        self,
-        prediction: Frame,
-        centerlines: dict[str, Any],
-        segmentation_params: dict[str, Any],
-    ) -> dict[str, Any]:
-        if self.analyzer is None:
-            raise RuntimeError("Fiber analyzer has not been initialized.")
-        labels = self.analyzer.segment(
-            mode=str(segmentation_params["mode"]),
-            params=dict(segmentation_params["params"]),
-        )
-        base_img = prediction.orig_img if prediction.scale_factor == 1.0 or prediction.orig_img_scaled is None else prediction.orig_img_scaled
-        if labels is not None:
-            labels_rgb = labels_to_color(labels)
-            labels_cache = (id(labels), labels_rgb)
-            outline_cache = (id(labels), self._build_segmentation_outline_image(base_img, labels))
-        else:
-            labels_rgb = None
-            labels_cache = (None, None)
-            outline_cache = (None, None)
-        return {
-            "labels_2d": labels,
-            "segmentation_centerlines_overlay_img": centerlines["segmentation_centerlines_overlay_img"],
-            "measurement_centerlines_overlay_img": centerlines["measurement_centerlines_overlay_img"],
-            "centerlines_comparison_overlay_img": centerlines["centerlines_comparison_overlay_img"],
-            "overlay_img": self._create_overlay(base_img, labels, alpha=0.5, labels_rgb=labels_rgb),
-            "labels_rgb_cache": labels_cache,
-            "segmentation_outline_cache": outline_cache,
-        }
 
     def _ensure_prediction_ready(self) -> bool:
         self.sync_ui_to_config()
@@ -869,132 +621,6 @@ class MainWindow(QMainWindow):
             invert_input=bool(self.chb_invert.isChecked()),
         )
         return self._handle_pipeline_outcome(outcome)
-
-    def _build_measurement_outputs(
-        self,
-        *,
-        measurement_samples: list[Any],
-        pores: list[dict[str, Any]],
-        porosity: float,
-        pixel_size: float,
-        units_label: str,
-        pore_scale: float,
-    ) -> dict[str, Any]:
-        if measurement_samples:
-            radii_px = np.array([sample[4] for sample in measurement_samples], dtype=np.float32)
-            angles_arr = np.array([sample[5] for sample in measurement_samples], dtype=np.float32)
-            thickness_px = 2.0 * radii_px
-            thickness_units = thickness_px * float(pixel_size)
-            xs = np.array([sample[1] for sample in measurement_samples], dtype=np.int32)
-            ys = np.array([sample[0] for sample in measurement_samples], dtype=np.int32)
-            samples_table = np.column_stack([xs, ys, thickness_px, angles_arr]).astype(object)
-        else:
-            angles_arr = np.array([], dtype=np.float32)
-            thickness_units = np.array([], dtype=np.float32)
-            samples_table = None
-
-        angles_arr = angles_arr[np.isfinite(angles_arr)] if angles_arr.size else angles_arr
-        safe_scale = float(pore_scale) if np.isfinite(pore_scale) and pore_scale > 0 else 1.0
-        pore_diams_units = np.array(
-            [2.0 * p.get("r_px_orig", p["r_px"] / safe_scale) * float(pixel_size) for p in pores],
-            dtype=np.float32,
-        )
-
-        if thickness_units.size:
-            mean_thickness = float(np.mean(thickness_units))
-            std_thickness = float(np.std(thickness_units))
-        else:
-            mean_thickness = float("nan")
-            std_thickness = float("nan")
-        orientation_index, mean_angle_deg, std_angle_deg = self._compute_orientation_stats(angles_arr)
-        fragments_with_centerlines = (
-            self.analyzer.get_measurement_fragment_count() if self.analyzer is not None else 0
-        )
-        info_text = (
-            f"Mean diameter: {mean_thickness:.2f} {units_label}\n"
-            f"Std diameter: {std_thickness:.2f} {units_label}\n"
-            f"Orientation index: {orientation_index:.2f}\n"
-            f"Mean angle: {mean_angle_deg:.2f} deg\n"
-            f"Std angle: {std_angle_deg:.2f} deg\n"
-            f"Porosity (area fraction): {porosity*100:.1f} %\n"
-            f"Fragments with centerlines: {int(fragments_with_centerlines)}"
-        )
-        fiber_summary = {
-            "mean_diameter": mean_thickness,
-            "std_diameter": std_thickness,
-            "orientation_index": float(orientation_index),
-            "mean_angle_deg": float(mean_angle_deg),
-            "std_angle_deg": float(std_angle_deg),
-            "porosity": float(porosity),
-            "sample_count": len(measurement_samples),
-            "fragments_with_centerlines": int(fragments_with_centerlines),
-            "units": units_label,
-        }
-        return {
-            "samples_table": samples_table,
-            "thickness_units": thickness_units,
-            "pore_diams_units": pore_diams_units,
-            "fiber_summary": fiber_summary,
-            "info_text": info_text,
-            "mean_thickness": mean_thickness,
-            "std_thickness": std_thickness,
-            "orientation_index": float(orientation_index),
-            "mean_angle_deg": float(mean_angle_deg),
-            "std_angle_deg": float(std_angle_deg),
-        }
-
-    def measure(
-        self,
-        prediction: Frame,
-        centerlines: dict[str, Any],
-        segmentation: dict[str, Any],
-        measurement_params: dict[str, Any],
-        sample_props: SampleProperties,
-    ) -> dict[str, Any]:
-        del centerlines, segmentation
-        if self.analyzer is None:
-            raise RuntimeError("Fiber analyzer has not been initialized.")
-
-        spacing_px_input = float(measurement_params["sample_spacing"])
-        current_scale = prediction.scale_factor if prediction.scale_factor and np.isfinite(prediction.scale_factor) else 1.0
-        spacing_px_scaled = max(1.0, spacing_px_input * current_scale)
-        pixel_size = sample_props.effective_pixel_size_xy()
-        units_label = sample_props.unit if sample_props.unit else "px"
-
-        self.analyzer.scale_factor = prediction.scale_factor
-        measurement_samples, drawing_samples = self.analyzer.analyze(spacing_px=spacing_px_scaled)
-        self._set_progress_bar(80.0)
-        thr_u8 = int(measurement_params["seg_threshold"])
-        void_mask, pore_dt = self.analyzer.void_mask_and_pore_dt(thr_u8)
-        porosity = float(void_mask.mean()) if void_mask is not None else float("nan")
-        pores = self.analyzer.sample_inscribed_circles(
-            pore_dt=pore_dt,
-            void_mask=void_mask,
-            min_radius_px=1.5 * current_scale,
-            min_peak_px=3.0 * current_scale,
-            peak_footprint=5,
-            max_pores=None,
-        )
-
-        outputs = self._build_measurement_outputs(
-            measurement_samples=measurement_samples,
-            pores=pores,
-            porosity=porosity,
-            pixel_size=pixel_size,
-            units_label=units_label,
-            pore_scale=prediction.scale_factor,
-        )
-        outputs.update(
-            {
-                "measurement_samples": measurement_samples,
-                "drawing_samples": drawing_samples,
-                "porosity": porosity,
-                "void_mask": void_mask,
-                "pore_dt": pore_dt,
-                "pores": pores,
-            }
-        )
-        return outputs
 
     def _ensure_measurements_ready(self) -> bool:
         self.sync_ui_to_config()
@@ -1041,14 +667,6 @@ class MainWindow(QMainWindow):
         elif outcome.info_title and outcome.info_message:
             self._show_info(outcome.info_title, outcome.info_message)
         return False
-
-    def _image_for_inference(self, image: np.ndarray | None) -> np.ndarray | None:
-        if image is None or not bool(self.chb_invert.isChecked()):
-            return image
-        try:
-            return cv2.bitwise_not(image)
-        except Exception:
-            return np.max(image) - image
 
     def _show_warning(self, title: str, message: str):
         """Provide an internal helper for show warning.
@@ -1234,37 +852,6 @@ class MainWindow(QMainWindow):
         Returns:
             bool: True when the validation or availability check succeeds; otherwise False."""
         return any(u.isLocalFile() and self._is_loadable_path(u.toLocalFile()) for u in urls)
-
-    def _compute_orientation_stats(
-        self, angles_samples_deg: np.ndarray
-    ) -> tuple[float, float, float]:
-        """
-        Return orientation index, circular mean angle (deg), and circular std (deg)
-        for canonical angles in degrees.
-        """
-        if angles_samples_deg is None or getattr(angles_samples_deg, "size", 0) == 0:
-            return float("nan"), float("nan"), float("nan")
-
-        angles_rad = np.deg2rad(angles_samples_deg)
-        mean_cos = float(np.mean(np.cos(angles_rad)))
-        mean_sin = float(np.mean(np.sin(angles_rad)))
-
-        orientation_index = float(np.clip(np.hypot(mean_cos, mean_sin), 0.0, 1.0))
-        mean_angle_rad = float(np.arctan2(mean_sin, mean_cos))
-        mean_angle_deg = float(np.rad2deg(mean_angle_rad))
-        if mean_angle_deg > 90.0:
-            mean_angle_deg -= 180.0
-        elif mean_angle_deg <= -90.0:
-            mean_angle_deg += 180.0
-
-        if orientation_index > 0 and np.isfinite(orientation_index):
-            r = float(np.clip(orientation_index, 1e-8, 1.0))
-            std_angle_rad = float(np.sqrt(max(0.0, -2.0 * np.log(r))))
-            std_angle_deg = float(np.rad2deg(std_angle_rad))
-        else:
-            std_angle_deg = float("nan")
-
-        return orientation_index, mean_angle_deg, std_angle_deg
 
     def _current_batch_measurement_signature(self) -> str | None:
         """Provide an internal helper for current batch measurement signature.
