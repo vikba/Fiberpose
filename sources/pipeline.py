@@ -1,6 +1,9 @@
-"""Frame-level analysis pipeline service without Qt/UI dependencies."""
+"""Pipeline orchestration for frame and batch processing."""
 
 from __future__ import annotations
+
+# ---- merged from frame_pipeline_service.py ----
+
 
 import json
 import math
@@ -11,7 +14,7 @@ import cv2
 import numpy as np
 from scipy.spatial import cKDTree
 
-from .datastructures import AppConfig, Frame, SampleProperties
+from .domain import AppConfig, Frame, SampleProperties
 from .fiber_analyzer_2D import FiberAnalyzer_2D
 from .utils import ensure_rgb_u8, labels_to_color
 
@@ -888,3 +891,58 @@ class FramePipelineService:
         self.build_measurement_overlays(frame)
         frame.measurement_sig = target_sig
         return PipelineOutcome(True)
+
+# ---- merged from batch_service.py ----
+
+
+from dataclasses import dataclass
+from typing import Callable
+
+import numpy as np
+
+from .domain import BatchResult, Frame, ImageBatch
+
+
+@dataclass
+class BatchCallbacks:
+    """Callbacks invoked during batch run."""
+
+    on_started: Callable[[int], None]
+    on_frame_started: Callable[[int, int], None]
+    on_frame_finished: Callable[[int, int, Frame], None]
+    on_finished: Callable[[BatchResult], None]
+
+
+class BatchService:
+    """Runs frame processing over an `ImageBatch` and assembles results."""
+
+    def run_batch(
+        self,
+        image_batch: ImageBatch,
+        compute_measurements: bool,
+        process_frame: Callable[[np.ndarray, str, int, Frame | None, bool], Frame],
+        callbacks: BatchCallbacks,
+        cached_result: BatchResult | None = None,
+    ) -> BatchResult:
+        total_images = len(image_batch)
+        callbacks.on_started(total_images)
+
+        z_indices = image_batch.metadata.get("z_indices", list(range(total_images)))
+        filenames = image_batch.metadata.get("filenames", [str(i) for i in range(total_images)])
+
+        results: list[Frame] = []
+
+        for idx, frame in enumerate(image_batch.frames):
+            frame_id = str(filenames[idx]) if idx < len(filenames) else str(idx)
+            z_index = int(z_indices[idx]) if idx < len(z_indices) else idx
+            callbacks.on_frame_started(idx, total_images)
+            cached_frame = None
+            if cached_result is not None and 0 <= int(z_index) < len(cached_result.frame_results):
+                cached_frame = cached_result.frame_at(int(z_index))
+            result = process_frame(frame, frame_id, z_index, cached_frame, compute_measurements)
+            results.append(result)
+            callbacks.on_frame_finished(idx + 1, total_images, result)
+
+        batch_result = BatchResult(frame_results=results)
+        callbacks.on_finished(batch_result)
+        return batch_result

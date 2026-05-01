@@ -540,7 +540,7 @@ class BatchResult:
         
         Returns:
             Dict[str, Any]: Mapping of computed keys and values."""
-        from .exporter import BatchResultExporter
+        from .io_export import BatchResultExporter
 
         exporter = BatchResultExporter(export_config=export_config)
         return exporter.save_all(self, output_dir, export_config=export_config)

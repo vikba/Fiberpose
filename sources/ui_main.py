@@ -30,22 +30,22 @@ import logging
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
 
-from .gui_dialogs import (
+from .ui_support import (
     PlotProfileDialog,
     SaveOptionsDialog,
     ConfigEditorDialog,
 )
 from .fiber_analyzer_2D import FiberAnalyzer_2D
-from .models import onnx_cuda_available
-from .datastructures import BatchResult, Frame, ImageBatch, AppConfig, SampleProperties
+from .ml import onnx_cuda_available
+from .domain import BatchResult, Frame, ImageBatch, AppConfig, SampleProperties
 from .utils import ensure_rgb_u8, labels_to_color, to_uint8_for_view
-from .frame_pipeline_service import FramePipelineService, PipelineOutcome
-from .view_renderer import ViewRenderer
-from .view_state import ViewState
-from .ui_config_binder import UiConfigBinder
-from .batch_service import BatchService, BatchCallbacks
-from .export_service import ExportService
-from .interaction_tools import ScalebarTool, ProfileTool
+from .pipeline import FramePipelineService, PipelineOutcome
+from .ui_support import ViewRenderer
+from .ui_support import ViewState
+from .ui_support import UiConfigBinder
+from .pipeline import BatchService, BatchCallbacks
+from .io_export import ExportService
+from .ui_support import ScalebarTool, ProfileTool
 
 # ------------------- Paths -------------------
 

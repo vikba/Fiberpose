@@ -11,8 +11,8 @@ import numpy as np
 from scipy.ndimage import gaussian_filter, laplace
 from skimage.segmentation import watershed, find_boundaries
 
-from .datastructures import FiberFragment
-from .models import OnnxFiberposeModel
+from .domain import FiberFragment
+from .ml import OnnxFiberposeModel
 from .ridge_detector import RidgeDetector
 from .utils import (
     _bilinear,

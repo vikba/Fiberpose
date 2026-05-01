@@ -1,4 +1,8 @@
-"""Qt dialog widgets for plotting and configuration editing."""
+"""UI support classes for dialogs, config binding, view state/rendering, and interaction tools."""
+
+from __future__ import annotations
+
+# ---- merged from gui_dialogs.py ----
 
 import json
 import os
@@ -13,7 +17,7 @@ from PyQt6.QtWidgets import QDialogButtonBox
 
 import pyqtgraph as pg
 
-from .datastructures import AppConfig
+from .domain import AppConfig
 
 
 class PlotProfileDialog(QtWidgets.QDialog):
@@ -812,3 +816,493 @@ class RangeSlider(QtWidgets.QWidget):
         poly.append(QPointF(w, h - self.bar_padding_y))
         self.hist_polygon = poly
 
+
+# ---- merged from ui_config_binder.py ----
+
+
+import math
+from dataclasses import dataclass
+
+import numpy as np
+
+from .domain import AppConfig, SampleProperties
+
+
+@dataclass
+class InvalidationFlags:
+    """Computed invalidation deltas after applying UI state to config."""
+
+    prediction_changed: bool = False
+    segmentation_changed: bool = False
+    measurements_changed: bool = False
+    invalidate_centerlines: bool = False
+    sample_properties_changed: bool = False
+
+
+class UiConfigBinder:
+    """Owns synchronization logic between Qt widgets and configuration models."""
+
+    @staticmethod
+    def sync_ui_to_sample_properties(window, sample_props: SampleProperties) -> tuple[SampleProperties, bool]:
+        prev_px = float(getattr(sample_props, "pixel_size_x", 1.0))
+        prev_py = float(getattr(sample_props, "pixel_size_y", 1.0))
+        prev_z = float(getattr(sample_props, "voxel_size_z", 1.0))
+        prev_unit = str(getattr(sample_props, "unit", "px"))
+
+        def _parse_positive(text: str, fallback: float) -> float:
+            text = (text or "").strip()
+            if not text:
+                return float(fallback)
+            try:
+                value = float(text)
+            except ValueError:
+                return float(fallback)
+            if value > 0 and np.isfinite(value):
+                return float(value)
+            return float(fallback)
+
+        px = _parse_positive(
+            window.le_pixelsize.text(),
+            sample_props.effective_pixel_size_xy(),
+        )
+        z = _parse_positive(
+            window.le_voxeldepth.text(),
+            sample_props.voxel_size_z,
+        )
+
+        sample_props.pixel_size_x = float(px)
+        sample_props.pixel_size_y = float(px)
+        sample_props.voxel_size_z = float(z)
+        unit_txt = window.cb_units.currentText().strip()
+        sample_props.unit = unit_txt if unit_txt else "px"
+        sample_props.source = "manual"
+
+        changed = (
+            not math.isclose(prev_px, float(sample_props.pixel_size_x), rel_tol=1e-9, abs_tol=1e-9)
+            or not math.isclose(prev_py, float(sample_props.pixel_size_y), rel_tol=1e-9, abs_tol=1e-9)
+            or not math.isclose(prev_z, float(sample_props.voxel_size_z), rel_tol=1e-9, abs_tol=1e-9)
+            or prev_unit != str(sample_props.unit)
+        )
+        return sample_props, changed
+
+    @staticmethod
+    def sync_sample_properties_to_ui(window, sample_props: SampleProperties) -> None:
+        px = sample_props.effective_pixel_size_xy()
+        window.le_pixelsize.setText(f"{px:.6g}")
+        window.le_voxeldepth.setText(f"{sample_props.voxel_size_z:.6g}")
+
+        unit_txt = sample_props.unit if sample_props.unit else "px"
+        window.cb_units.blockSignals(True)
+        idx = window.cb_units.findText(unit_txt)
+        if idx >= 0:
+            window.cb_units.setCurrentIndex(idx)
+        else:
+            window.cb_units.setCurrentText(unit_txt)
+        window.cb_units.blockSignals(False)
+
+    @staticmethod
+    def sync_ui_to_config(window, config: AppConfig) -> tuple[AppConfig, InvalidationFlags]:
+        prev_model_path = str(getattr(config, "model_path", ""))
+        prev_scale_label = str(getattr(config, "scale_label", "1x"))
+        prev_max_angle = float(getattr(config, "max_angle_deg", 30.0))
+        prev_ridge_sigma = float(getattr(config, "ridge_sigma", 1.0))
+        prev_ridge_low = float(getattr(config, "ridge_low", 0.01))
+        prev_ridge_high = float(getattr(config, "ridge_high", 0.4))
+        prev_min_fragment_centerline_length_px = float(
+            getattr(config, "min_fragment_centerline_length_px", 10.0)
+        )
+        prev_strict = bool(getattr(config, "strict_centerlines", False))
+        prev_mode = str(getattr(config, "segmentation_mode", "watershed"))
+        prev_merge_expansion_factor = float(getattr(config, "merge_expansion_factor", 0.7))
+        prev_segmentation_expansion_factor = float(getattr(config, "segmentation_expansion_factor", 1.0))
+        prev_threshold = int(getattr(config, "seg_threshold", 1))
+        prev_spacing = float(getattr(config, "sample_spacing", 5.0))
+
+        config.model_path = window.cb_model.currentText().strip()
+        config.use_gpu = window.chb_usegpu.isChecked()
+        config.scale_label = window.cb_scale.currentText().strip()
+
+        if hasattr(window, "sp_max_cent_angle"):
+            config.max_angle_deg = float(window.sp_max_cent_angle.value())
+        else:
+            config.max_angle_deg = float(getattr(config, "max_angle_deg", 30.0))
+        config.ridge_sigma = float(getattr(config, "ridge_sigma", 1.0))
+        config.ridge_low = float(getattr(config, "ridge_low", 0.01))
+        config.ridge_high = float(getattr(config, "ridge_high", 0.4))
+        config.min_fragment_centerline_length_px = float(
+            getattr(config, "min_fragment_centerline_length_px", 10.0)
+        )
+        config.strict_centerlines = window.chb_strict.isChecked()
+
+        if window.rb_ridge.isChecked():
+            config.segmentation_mode = "radial_expansion"
+        else:
+            config.segmentation_mode = "watershed"
+
+        config.seg_threshold = int(window.sp_segm_threshold.value())
+        config.merge_expansion_factor = float(getattr(config, "merge_expansion_factor", 0.7))
+        config.segmentation_expansion_factor = float(getattr(config, "segmentation_expansion_factor", 1.0))
+
+        if hasattr(window, "le_samspacing"):
+            text = window.le_samspacing.text().strip()
+            try:
+                spacing = float(text)
+            except Exception:
+                spacing = prev_spacing
+            if spacing > 0 and np.isfinite(spacing):
+                config.sample_spacing = float(spacing)
+            else:
+                config.sample_spacing = float(prev_spacing)
+        else:
+            config.sample_spacing = float(getattr(config, "sample_spacing", 5.0))
+
+        prediction_changed = (
+            prev_model_path != str(config.model_path)
+            or prev_scale_label != str(config.scale_label)
+        )
+        max_angle_changed = not math.isclose(prev_max_angle, float(config.max_angle_deg), rel_tol=1e-9, abs_tol=1e-9)
+        ridge_sigma_changed = not math.isclose(prev_ridge_sigma, float(config.ridge_sigma), rel_tol=1e-9, abs_tol=1e-9)
+        ridge_low_changed = not math.isclose(prev_ridge_low, float(config.ridge_low), rel_tol=1e-9, abs_tol=1e-9)
+        ridge_high_changed = not math.isclose(prev_ridge_high, float(config.ridge_high), rel_tol=1e-9, abs_tol=1e-9)
+        min_fragment_centerline_length_changed = not math.isclose(
+            prev_min_fragment_centerline_length_px,
+            float(config.min_fragment_centerline_length_px),
+            rel_tol=1e-9,
+            abs_tol=1e-9,
+        )
+        segmentation_changed = (
+            max_angle_changed
+            or ridge_sigma_changed
+            or ridge_low_changed
+            or ridge_high_changed
+            or min_fragment_centerline_length_changed
+            or prev_strict != bool(config.strict_centerlines)
+            or prev_mode != str(config.segmentation_mode)
+            or not math.isclose(prev_merge_expansion_factor, float(config.merge_expansion_factor), rel_tol=1e-9, abs_tol=1e-9)
+            or not math.isclose(
+                prev_segmentation_expansion_factor,
+                float(config.segmentation_expansion_factor),
+                rel_tol=1e-9,
+                abs_tol=1e-9,
+            )
+            or prev_threshold != int(config.seg_threshold)
+        )
+        measurements_changed = not math.isclose(prev_spacing, float(config.sample_spacing), rel_tol=1e-9, abs_tol=1e-9)
+
+        invalidate_centerlines = (
+            max_angle_changed
+            or ridge_sigma_changed
+            or ridge_low_changed
+            or ridge_high_changed
+            or min_fragment_centerline_length_changed
+            or prev_strict != bool(config.strict_centerlines)
+            or not math.isclose(prev_merge_expansion_factor, float(config.merge_expansion_factor), rel_tol=1e-9, abs_tol=1e-9)
+        )
+
+        flags = InvalidationFlags(
+            prediction_changed=prediction_changed,
+            segmentation_changed=segmentation_changed,
+            measurements_changed=measurements_changed,
+            invalidate_centerlines=invalidate_centerlines,
+        )
+        return config, flags
+
+    @staticmethod
+    def sync_config_to_ui(window, config: AppConfig) -> None:
+        def set_combo_text(cb, text):
+            cb.blockSignals(True)
+            idx = cb.findText(text)
+            if idx >= 0:
+                cb.setCurrentIndex(idx)
+            else:
+                cb.setCurrentText(text)
+            cb.blockSignals(False)
+
+        set_combo_text(window.cb_model, config.model_path)
+
+        window.chb_usegpu.blockSignals(True)
+        window.chb_usegpu.setChecked(bool(config.use_gpu))
+        window.chb_usegpu.blockSignals(False)
+
+        set_combo_text(window.cb_scale, config.scale_label)
+
+        if hasattr(window, "sp_max_cent_angle"):
+            window.sp_max_cent_angle.blockSignals(True)
+            window.sp_max_cent_angle.setValue(int(config.max_angle_deg))
+            window.sp_max_cent_angle.blockSignals(False)
+
+        window.chb_strict.blockSignals(True)
+        window.chb_strict.setChecked(bool(config.strict_centerlines))
+        window.chb_strict.blockSignals(False)
+
+        window.rb_watershed.blockSignals(True)
+        window.rb_ridge.blockSignals(True)
+        if str(config.segmentation_mode).strip().lower() == "radial_expansion":
+            window.rb_ridge.setChecked(True)
+        else:
+            window.rb_watershed.setChecked(True)
+        window.rb_watershed.blockSignals(False)
+        window.rb_ridge.blockSignals(False)
+
+        window.sp_segm_threshold.blockSignals(True)
+        window.sp_segm_threshold.setValue(int(config.seg_threshold))
+        window.sp_segm_threshold.blockSignals(False)
+
+        if hasattr(window, "le_samspacing"):
+            window.le_samspacing.setText(str(config.sample_spacing))
+
+        if hasattr(window, "_update_strict_checkbox_state"):
+            window._update_strict_checkbox_state()
+
+# ---- merged from view_state.py ----
+
+
+from dataclasses import dataclass
+from enum import Enum
+
+
+class ViewMode(str, Enum):
+    """Canonical view mode labels matching the UI combobox text."""
+
+    ORIGINAL = "Original"
+    DT = "DT"
+    LAPLACIAN = "Laplacian"
+    SEGMENTATION_CENTERLINES = "Segmentation centerlines"
+    CENTERLINES = "Centerlines"
+    MEASUREMENT_CENTERLINES = "Measurement centerlines"
+    CENTERLINE_COMPARISON = "Centerline comparison"
+    SEGMENTATION = "Segmentation"
+    SEGMENTATION_OUTLINE = "Segmentation outline"
+    OVERLAY = "Overlay"
+    SAMPLING = "Sampling"
+    MEASUREMENTS_OVERLAY = "Measurements overlay"
+    GX = "gx"
+    GY = "gy"
+    DT_GRAD_ERROR = "DT grad error"
+
+
+@dataclass
+class ViewState:
+    """UI-level view selection and overlay toggles."""
+
+    mode: str = ViewMode.ORIGINAL.value
+    show_pores: bool = False
+    show_orientation: bool = False
+    zoom: float = 1.0
+
+# ---- merged from view_renderer.py ----
+
+
+from typing import Callable
+
+import numpy as np
+from skimage.segmentation import find_boundaries
+
+from .domain import Frame
+from .utils import ensure_rgb_u8, labels_to_color, to_uint8_for_view
+
+
+
+class ViewRenderer:
+    """Select and build the image to show for a given view state."""
+
+    def __init__(self, grad_error_builder: Callable[[Frame], np.ndarray | None]):
+        self._grad_error_builder = grad_error_builder
+
+    @staticmethod
+    def _build_segmentation_outline_image(
+        base_img: np.ndarray | None,
+        labels: np.ndarray | None,
+    ) -> np.ndarray | None:
+        if labels is None:
+            return None
+        base_rgb = ensure_rgb_u8(base_img)
+        if base_rgb is None or base_rgb.shape[:2] != labels.shape[:2]:
+            return None
+
+        out = base_rgb.copy()
+        try:
+            boundaries = find_boundaries(labels, mode="outer")
+        except Exception:
+            boundaries = None
+        if boundaries is not None and boundaries.any():
+            out[boundaries] = (255, 0, 0)
+        return out
+
+    @staticmethod
+    def _centerline_view(img: np.ndarray | None, labels: np.ndarray | None) -> np.ndarray | None:
+        out = ensure_rgb_u8(img)
+        if out is None:
+            return None
+        if labels is None or out.shape[:2] != labels.shape[:2]:
+            return out
+        painted = out.copy()
+        try:
+            boundaries = find_boundaries(labels, mode="outer")
+        except Exception:
+            boundaries = None
+        if boundaries is not None and boundaries.any():
+            painted[boundaries] = (0, 0, 255)
+        return painted
+
+    @staticmethod
+    def _labels_rgb(frame: Frame) -> np.ndarray | None:
+        labels = frame.labels_2d
+        if labels is None:
+            return None
+        cache_id, cache_img = frame.labels_rgb_cache
+        current_id = id(labels)
+        if cache_id != current_id:
+            cache_img = labels_to_color(labels)
+            frame.labels_rgb_cache = (current_id, cache_img)
+        return cache_img
+
+    def _segmentation_outline_view(self, frame: Frame) -> np.ndarray | None:
+        labels = frame.labels_2d
+        if labels is None:
+            return None
+
+        base_img = frame.orig_img if frame.scale_factor == 1.0 or frame.orig_img_scaled is None else frame.orig_img_scaled
+        cache_id, cache_img = frame.segmentation_outline_cache
+        current_id = id(labels)
+        if cache_id != current_id or cache_img is None:
+            cache_img = self._build_segmentation_outline_image(base_img, labels)
+            frame.segmentation_outline_cache = (current_id, cache_img)
+        return cache_img
+
+    def render(self, frame: Frame, state: ViewState) -> np.ndarray | None:
+        mode = state.mode
+        labels_rgb = self._labels_rgb(frame)
+
+        handlers: dict[str, Callable[[], np.ndarray | None]] = {
+            ViewMode.ORIGINAL.value: lambda: ensure_rgb_u8(frame.orig_img),
+            ViewMode.DT.value: lambda: to_uint8_for_view(frame.dt_normalized),
+            ViewMode.LAPLACIAN.value: lambda: to_uint8_for_view(frame.lapl_img),
+            ViewMode.SEGMENTATION_CENTERLINES.value: lambda: self._centerline_view(frame.segmentation_centerlines_overlay_img, frame.labels_2d),
+            ViewMode.CENTERLINES.value: lambda: self._centerline_view(frame.segmentation_centerlines_overlay_img, frame.labels_2d),
+            ViewMode.MEASUREMENT_CENTERLINES.value: lambda: self._centerline_view(frame.measurement_centerlines_overlay_img, frame.labels_2d),
+            ViewMode.CENTERLINE_COMPARISON.value: lambda: ensure_rgb_u8(frame.centerlines_comparison_overlay_img),
+            ViewMode.SEGMENTATION.value: lambda: labels_rgb,
+            ViewMode.SEGMENTATION_OUTLINE.value: lambda: self._segmentation_outline_view(frame),
+            ViewMode.OVERLAY.value: lambda: frame.overlay_img,
+            ViewMode.SAMPLING.value: lambda: frame.sampling_overlay if frame.sampling_overlay is not None else ensure_rgb_u8(frame.dt_u8),
+            ViewMode.GX.value: lambda: to_uint8_for_view(frame.gx),
+            ViewMode.GY.value: lambda: to_uint8_for_view(frame.gy),
+            ViewMode.DT_GRAD_ERROR.value: lambda: self._grad_error_builder(frame),
+        }
+
+        if mode == ViewMode.MEASUREMENTS_OVERLAY.value:
+            fallback = frame.overlay_img if frame.overlay_img is not None else labels_rgb
+            if state.show_pores:
+                return frame.pores_overlay if frame.pores_overlay is not None else fallback
+            if state.show_orientation:
+                return frame.orientations_overlay if frame.orientations_overlay is not None else fallback
+            return frame.diameters_overlay if frame.diameters_overlay is not None else fallback
+
+        handler = handlers.get(mode)
+        return handler() if handler is not None else None
+
+# ---- merged from interaction_tools.py ----
+
+
+from dataclasses import dataclass, field
+
+import numpy as np
+from skimage.measure import profile_line
+
+
+@dataclass
+class ScalebarTool:
+    """State machine for selecting a two-point scalebar."""
+
+    length_value: float = 100.0
+    unit: str = "um"
+    pending: bool = False
+    points: list[tuple[float, float]] = field(default_factory=list)
+
+    def start(self, length_value: float, unit: str) -> None:
+        self.length_value = float(length_value)
+        self.unit = str(unit)
+        self.pending = True
+        self.points = []
+
+    def cancel(self) -> None:
+        self.pending = False
+        self.points = []
+
+    def add_point(self, x: float, y: float) -> float | None:
+        if not self.pending:
+            return None
+        self.points.append((float(x), float(y)))
+        if len(self.points) < 2:
+            return None
+        (x0, y0), (x1, y1) = self.points[:2]
+        pixel_length = float(np.hypot(x1 - x0, y1 - y0))
+        self.pending = False
+        self.points = []
+        if pixel_length <= 0:
+            return None
+        return float(self.length_value / pixel_length)
+
+
+@dataclass
+class ProfileTool:
+    """Two-point line profile interaction helper."""
+
+    active: bool = False
+    points_scene: list[tuple[float, float]] = field(default_factory=list)
+    points_img: list[tuple[float, float]] = field(default_factory=list)
+
+    def start(self) -> None:
+        self.active = True
+        self.points_scene = []
+        self.points_img = []
+
+    def stop(self) -> None:
+        self.active = False
+        self.points_scene = []
+        self.points_img = []
+
+    def reset(self) -> None:
+        self.points_scene = []
+        self.points_img = []
+
+    def add_point(self, scene_xy: tuple[float, float], img_xy: tuple[float, float]) -> bool:
+        if len(self.points_scene) >= 2:
+            self.reset()
+        self.points_scene.append((float(scene_xy[0]), float(scene_xy[1])))
+        self.points_img.append((float(img_xy[0]), float(img_xy[1])))
+        return len(self.points_scene) == 2
+
+    @staticmethod
+    def compute_profile(
+        dt: np.ndarray,
+        p0_xy: tuple[float, float],
+        p1_xy: tuple[float, float],
+        *,
+        scale_factor: float,
+    ) -> tuple[np.ndarray, np.ndarray, str] | None:
+        x0, y0 = p0_xy
+        x1, y1 = p1_xy
+        length_px = float(np.hypot(x1 - x0, y1 - y0))
+        if length_px <= 0:
+            return None
+
+        profile_vals = profile_line(dt, (y0, x0), (y1, x1), mode="reflect", order=1)
+        if profile_vals is None or profile_vals.size == 0:
+            return None
+
+        profile_vals = np.asarray(profile_vals, dtype=np.float32, copy=False)
+        scale = float(scale_factor)
+        if not np.isfinite(scale) or scale <= 0:
+            scale = 1.0
+
+        true_length_px = length_px / scale
+        profile_vals_true = profile_vals / scale
+        distances = np.linspace(0.0, true_length_px, profile_vals.size, dtype=np.float32)
+        delta = float(profile_vals_true[-1] - profile_vals_true[0])
+        summary = (
+            f"Length: {true_length_px:.2f} px · ΔDT: {delta:+.2f} · "
+            f"Min/Max: {float(profile_vals_true.min()):.2f} / {float(profile_vals_true.max()):.2f}"
+        )
+        return distances, profile_vals_true, summary
