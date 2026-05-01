@@ -51,8 +51,5 @@ class BatchService:
             callbacks.on_frame_finished(idx + 1, total_images, result)
 
         batch_result = BatchResult(frame_results=results)
-        batch_result.stack3d_meta = {
-            "info": "3D post-processing not run yet. Click 'Analyze 3D' to merge labels across slices."
-        }
         callbacks.on_finished(batch_result)
         return batch_result

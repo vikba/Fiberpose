@@ -39,10 +39,6 @@ class AppConfig:
     # --- Analysis & Physical Units ---
     sample_spacing: float = 5.0
 
-    # --- 3D View Rendering ---
-    render3d_max_display_voxels: int = 8_000_000
-    render3d_max_display_edge: int = 320
-    
     # --- DT gradient quality view ---
     # Signed error breakpoints for s = |grad(dt)| - 1:
     # [p0, p1, p2, p3] with p0 < p1 <= 0 <= p2 < p3.
@@ -524,9 +520,6 @@ class ImageBatch:
 class BatchResult:
     """Capture outputs and metadata produced by batch."""
     frame_results: List[Frame]
-    semantic_volume: Optional[np.ndarray] = None
-    semantic_skeleton_volume: Optional[np.ndarray] = None
-    stack3d_meta: Optional[Dict[str, Any]] = None
 
     def frame_at(self, index: int) -> Frame:
         """Orchestrate frame at within the current module workflow.
@@ -537,25 +530,6 @@ class BatchResult:
         Returns:
             Frame: Result object produced by the frame at routine."""
         return self.frame_results[index]
-
-    @property
-    def has_3d_input(self) -> bool:
-        """Check whether 3d input is available for downstream processing.
-        
-        Returns:
-            bool: True when the requested condition is satisfied; otherwise False."""
-        return len(self.frame_results) > 1
-
-    @property
-    def has_3d_outputs(self) -> bool:
-        """Check whether 3d outputs is available for downstream processing.
-        
-        Returns:
-            bool: True when the requested condition is satisfied; otherwise False."""
-        return (
-            self.semantic_volume is not None
-            or self.semantic_skeleton_volume is not None
-        )
 
     def save_all(self, output_dir: str, export_config: Dict[str, Any] | None = None) -> Dict[str, Any]:
         """Persist all using the configured export conventions.
@@ -570,27 +544,6 @@ class BatchResult:
 
         exporter = BatchResultExporter(export_config=export_config)
         return exporter.save_all(self, output_dir, export_config=export_config)
-
-    # Backward compatibility for callers still using the previous name.
-    @property
-    def merge_meta(self) -> Optional[Dict[str, Any]]:
-        """Orchestrate merge meta within the current module workflow.
-        
-        Returns:
-            Optional[Dict[str, Any]]: Result object produced by the merge meta routine."""
-        return self.stack3d_meta
-
-    @merge_meta.setter
-    def merge_meta(self, value: Optional[Dict[str, Any]]) -> None:
-        """Orchestrate merge meta within the current module workflow.
-        
-        Args:
-            value (Optional[Dict[str, Any]]): Value for value interpreted by this routine.
-        
-        Returns:
-            None: Result object produced by the merge meta routine."""
-        self.stack3d_meta = value
-
 
 @dataclass
 class Frame:

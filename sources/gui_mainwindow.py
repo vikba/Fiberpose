@@ -33,13 +33,11 @@ logging.basicConfig(level=logging.INFO)
 from .gui_dialogs import (
     PlotProfileDialog,
     SaveOptionsDialog,
-    Stack3DWindow,
     ConfigEditorDialog,
 )
 from .fiber_analyzer_2D import FiberAnalyzer_2D
 from .models import onnx_cuda_available
 from .datastructures import BatchResult, Frame, ImageBatch, AppConfig, SampleProperties
-from .batch_pipeline import StackAnalyzer_3D
 from .utils import ensure_rgb_u8, labels_to_color, to_uint8_for_view
 from .frame_pipeline_service import FramePipelineService, PipelineOutcome
 from .view_renderer import ViewRenderer
@@ -155,7 +153,6 @@ class MainWindow(QMainWindow):
         self._batch_processed_samples: int = 0
         self._batch_collects_measurements: bool = False
         self._current_z_index: int = 0
-        self._stack3d_window: Stack3DWindow | None = None
         self._slice_label = QtWidgets.QLabel("")
         self.statusbar.addPermanentWidget(self._slice_label)
         self.z_scroll.setEnabled(False)
@@ -183,9 +180,7 @@ class MainWindow(QMainWindow):
         self.btn_analyze_2D.clicked.connect(self.analyze_fibers)
         self.btn_set_scalebar.clicked.connect(self._on_set_scalebar_clicked)
         self.btn_plot_profile.clicked.connect(self._on_plot_profile_clicked)
-        self.btn_analyze_3D.clicked.connect(self._on_analyze_3d_clicked)
         self.action_batch_processing.triggered.connect(self._on_batch_processing)
-        self.btn_open_3d.clicked.connect(self._on_open_3d_view)
 
         # Remove connection of radiobutton signals and instead hook up the combobox change
         self.cb_view.currentIndexChanged.connect(self.refresh_view)
@@ -2195,161 +2190,6 @@ class MainWindow(QMainWindow):
             self._show_warning("Batch processing complete with issues", summary)
         else:
             self._show_info("Batch processing complete", summary)
-
-    def _on_open_3d_view(self):
-        """Handle the pen 3d view event and propagate UI state updates."""
-        if self._batch_result is None:
-            self._show_info("3D view", "Run segmentation or analysis on a stack first.")
-            return
-        if len(self._batch_result.frame_results) < 2:
-            self._show_info("3D view", "3D view requires more than one slice.")
-            return
-        self.sync_ui_to_sample_properties()
-        voxel_spacing_zyx = self.sample_props.spacing_zyx()
-        max_display_voxels = max(1, int(self.config.render3d_max_display_voxels))
-        max_display_edge = max(1, int(self.config.render3d_max_display_edge))
-        if self._stack3d_window is None:
-            self._stack3d_window = Stack3DWindow(
-                self._batch_result,
-                parent=self,
-                voxel_spacing_zyx=voxel_spacing_zyx,
-                max_display_voxels=max_display_voxels,
-                max_display_edge=max_display_edge,
-            )
-        else:
-            self._stack3d_window.set_display_limits(
-                max_display_voxels=max_display_voxels,
-                max_display_edge=max_display_edge,
-            )
-            self._stack3d_window.update_batch_result(
-                self._batch_result,
-                voxel_spacing_zyx=voxel_spacing_zyx,
-            )
-        self._stack3d_window.show()
-        self._stack3d_window.raise_()
-        self._stack3d_window.activateWindow()
-
-    def _on_analyze_3d_clicked(self):
-        """Handle the nalyze 3d clicked event and propagate UI state updates."""
-        if self._image_batch is None or len(self._image_batch) == 0:
-            self._show_info("Analyze 3D", "Load a stack first.")
-            return
-        if len(self._image_batch) < 2:
-            self._show_info("Analyze 3D", "3D analysis requires at least two slices.")
-            return
-
-        self.sync_ui_to_config()
-        self.sync_ui_to_sample_properties()
-        voxel_spacing_zyx = self.sample_props.spacing_zyx()
-
-        if not self._batch_measurements_match_current_settings():
-            self._stack_diameter_histogram_data = None
-            self._stack_angle_histogram_data = None
-            self._stack_diameter_histogram_enabled = False
-            batch_result = self._run_batch_analysis(
-                compute_measurements=True,
-                error_title="Analyze 3D failed during 2D batch analysis",
-            )
-            if batch_result is None:
-                return
-        elif self._batch_result is None:
-            self._show_warning("Analyze 3D", "No batch result available for 3D processing.")
-            return
-
-        pooled_diameters = self._collect_stack_diameter_samples(self._batch_result)
-        pooled_angles = self._collect_stack_angle_samples(self._batch_result)
-        if pooled_diameters.size:
-            self._stack_diameter_histogram_data = pooled_diameters
-            self._stack_angle_histogram_data = pooled_angles
-            self._stack_diameter_histogram_enabled = True
-        else:
-            self._stack_diameter_histogram_data = None
-            self._stack_angle_histogram_data = None
-            self._stack_diameter_histogram_enabled = False
-
-        # Local 3D mask cleanup knobs (kept out of global app config on purpose).
-        stack3d_open_iters = 1
-        stack3d_close_iters = 1
-        stack3d_min_component_voxels = 50
-        stack3d_connectivity = 1
-
-        QtWidgets.QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
-        try:
-            stack_analyzer_3d = StackAnalyzer_3D(
-                voxel_spacing_zyx=voxel_spacing_zyx,
-                open_iters=stack3d_open_iters,
-                close_iters=stack3d_close_iters,
-                min_component_voxels=stack3d_min_component_voxels,
-                connectivity=stack3d_connectivity,
-            )
-            self._batch_result = stack_analyzer_3d.process(
-                self._batch_result,
-                force=True,
-            )
-        except Exception as exc:
-            logger.warning("3D post-processing failed: %s", exc)
-            self._show_error("Analyze 3D failed", str(exc))
-            return
-        finally:
-            QtWidgets.QApplication.restoreOverrideCursor()
-
-        stack3d_meta = self._batch_result.stack3d_meta or {}
-        if stack3d_meta.get("error"):
-            self._show_warning("Analyze 3D", f"3D processing failed: {stack3d_meta.get('error')}")
-            return
-
-        semantic_volume = self._batch_result.semantic_volume
-        semantic_skeleton_volume = self._batch_result.semantic_skeleton_volume
-        if semantic_volume is None or semantic_skeleton_volume is None:
-            self._show_warning(
-                "Analyze 3D",
-                "3D processing finished, but semantic volume or semantic skeleton is missing.",
-            )
-            return
-        semantic_arr = np.asarray(semantic_volume)
-        skeleton_arr = np.asarray(semantic_skeleton_volume)
-        if semantic_arr.ndim != 3 or skeleton_arr.ndim != 3:
-            self._show_warning(
-                "Analyze 3D",
-                "3D processing produced invalid dataset dimensionality; expected 3D volumes.",
-            )
-            return
-        if semantic_arr.shape != skeleton_arr.shape:
-            self._show_warning(
-                "Analyze 3D",
-                "Semantic volume and semantic skeleton volume shapes do not match.",
-            )
-            return
-
-        self._set_current_slice(self._current_z_index, update_view=True)
-        if self._stack3d_window is not None:
-            self._stack3d_window.update_batch_result(
-                self._batch_result,
-                voxel_spacing_zyx=voxel_spacing_zyx,
-            )
-        self._refresh_save_actions()
-
-        method = stack3d_meta.get("skeleton_method")
-        semantic_labels = int(stack3d_meta.get("semantic_num_labels", int(np.max(semantic_arr)) if semantic_arr.size else 0))
-        skeleton_voxels = int(stack3d_meta.get("num_skeleton_voxels", int(np.count_nonzero(skeleton_arr)) if skeleton_arr.size else 0))
-        diameter_samples = int(pooled_diameters.size)
-        if method:
-            self.statusbar.showMessage(
-                (
-                    f"3D analysis complete ({method}). "
-                    f"semantic labels={semantic_labels}, skeleton voxels={skeleton_voxels}, "
-                    f"stack diameter samples={diameter_samples}."
-                ),
-                5000,
-            )
-        else:
-            self.statusbar.showMessage(
-                (
-                    f"3D analysis complete. semantic labels={semantic_labels}, "
-                    f"skeleton voxels={skeleton_voxels}, stack diameter samples={diameter_samples}."
-                ),
-                5000,
-            )
 
     # ------------------- Profile plot tool -------------------
 

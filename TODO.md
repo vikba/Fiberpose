@@ -21,21 +21,22 @@
 - [x] Add zoom
 - [x] Add scalebar tool (or automatic scalebar detection)
 - [x] Add default configuration variable
-- [ ] Load configuration from file
+- [x] Load configuration from file
 - [x] Create class FiberSegment
 - [x] Add plotprofile
 - [x] Dynamically add checkpoints from checkpoints folder
 - [x] Add simple centerline (ridge) segmentation
 - [ ] Implement possibility of pyramid analysis for thin fibers 
 - [ ] Tiling for predictions
-- [ ] Add lightweight ONNX inference runtime
+- [x] Add lightweight ONNX inference runtime
 - [x] Allow saving style vector
 - [x] Use color coding for angle visialization 
 - [x] Add 3D view
 - [x] Algorithms for 3D analysis
 - [ ] Add checkbox to turn on/off auto brightness/darkness
 - [ ] Implement 3-stage cache approach
-
+- [ ] Progress bar
+- [ ] For folder analysis add summary file
 
 ## 🐞 Bugs
 - [x] Fix x,y order for arrow drawing
@@ -51,10 +52,12 @@
 ## 🧹 Refactoring / Cleanup
 - [x] Improve architecture so each class owns only specialized functions (eg FiberAnalyzer own all image processing)
 - [x] Remove excessive hasattr guards
-- [ ] Re-write compute heavy tasks in numba
+- [x] Re-write compute heavy tasks in numba
 - [ ] Refactor process_centerlines
 - [x] Refactor compute_centerlines
-- [ ] Refactor gui_mainwindow
+- [x] Refactor gui_mainwindow
+- [ ] Controller QThread
+- [ ] Speed up the code
 
 
 ## 📝 Documentation

@@ -62,24 +62,6 @@
         <string>Analyze 2D</string>
        </property>
       </widget>
-      <widget class="QPushButton" name="btn_open_3d">
-       <property name="geometry">
-        <rect>
-         <x>130</x>
-         <y>620</y>
-         <width>101</width>
-         <height>31</height>
-        </rect>
-       </property>
-       <property name="font">
-        <font>
-         <pointsize>12</pointsize>
-        </font>
-       </property>
-       <property name="text">
-        <string>Open 3D view</string>
-       </property>
-      </widget>
       <widget class="QGroupBox" name="groupBox_measurement">
        <property name="geometry">
         <rect>
@@ -552,9 +534,9 @@
        <property name="geometry">
         <rect>
          <x>10</x>
-         <y>660</y>
+         <y>620</y>
          <width>221</width>
-         <height>141</height>
+         <height>151</height>
         </rect>
        </property>
       </widget>
@@ -659,8 +641,8 @@
       <widget class="QPushButton" name="btn_plot_profile">
        <property name="geometry">
         <rect>
-         <x>20</x>
-         <y>620</y>
+         <x>130</x>
+         <y>580</y>
          <width>101</width>
          <height>31</height>
         </rect>
@@ -692,28 +674,9 @@
         <string>Set scalebar</string>
        </property>
       </widget>
-      <widget class="QPushButton" name="btn_analyze_3D">
-       <property name="geometry">
-        <rect>
-         <x>130</x>
-         <y>580</y>
-         <width>101</width>
-         <height>31</height>
-        </rect>
-       </property>
-       <property name="font">
-        <font>
-         <pointsize>12</pointsize>
-        </font>
-       </property>
-       <property name="text">
-        <string>Analyze 3D</string>
-       </property>
-      </widget>
       <zorder>groupBox_segmentation</zorder>
       <zorder>btn_segment</zorder>
       <zorder>btn_analyze_2D</zorder>
-      <zorder>btn_open_3d</zorder>
       <zorder>groupBox_measurement</zorder>
       <zorder>progress_bar</zorder>
       <zorder>text_edit2</zorder>
@@ -721,7 +684,6 @@
       <zorder>label</zorder>
       <zorder>btn_plot_profile</zorder>
       <zorder>btn_set_scalebar</zorder>
-      <zorder>btn_analyze_3D</zorder>
      </widget>
     </item>
     <item>
@@ -785,7 +747,7 @@
      <x>0</x>
      <y>0</y>
      <width>879</width>
-     <height>21</height>
+     <height>24</height>
     </rect>
    </property>
    <widget class="QMenu" name="menuFile">

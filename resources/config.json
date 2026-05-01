@@ -14,8 +14,6 @@
     "segmentation_expansion_factor": 1.0,
     "seg_threshold": 1,
     "sample_spacing": 5.0,
-    "render3d_max_display_voxels": 8000000,
-    "render3d_max_display_edge": 320,
     "grad_quality_points": [
         -0.35,
         -0.08,
