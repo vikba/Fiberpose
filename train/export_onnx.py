@@ -171,24 +171,30 @@ def export_onnx(args: argparse.Namespace) -> None:
         dtype=torch.float32,
     )
 
-    dynamic_axes = None
+    dynamic_shapes = None
     if not args.static:
-        dynamic_axes = {
-            "input": {0: "batch", 2: "height", 3: "width"},
-            "output": {0: "batch", 2: "height", 3: "width"},
-        }
+        from torch.export import Dim
+
+        dynamic_shapes = (
+            {
+                0: Dim("batch", min=1),
+                2: Dim("height", min=16),
+                3: Dim("width", min=16),
+            },
+        )
 
     with torch.no_grad():
         torch.onnx.export(
             wrapped,
-            dummy,
+            (dummy,),
             str(output_path),
             export_params=True,
             opset_version=args.opset,
             do_constant_folding=False,
             input_names=["input"],
             output_names=["output"],
-            dynamic_axes=dynamic_axes,
+            dynamic_shapes=dynamic_shapes,
+            dynamo=True,
         )
 
     print("ONNX export finished.")

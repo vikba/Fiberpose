@@ -1,6 +1,7 @@
+# CPU inference/runtime dependencies for Fiberpose end users.
+numpy==1.26.4
+onnxruntime==1.20.1
 pyqt6
-onnxruntime
-numpy
 scipy
 numba
 scikit-image
