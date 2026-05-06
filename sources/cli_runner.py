@@ -138,12 +138,11 @@ class CliRunner:
 
         def _iter() -> Iterable[tuple[Any, str, int]]:
             z_counter = 0
-            for path, name, frames_count in jobs:
+            for path, name, _frames_count in jobs:
                 data = iio.imread(path)
                 frames = ImageBatch._normalize_stack(data)
-                base, _ = os.path.splitext(name)
-                for local_idx, frame in enumerate(frames):
-                    frame_id = name if frames_count == 1 else f"{base}_z{local_idx:03d}"
+                for frame in frames:
+                    frame_id = name
                     yield frame, frame_id, z_counter
                     z_counter += 1
 

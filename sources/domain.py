@@ -474,12 +474,9 @@ class ImageBatch:
                 continue
             
             image_frames = cls._normalize_stack(data)
-            for idx, frame in enumerate(image_frames):
-                frames.append(frame)
-                if len(image_frames) == 1:
-                    filenames.append(name)
-                else:
-                    filenames.append(f"{os.path.splitext(name)[0]}_z{idx:03d}")
+            for image_frame in image_frames:
+                frames.append(image_frame)
+                filenames.append(name)
                     
         # --- Extract physical sizes from the first image in the folder ---
         voxel_sizes = {}

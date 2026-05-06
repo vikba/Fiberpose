@@ -130,7 +130,7 @@ class ExportService:
             if kind == "results":
                 export_config["image_format"] = "tiff" if image_format == "tiff" else "png"
         elif layout == "frames":
-            export_config["naming"] = "frame_id_z"
+            export_config["naming"] = "frame_id"
             if kind == "results":
                 export_config["image_format"] = "tiff" if image_format == "tiff" else "png"
         elif layout == "stack":
@@ -658,7 +658,7 @@ class BatchResultExporter:
         cfg = {
             "preset": "full",
             "image_format": "png",
-            "naming": "frame_id_z",
+            "naming": "frame_id",
             "collision": "suffix",
             "layout": "frames",
             "include": [],
@@ -679,8 +679,8 @@ class BatchResultExporter:
             raise ValueError(f"Unsupported image_format: {image_format}")
         cfg["image_format"] = image_format
 
-        naming = str(cfg.get("naming", "frame_id_z"))
-        if naming not in {"frame_id", "frame_id_z", "index"}:
+        naming = str(cfg.get("naming", "frame_id"))
+        if naming not in {"frame_id", "index"}:
             raise ValueError(f"Unsupported naming: {naming}")
         cfg["naming"] = naming
 
@@ -738,22 +738,14 @@ class BatchResultExporter:
         if explicit_base:
             return self._sanitize_name(str(explicit_base))
 
-        naming = cfg.get("naming", "frame_id_z")
+        naming = cfg.get("naming", "frame_id")
         frame_id = self._sanitize_name(os.path.splitext(os.path.basename(str(frame.frame_id)))[0])
 
         if naming == "index":
             return f"frame_{index:04d}"
         if not frame_id:
             frame_id = f"frame_{index:04d}"
-        if naming == "frame_id":
-            return frame_id
-
-        z_index_raw = frame.z_index
-        try:
-            z_index = int(z_index_raw)
-        except Exception:
-            z_index = int(index)
-        return f"{frame_id}_z{z_index:03d}"
+        return frame_id
 
     @staticmethod
     def _sanitize_name(value: str) -> str:

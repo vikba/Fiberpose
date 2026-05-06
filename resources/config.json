@@ -1,5 +1,5 @@
 {
-    "model_path": "checkpoints/model_fiber_2_no_bg.onnx",
+    "model_path": "checkpoints/260505_lab_ind_syn_epoch_0600_R057.onnx",
     "use_gpu": false,
     "scale_label": "1x",
     "max_angle_deg": 30.0,
