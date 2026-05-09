@@ -1067,10 +1067,7 @@ class ViewMode(str, Enum):
     ORIGINAL = "Original"
     DT = "DT"
     LAPLACIAN = "Laplacian"
-    SEGMENTATION_CENTERLINES = "Segmentation centerlines"
     CENTERLINES = "Centerlines"
-    MEASUREMENT_CENTERLINES = "Measurement centerlines"
-    CENTERLINE_COMPARISON = "Centerline comparison"
     SEGMENTATION = "Segmentation"
     SEGMENTATION_OUTLINE = "Segmentation outline"
     OVERLAY = "Overlay"
@@ -1178,10 +1175,7 @@ class ViewRenderer:
             ViewMode.ORIGINAL.value: lambda: ensure_rgb_u8(frame.orig_img),
             ViewMode.DT.value: lambda: to_uint8_for_view(frame.dt_normalized),
             ViewMode.LAPLACIAN.value: lambda: to_uint8_for_view(frame.lapl_img),
-            ViewMode.SEGMENTATION_CENTERLINES.value: lambda: self._centerline_view(frame.segmentation_centerlines_overlay_img, frame.labels_2d),
-            ViewMode.CENTERLINES.value: lambda: self._centerline_view(frame.segmentation_centerlines_overlay_img, frame.labels_2d),
-            ViewMode.MEASUREMENT_CENTERLINES.value: lambda: self._centerline_view(frame.measurement_centerlines_overlay_img, frame.labels_2d),
-            ViewMode.CENTERLINE_COMPARISON.value: lambda: ensure_rgb_u8(frame.centerlines_comparison_overlay_img),
+            ViewMode.CENTERLINES.value: lambda: self._centerline_view(frame.centerlines_comparison_overlay_img, frame.labels_2d),
             ViewMode.SEGMENTATION.value: lambda: labels_rgb,
             ViewMode.SEGMENTATION_OUTLINE.value: lambda: self._segmentation_outline_view(frame),
             ViewMode.OVERLAY.value: lambda: frame.overlay_img,
@@ -1200,7 +1194,9 @@ class ViewRenderer:
             return frame.diameters_overlay if frame.diameters_overlay is not None else fallback
 
         handler = handlers.get(mode)
-        return handler() if handler is not None else None
+        if handler is None:
+            handler = handlers[ViewMode.ORIGINAL.value]
+        return handler()
 
 # ---- merged from interaction_tools.py ----
 

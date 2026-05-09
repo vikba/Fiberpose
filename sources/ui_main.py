@@ -24,7 +24,6 @@ from PyQt6.uic import loadUi
 
 import pyqtgraph as pg
 from scipy.spatial import cKDTree
-from skimage.segmentation import find_boundaries
 
 import logging
 logger = logging.getLogger(__name__)
@@ -38,7 +37,7 @@ from .ui_support import (
 from .fiber_analyzer_2D import FiberAnalyzer_2D
 from .ml import onnx_cuda_available
 from .domain import BatchResult, Frame, ImageBatch, AppConfig, SampleProperties
-from .utils import ensure_rgb_u8, labels_to_color, to_uint8_for_view
+from .utils import labels_to_color, to_uint8_for_view
 from .pipeline import PipelineController, PipelineOutcome
 from .ui_support import ViewRenderer
 from .ui_support import ViewState
@@ -446,116 +445,6 @@ class MainWindow(QMainWindow):
             self._current_zoom = 1.0
             self._zoom_mode_active = False
             self._update_reset_button_visibility()
-
-    def _create_overlay(
-        self,
-        base_img: np.ndarray | None,
-        labels_img: np.ndarray | None,
-        alpha: float = 0.5,
-        labels_rgb: np.ndarray | None = None,
-    ) -> np.ndarray | None:
-        """Provide an internal helper for create overlay.
-        
-        Args:
-            base_img (np.ndarray | None): Value for base img interpreted by this routine.
-            labels_img (np.ndarray | None): Array-like data carrying labels img values for analysis.
-            alpha (float): Numeric control parameter for alpha during computation.
-            labels_rgb (np.ndarray | None): Array-like data carrying labels rgb values for analysis.
-        
-        Returns:
-            np.ndarray | None: Array containing the create overlay output aligned with downstream expectations."""
-        if base_img is None or labels_img is None:
-            return None
-        base_rgb = ensure_rgb_u8(base_img)
-        if labels_rgb is None:
-            labels_rgb = labels_to_color(labels_img)
-        if base_rgb is None or labels_rgb is None:
-            return None
-        if base_rgb.shape[:2] != labels_rgb.shape[:2]:
-            return None
-        out = base_rgb.astype(np.float32, copy=True)
-        over = labels_rgb.astype(np.float32, copy=False)
-        mask = labels_img > 0
-        if mask.any():
-            out[mask] = out[mask] * (1.0 - alpha) + over[mask] * alpha
-        return out.clip(0, 255).astype(np.uint8)
-
-    @staticmethod
-    def _build_segmentation_outline_image(
-        base_img: np.ndarray | None,
-        labels: np.ndarray | None,
-    ) -> np.ndarray | None:
-        """Build the RGB outline image used by the "Segmentation outline" view."""
-        if labels is None:
-            return None
-        base_rgb = ensure_rgb_u8(base_img)
-        if base_rgb is None or base_rgb.shape[:2] != labels.shape[:2]:
-            return None
-
-        out = base_rgb.copy()
-        try:
-            boundaries = find_boundaries(labels, mode="outer")
-        except Exception:
-            boundaries = None
-        if boundaries is not None and boundaries.any():
-            out[boundaries] = (255, 0, 0)
-        return out
-
-    def _segmentation_outline_view(self) -> np.ndarray | None:
-        """Provide an internal helper for segmentation outline view.
-        
-        Returns:
-            np.ndarray | None: Array containing the segmentation outline view output aligned with downstream expectations."""
-        labels = self.current_frame.labels_2d
-        if labels is None:
-            return None
-
-        fr = self.current_frame
-        base_img = fr.orig_img if fr.scale_factor == 1.0 or fr.orig_img_scaled is None else fr.orig_img_scaled
-        cache_id, cache_img = fr.segmentation_outline_cache
-        current_id = id(labels)
-        if cache_id != current_id or cache_img is None:
-            cache_img = self._build_segmentation_outline_image(base_img, labels)
-            fr.segmentation_outline_cache = (current_id, cache_img)
-        return cache_img
-
-    def _segmentation_centerlines_view(self) -> np.ndarray | None:
-        """Return cached segmentation-centerline view."""
-        img = ensure_rgb_u8(self.current_frame.segmentation_centerlines_overlay_img)
-        if img is None:
-            return None
-        labels = self.current_frame.labels_2d
-        if labels is None or img.shape[:2] != labels.shape[:2]:
-            return img
-        out = img.copy()
-        try:
-            boundaries = find_boundaries(labels, mode="outer")
-        except Exception:
-            boundaries = None
-        if boundaries is not None and boundaries.any():
-            out[boundaries] = (0, 0, 255)
-        return out
-
-    def _measurement_centerlines_view(self) -> np.ndarray | None:
-        """Return cached measurement-centerline view."""
-        img = ensure_rgb_u8(self.current_frame.measurement_centerlines_overlay_img)
-        if img is None:
-            return None
-        labels = self.current_frame.labels_2d
-        if labels is None or img.shape[:2] != labels.shape[:2]:
-            return img
-        out = img.copy()
-        try:
-            boundaries = find_boundaries(labels, mode="outer")
-        except Exception:
-            boundaries = None
-        if boundaries is not None and boundaries.any():
-            out[boundaries] = (0, 0, 255)
-        return out
-
-    def _centerlines_comparison_view(self) -> np.ndarray | None:
-        """Return combined centerline comparison debug view."""
-        return ensure_rgb_u8(self.current_frame.centerlines_comparison_overlay_img)
 
     def _labels_rgb(self) -> np.ndarray | None:
         """Provide an internal helper for labels rgb.

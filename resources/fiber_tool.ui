@@ -566,17 +566,7 @@
        </item>
        <item>
         <property name="text">
-         <string>Segmentation centerlines</string>
-        </property>
-       </item>
-       <item>
-        <property name="text">
-         <string>Measurement centerlines</string>
-        </property>
-       </item>
-       <item>
-        <property name="text">
-         <string>Centerline comparison</string>
+         <string>Centerlines</string>
         </property>
        </item>
        <item>
