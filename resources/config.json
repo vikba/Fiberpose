@@ -1,12 +1,12 @@
 {
-    "model_path": "checkpoints/260505_lab_ind_syn_epoch_0600_R057.onnx",
+    "model_path": "checkpoints/260505_lab_ind_syn_epoch_0600_R056.onnx",
     "use_gpu": false,
     "scale_label": "1x",
     "max_angle_deg": 30.0,
     "ridge_sigma": 1.0,
     "ridge_low": 0.2,
-    "ridge_high": 0.45,
-    "min_fragment_centerline_length_px": 10.0,
+    "ridge_high": 0.35,
+    "min_fragment_centerline_length_px": 5.0,
     "strict_centerlines": false,
     "keep_segments_without_measurement_centerlines": false,
     "segmentation_mode": "watershed",
@@ -21,15 +21,15 @@
         0.35
     ],
     "save_options": {
-        "dt": true,
-        "labels": true,
-        "overlay": true,
+        "collision": "suffix",
         "diameters": true,
+        "dt": true,
+        "image_format": "png",
+        "labels": true,
         "orientations": true,
         "outline": true,
+        "overlay": true,
         "tables": true,
-        "image_format": "png",
-        "collision": "suffix",
         "write_manifest": false
     }
 }

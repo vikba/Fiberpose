@@ -298,11 +298,12 @@ class BatchResultExporter:
                     continue
                 try:
                     if artifact == "dt":
-                        if frame.dt_u8 is None:
+                        if frame.dt is None:
                             skipped.append(self._skip_item(frame_index, artifact, "missing_data"))
                             continue
-                        path = self._resolve_output_path(output_dir, base_name, "_dt", image_ext, cfg)
-                        iio.imwrite(path, np.asarray(frame.dt_u8, dtype=np.uint8))
+                        # DT is exported as float32 TIFF to preserve precision.
+                        path = self._resolve_output_path(output_dir, base_name, "_dt", ".tiff", cfg)
+                        iio.imwrite(path, np.asarray(frame.dt, dtype=np.float32))
                         written_files.append(path)
                     elif artifact == "labels":
                         labels_rgb = self._labels_rgb_image(frame)
@@ -472,10 +473,10 @@ class BatchResultExporter:
         arrays: list[np.ndarray] = []
         for frame in frames:
             if artifact == "dt":
-                src = frame.dt_u8
+                src = frame.dt
                 if src is None:
                     return None
-                arrays.append(np.asarray(src, dtype=np.uint8))
+                arrays.append(np.asarray(src, dtype=np.float32))
             elif artifact == "labels":
                 src = self._labels_rgb_image(frame)
                 if src is None:
