@@ -164,6 +164,9 @@ class PipelineController:
                 "min_fragment_centerline_length_px": float(
                     getattr(config, "min_fragment_centerline_length_px", 10.0)
                 ),
+                "measurement_centerline_length_trim_fraction": FiberAnalyzer_2D._clamp_trim_fraction(
+                    float(getattr(config, "measurement_centerline_length_trim_fraction", 0.05))
+                ),
                 "segmentation_expansion_factor": float(getattr(config, "segmentation_expansion_factor", 1.0)),
             }
         )
@@ -204,6 +207,9 @@ class PipelineController:
             ),
             "keep_segments_without_measurement_centerlines": bool(
                 getattr(config, "keep_segments_without_measurement_centerlines", False)
+            ),
+            "measurement_centerline_length_trim_fraction": FiberAnalyzer_2D._clamp_trim_fraction(
+                float(getattr(config, "measurement_centerline_length_trim_fraction", 0.05))
             ),
             "centerline_kwargs": cls._configured_centerline_kwargs(config),
         }
@@ -353,6 +359,9 @@ class PipelineController:
             merge_expansion_factor=float(params["merge_expansion_factor"]),
             segmentation_expansion_factor=float(params["segmentation_expansion_factor"]),
             min_fragment_centerline_length_px=float(params["min_fragment_centerline_length_px"]),
+            measurement_centerline_length_trim_fraction=float(
+                params["measurement_centerline_length_trim_fraction"]
+            ),
         )
         return {
             "segmentation_centerlines_overlay_img": self.analyzer.get_segmentation_centerlines_image(),

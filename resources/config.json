@@ -1,5 +1,5 @@
 {
-    "model_path": "checkpoints/260505_lab_ind_syn_epoch_0600_R056.onnx",
+    "model_path": "checkpoints/model_fiber_2_no_bg.onnx",
     "use_gpu": false,
     "scale_label": "1x",
     "max_angle_deg": 30.0,
@@ -7,6 +7,7 @@
     "ridge_low": 0.2,
     "ridge_high": 0.35,
     "min_fragment_centerline_length_px": 5.0,
+    "measurement_centerline_length_trim_fraction": 0.1,
     "strict_centerlines": false,
     "keep_segments_without_measurement_centerlines": false,
     "segmentation_mode": "watershed",

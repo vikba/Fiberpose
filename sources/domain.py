@@ -27,6 +27,7 @@ class AppConfig:
     ridge_low: float = 0.01
     ridge_high: float = 0.4
     min_fragment_centerline_length_px: float = 10.0
+    measurement_centerline_length_trim_fraction: float = 0.05
     strict_centerlines: bool = False
     keep_segments_without_measurement_centerlines: bool = False
     
@@ -906,6 +907,7 @@ class FiberFragment:
     measurement_centerlines_xy: list[np.ndarray] = field(default_factory=list)
     measurement_radii: list[np.ndarray] = field(default_factory=list)
     measurement_source_indices: list[int] = field(default_factory=list)
+    total_measurement_centerline_length_px: float = 0.0
 
     @staticmethod
     def _normalize_centerline(points_raw: np.ndarray, label: str) -> np.ndarray:
@@ -930,6 +932,12 @@ class FiberFragment:
         if points_xy.shape[0] < 2:
             return 0.0
         return float(np.linalg.norm(np.diff(points_xy, axis=0), axis=1).sum())
+
+    def recompute_total_measurement_centerline_length_px(self) -> float:
+        self.total_measurement_centerline_length_px = float(
+            sum(self._centerline_length(points_xy) for points_xy in self.measurement_centerlines_xy)
+        )
+        return self.total_measurement_centerline_length_px
 
     def __post_init__(self) -> None:
         if not self.segment_centerlines_xy:
@@ -968,6 +976,7 @@ class FiberFragment:
             self.measurement_centerlines_xy = []
             self.measurement_radii = []
             self.measurement_source_indices = []
+            self.total_measurement_centerline_length_px = 0.0
         else:
             if not self.measurement_radii:
                 measurement_radii = [
@@ -996,6 +1005,7 @@ class FiberFragment:
             self.measurement_centerlines_xy = measurement_centerlines_xy
             self.measurement_radii = measurement_radii
             self.measurement_source_indices = measurement_source_indices
+            self.recompute_total_measurement_centerline_length_px()
 
         self.fragment_id = int(self.fragment_id)
         self.parent_fiber_id = int(self.parent_fiber_id)

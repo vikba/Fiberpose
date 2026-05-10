@@ -293,6 +293,7 @@ class FiberAnalyzer_2D:
         std_thresh: float = 0.8,
         merge_expansion_factor: float = 0.7,
         min_fragment_centerline_length_px: float = 10.0,
+        measurement_centerline_length_trim_fraction: float = 0.05,
         segmentation_expansion_factor: float = 1.0,
     ) -> Tuple[List[np.ndarray], List[np.ndarray], Optional[np.ndarray], Optional[np.ndarray]]:
         """
@@ -333,6 +334,15 @@ class FiberAnalyzer_2D:
             strict=self._strict_centerlines,
             keep_segments_without_measurement_centerlines=self._keep_segments_without_measurement_centerlines,
         )
+        trim_fraction = self._clamp_trim_fraction(measurement_centerline_length_trim_fraction)
+        trim_count = int(np.floor(len(active_fragments) * trim_fraction))
+        if trim_count > 0:
+            ordered = sorted(
+                active_fragments,
+                key=lambda seg: (float(seg.total_measurement_centerline_length_px), int(seg.fragment_id)),
+            )
+            drop_ids = {int(seg.fragment_id) for seg in ordered[:trim_count]}
+            active_fragments = [seg for seg in active_fragments if int(seg.fragment_id) not in drop_ids]
 
         expanded_labels = self._rasterize_segmentation_fragments(
             fragments=active_fragments,
@@ -547,6 +557,7 @@ class FiberAnalyzer_2D:
             seg.measurement_centerlines_xy = []
             seg.measurement_radii = []
             seg.measurement_source_indices = []
+            seg.total_measurement_centerline_length_px = 0.0
             for source_index, polyline_xy in enumerate(seg.segment_centerlines_xy):
                 seg_xy = polyline_xy.reshape(-1, 1, 2)
                 windows_xy = cls._sliding_window_filter(
@@ -570,11 +581,20 @@ class FiberAnalyzer_2D:
                     seg.measurement_centerlines_xy.append(pts_xy)
                     seg.measurement_radii.append(radii)
                     seg.measurement_source_indices.append(int(source_index))
+                    seg.total_measurement_centerline_length_px += FiberFragment._centerline_length(pts_xy)
+            seg.recompute_total_measurement_centerline_length_px()
             if seg.has_measurement_centerline:
                 active_segmentation_fragments.append(seg)
         if bool(keep_segments_without_measurement_centerlines):
             active_segmentation_fragments = list(segmentation_fragments)
         return active_segmentation_fragments
+
+    @staticmethod
+    def _clamp_trim_fraction(value: float) -> float:
+        value = float(value)
+        if not np.isfinite(value):
+            return 0.05
+        return float(min(0.95, max(0.0, value)))
 
     @staticmethod
     def _render_centerlines_rgb(
