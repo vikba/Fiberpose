@@ -28,6 +28,7 @@ class AppConfig:
     ridge_high: float = 0.4
     min_fragment_centerline_length_px: float = 10.0
     measurement_centerline_length_trim_fraction: float = 0.05
+    grad_quality_trim_fraction: float = 0.0
     strict_centerlines: bool = False
     keep_segments_without_measurement_centerlines: bool = False
     
@@ -908,6 +909,7 @@ class FiberFragment:
     measurement_radii: list[np.ndarray] = field(default_factory=list)
     measurement_source_indices: list[int] = field(default_factory=list)
     total_measurement_centerline_length_px: float = 0.0
+    grad_quality_score: float = float("nan")
 
     @staticmethod
     def _normalize_centerline(points_raw: np.ndarray, label: str) -> np.ndarray:

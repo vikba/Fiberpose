@@ -167,6 +167,9 @@ class PipelineController:
                 "measurement_centerline_length_trim_fraction": FiberAnalyzer_2D._clamp_trim_fraction(
                     float(getattr(config, "measurement_centerline_length_trim_fraction", 0.05))
                 ),
+                "grad_quality_trim_fraction": FiberAnalyzer_2D._clamp_trim_fraction(
+                    float(getattr(config, "grad_quality_trim_fraction", 0.0))
+                ),
                 "segmentation_expansion_factor": float(getattr(config, "segmentation_expansion_factor", 1.0)),
             }
         )
@@ -210,6 +213,9 @@ class PipelineController:
             ),
             "measurement_centerline_length_trim_fraction": FiberAnalyzer_2D._clamp_trim_fraction(
                 float(getattr(config, "measurement_centerline_length_trim_fraction", 0.05))
+            ),
+            "grad_quality_trim_fraction": FiberAnalyzer_2D._clamp_trim_fraction(
+                float(getattr(config, "grad_quality_trim_fraction", 0.0))
             ),
             "centerline_kwargs": cls._configured_centerline_kwargs(config),
         }
@@ -362,6 +368,7 @@ class PipelineController:
             measurement_centerline_length_trim_fraction=float(
                 params["measurement_centerline_length_trim_fraction"]
             ),
+            grad_quality_trim_fraction=float(params["grad_quality_trim_fraction"]),
         )
         return {
             "segmentation_centerlines_overlay_img": self.analyzer.get_segmentation_centerlines_image(),

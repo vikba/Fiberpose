@@ -294,6 +294,7 @@ class FiberAnalyzer_2D:
         merge_expansion_factor: float = 0.7,
         min_fragment_centerline_length_px: float = 10.0,
         measurement_centerline_length_trim_fraction: float = 0.05,
+        grad_quality_trim_fraction: float = 0.0,
         segmentation_expansion_factor: float = 1.0,
     ) -> Tuple[List[np.ndarray], List[np.ndarray], Optional[np.ndarray], Optional[np.ndarray]]:
         """
@@ -312,7 +313,7 @@ class FiberAnalyzer_2D:
             polarity=polarity,
         )
 
-        segmentation_fragments = self._group_detected_polylines_into_segmentation_fragments(
+        raw_fragments = self._group_detected_polylines_into_segmentation_fragments(
             detected_polylines=detected_polylines,
             dt=self._dt,
             merge_expansion_factor=float(merge_expansion_factor),
@@ -320,10 +321,10 @@ class FiberAnalyzer_2D:
             segment_id_start=self._segment_counter,
             trim=int(trim),
         )
-        self._segment_counter += len(segmentation_fragments)
+        self._segment_counter += len(raw_fragments)
 
         active_fragments = self._filter_measurement_centerlines(
-            segmentation_fragments=segmentation_fragments,
+            segmentation_fragments=raw_fragments,
             dt_u8=self._dt_u8,
             dt=self._dt,
             gx=self._gx,
@@ -343,6 +344,19 @@ class FiberAnalyzer_2D:
             )
             drop_ids = {int(seg.fragment_id) for seg in ordered[:trim_count]}
             active_fragments = [seg for seg in active_fragments if int(seg.fragment_id) not in drop_ids]
+
+        grad_quality_fraction = self._clamp_trim_fraction(grad_quality_trim_fraction)
+        if self._gx is None or self._gy is None:
+            raise ValueError("Gradient fields are required for grad-quality filtering.")
+        grad_mag = np.sqrt(self._gx * self._gx + self._gy * self._gy)
+        grad_err = np.abs(grad_mag - 1.0)
+        active_fragments = self._filter_fragments_by_grad_quality(
+            fragments=active_fragments,
+            grad_err=grad_err,
+            segmentation_expansion_factor=float(segmentation_expansion_factor),
+            trim_fraction=grad_quality_fraction,
+            min_valid_pixels=8,
+        )
 
         expanded_labels = self._rasterize_segmentation_fragments(
             fragments=active_fragments,
@@ -391,7 +405,7 @@ class FiberAnalyzer_2D:
         logger.info(
             "Centerlines built: segmentation=%d/%d measurement=%d",
             len(active_fragments),
-            len(segmentation_fragments),
+            len(raw_fragments),
             len(measurement_segments_xy),
         )
         return measurement_segments_xy, self._measurement_normals_xy, measurement_centerlines_rgb, markers
@@ -535,6 +549,83 @@ class FiberAnalyzer_2D:
                         continue
                     cv2.circle(expanded_labels, (x, y), rr, label_id, thickness=-1)
         return expanded_labels
+
+    @staticmethod
+    def _fragment_grad_quality_score(
+        fragment: FiberFragment,
+        grad_err: np.ndarray,
+        segmentation_expansion_factor: float,
+    ) -> tuple[float, int]:
+        """Compute per-fragment grad-quality score excluding centerline pixels."""
+        h, w = grad_err.shape[:2]
+        expansion = max(0.0, float(segmentation_expansion_factor))
+
+        fragment_mask = np.zeros((h, w), dtype=np.uint8)
+        for pts_xy, radii in zip(fragment.segment_centerlines_xy, fragment.segment_radii):
+            for pt_xy, radius in zip(pts_xy, radii):
+                rr = max(1, int(round(float(radius) * expansion)))
+                x = int(round(float(pt_xy[0])))
+                y = int(round(float(pt_xy[1])))
+                if x < 0 or y < 0 or x >= w or y >= h:
+                    continue
+                cv2.circle(fragment_mask, (x, y), rr, 1, thickness=-1)
+
+        centerline_mask = np.zeros((h, w), dtype=np.uint8)
+        for pts_xy in fragment.segment_centerlines_xy:
+            if pts_xy.size == 0:
+                continue
+            x_idx = np.clip(np.rint(pts_xy[:, 0]).astype(np.int32), 0, w - 1)
+            y_idx = np.clip(np.rint(pts_xy[:, 1]).astype(np.int32), 0, h - 1)
+            centerline_mask[y_idx, x_idx] = 1
+
+        valid_mask = (
+            fragment_mask.astype(bool, copy=False)
+            & (~centerline_mask.astype(bool, copy=False))
+            & np.isfinite(grad_err)
+        )
+        if not np.any(valid_mask):
+            return float("nan"), 0
+
+        values = np.asarray(grad_err[valid_mask], dtype=np.float32)
+        if values.size == 0:
+            return float("nan"), 0
+        return float(np.median(values)), int(values.size)
+
+    @classmethod
+    def _filter_fragments_by_grad_quality(
+        cls,
+        *,
+        fragments: List[FiberFragment],
+        grad_err: np.ndarray,
+        segmentation_expansion_factor: float,
+        trim_fraction: float,
+        min_valid_pixels: int = 8,
+    ) -> List[FiberFragment]:
+        """Drop unreliable fragments and trim worst grad-quality scores."""
+        reliable_fragments: List[FiberFragment] = []
+        for fragment in fragments:
+            score, valid_pixels = cls._fragment_grad_quality_score(
+                fragment=fragment,
+                grad_err=grad_err,
+                segmentation_expansion_factor=segmentation_expansion_factor,
+            )
+            fragment.grad_quality_score = float(score)
+            if valid_pixels < int(min_valid_pixels):
+                continue
+            if not np.isfinite(score):
+                continue
+            reliable_fragments.append(fragment)
+
+        drop_count = int(np.floor(len(reliable_fragments) * float(trim_fraction)))
+        if drop_count <= 0:
+            return reliable_fragments
+
+        ordered = sorted(
+            reliable_fragments,
+            key=lambda seg: (-float(seg.grad_quality_score), int(seg.fragment_id)),
+        )
+        drop_ids = {int(seg.fragment_id) for seg in ordered[:drop_count]}
+        return [seg for seg in reliable_fragments if int(seg.fragment_id) not in drop_ids]
 
     @classmethod
     def _filter_measurement_centerlines(
