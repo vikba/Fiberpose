@@ -304,7 +304,7 @@ If you use Fiberpose in scientific work, please cite the associated manuscript/p
 
 ```bibtex
 @software{fiberpose,
-  title  = {Fiberpose: neural distance-transform analysis of fibrous microstructures},
+  title  = {Fiberpose: A deep learning framework for segmentation and quantitative analysis of fibrous structures},
   author = {Balashov, Viktor},
   year   = {2026},
   url    = {https://github.com/vikba/Fiberpose}
