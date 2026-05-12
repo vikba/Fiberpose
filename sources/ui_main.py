@@ -688,6 +688,10 @@ class MainWindow(QMainWindow):
                 if isinstance(event, QtGui.QMouseEvent):
                     self._handle_profile_mouse(event)
                     return True
+            if et == QEvent.Type.ContextMenu:
+                if isinstance(event, QtGui.QContextMenuEvent):
+                    self._show_view_context_menu(event.globalPos())
+                    return True
             if et in (QEvent.Type.DragEnter, QEvent.Type.DragMove):
                 md = event.mimeData()
                 if md and md.hasUrls() and self._urls_are_loadable(md.urls()):
@@ -710,6 +714,56 @@ class MainWindow(QMainWindow):
                                 event.acceptProposedAction()
                                 return True
         return super().eventFilter(obj, event)
+
+    def _show_view_context_menu(self, global_pos: QPoint) -> None:
+        """Show right-click context actions for the current graphics viewport."""
+        if self._pixitem.pixmap().isNull():
+            return
+        menu = QtWidgets.QMenu(self)
+        action_save = menu.addAction("Save active image as PNG")
+        selected = menu.exec(global_pos)
+        if selected is action_save:
+            self._save_active_image_png()
+
+    def _save_active_image_png(self) -> None:
+        """Save the full active image for the selected view mode as PNG."""
+        state = ViewState(
+            mode=self.cb_view.currentText(),
+            show_pores=bool(self.rb_show_pores.isChecked()),
+            show_orientation=bool(self.rb_show_direct.isChecked()),
+            zoom=float(self._current_zoom),
+        )
+        img = self._view_renderer.render(self.current_frame, state)
+        if img is None:
+            self._show_info("No image", "No active image is available to save for this view mode.")
+            return
+
+        view_label = str(self.cb_view.currentText() or "view").strip().lower()
+        view_slug = "".join(ch if ch.isalnum() else "_" for ch in view_label).strip("_") or "view"
+        base_name = (self.current_image_name or "fiberpose").strip() or "fiberpose"
+        default_name = f"{base_name}_{view_slug}.png"
+        default_path = os.path.join(self.working_dir, default_name)
+
+        selected_path, _ = QtWidgets.QFileDialog.getSaveFileName(
+            self,
+            "Save active image as PNG",
+            default_path,
+            "PNG Files (*.png);;All Files (*)",
+        )
+        if not selected_path:
+            return
+        if not selected_path.lower().endswith(".png"):
+            selected_path = f"{selected_path}.png"
+
+        qimg = self._numpy_to_qimage(img)
+        pixmap = QtGui.QPixmap.fromImage(qimg)
+        ok = pixmap.save(selected_path, "PNG")
+        if not ok:
+            self._show_error("Save failed", "Could not save the active image as PNG.")
+            return
+
+        self.working_dir = os.path.dirname(selected_path) or self.working_dir
+        self.statusbar.showMessage(f"Saved active image: {selected_path}", 5000)
 
     def _is_image_path(self, path: str) -> bool:
         """Provide an internal helper for is image path.
@@ -2247,7 +2301,7 @@ class MainWindow(QMainWindow):
             diameters = self._stack_diameter_histogram_data
             title = "Fiber thickness (stack aggregate)"
 
-        self._style_plotwidget(self.graph_diameters, title, "", f"Thickness ({units_label})")
+        self._style_plotwidget(self.graph_diameters, title, f"Thickness ({units_label})", "Frequency")
         tu = np.asarray(diameters, dtype=np.float32)
         if tu.size:
             hist, edges = np.histogram(tu, bins=40)
@@ -2274,7 +2328,7 @@ class MainWindow(QMainWindow):
             if self._stack_diameter_histogram_enabled and self._stack_angle_histogram_data is not None:
                 ang = self._stack_angle_histogram_data
                 ang_title = "Fiber orientation (stack aggregate)"
-            self._style_plotwidget(self.graph_angles, ang_title, "", "Angle (deg, canonical)")
+            self._style_plotwidget(self.graph_angles, ang_title, "Angle (deg, canonical)", "Frequency")
             if ang.size:
                 hist, edges = np.histogram(ang, bins=36, range=(-90, 90))
                 centers = 0.5 * (edges[:-1] + edges[1:])
