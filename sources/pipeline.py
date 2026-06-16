@@ -243,6 +243,8 @@ class PipelineController:
             "segmentation_mode": str(getattr(config, "segmentation_mode", "watershed")),
             "seg_threshold": int(getattr(config, "seg_threshold", 1)),
             "segmentation_expansion_factor": float(getattr(config, "segmentation_expansion_factor", 1.0)),
+            "foreground_threshold": float(getattr(config, "foreground_threshold", 0.5)),
+            "max_segment_background_fraction": float(getattr(config, "max_segment_background_fraction", 0.2)),
         }
         return json.dumps(payload, sort_keys=True, default=str)
 
@@ -310,7 +312,12 @@ class PipelineController:
             return
         self.analyzer._reset_prediction_state()
         self.analyzer.scale_factor = float(frame.scale_factor)
-        self.analyzer._set_dt_and_gradients(frame.dt, frame.gx, frame.gy)
+        self.analyzer._set_dt_and_gradients(
+            frame.dt,
+            frame.gx,
+            frame.gy,
+            foreground_prob=frame.foreground_prob,
+        )
         self.analyzer._laplacian = frame.lapl_img
         self.analyzer._last_max_angle = float(max_angle_deg)
         self.analyzer._centerline_kwargs = dict(centerline_kwargs)
@@ -343,6 +350,11 @@ class PipelineController:
             "gy": np.asarray(gy, dtype=np.float32, copy=False),
             "dt_u8": np.asarray(self.analyzer.get_dt_u8(), dtype=np.uint8, copy=False),
             "dt_normalized": np.asarray(self.analyzer.get_dt_norm(), dtype=np.float32, copy=False),
+            "foreground_prob": (
+                np.asarray(self.analyzer.get_foreground_prob(), dtype=np.float32, copy=False)
+                if self.analyzer.get_foreground_prob() is not None
+                else None
+            ),
             "lapl_img": np.asarray(self.analyzer.get_laplacian(), dtype=np.float32, copy=False),
         }
 
@@ -383,9 +395,17 @@ class PipelineController:
         if mode not in ("watershed", "radial_expansion"):
             mode = "watershed"
         params = (
-            {"threshold_u8": thr_u8}
+            {
+                "threshold_u8": thr_u8,
+                "foreground_threshold": float(getattr(config, "foreground_threshold", 0.5)),
+                "max_segment_background_fraction": float(getattr(config, "max_segment_background_fraction", 0.2)),
+            }
             if mode == "watershed"
-            else {"expansion_factor": float(getattr(config, "segmentation_expansion_factor", 1.0))}
+            else {
+                "expansion_factor": float(getattr(config, "segmentation_expansion_factor", 1.0)),
+                "foreground_threshold": float(getattr(config, "foreground_threshold", 0.5)),
+                "max_segment_background_fraction": float(getattr(config, "max_segment_background_fraction", 0.2)),
+            }
         )
         return mode, params
 
@@ -756,6 +776,7 @@ class PipelineController:
             gy=prediction["gy"],
             dt_u8=prediction["dt_u8"],
             dt_normalized=prediction["dt_normalized"],
+            foreground_prob=prediction["foreground_prob"],
             lapl_img=prediction["lapl_img"],
             orig_img_scaled=frame.orig_img_scaled,
             scale_factor=frame.scale_factor,

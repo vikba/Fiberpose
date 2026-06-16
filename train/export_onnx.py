@@ -14,8 +14,8 @@ Notes:
     - Input must be float32 tensor in NCHW format: [1, C, H, W].
     - The exported ONNX model returns the full network output [1, nout, H, W].
     - For current Fiberpose checkpoints:
-        nout == 1  -> DT channel is 0
-        nout >= 3  -> DT channel is 2
+        nout == 2  -> foreground logit is channel 0, DT channel is 1
+        nout != 2  -> no foreground, DT is the last channel
     - Padding/cropping should be handled outside ONNX, as FiberAnalyzer_2D already does.
 """
 
@@ -79,11 +79,9 @@ def infer_nout_from_state_dict(state_dict: dict[str, Any]) -> int:
 
 def dt_channel_index(nout: int) -> int:
     """Fiberpose DT channel convention."""
-    if nout >= 3:
-        return 2
-    if nout == 1:
-        return 0
-    raise ValueError(f"Unsupported nout={nout}. Expected nout == 1 or nout >= 3.")
+    if nout <= 0:
+        raise ValueError(f"Unsupported nout={nout}. Expected a positive output channel count.")
+    return 1 if nout == 2 else nout - 1
 
 
 class OutputOnlyWrapper(nn.Module):

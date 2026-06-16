@@ -96,7 +96,8 @@ class OnnxFiberposeModel:
         except Exception:
             return 16
 
-    def predict(self, img: np.ndarray) -> np.ndarray:
+    def predict(self, img: np.ndarray) -> tuple[np.ndarray, np.ndarray | None]:
+        """Return `(dt, foreground_prob)`, with foreground only for `nout == 2`."""
         arr = self._prep_input(img, self.input_channels)
         x = arr[None, ...].astype(np.float32, copy=False)
         outputs = self.session.run([self.output_name], {self.input_name: x})
@@ -106,15 +107,22 @@ class OnnxFiberposeModel:
         if y.ndim != 4:
             raise ValueError(f"Unexpected ONNX output shape: {y.shape}")
 
-        resolved_nout = self.nout if self.nout is not None else int(y.shape[1])
-        dt_channel = self._dt_channel_index(resolved_nout)
+        resolved_nout = int(self.nout) if self.nout is not None else int(y.shape[1])
+        if resolved_nout <= 0:
+            raise ValueError(f"Unsupported output channel count: nout={resolved_nout}")
+        dt_channel = 1 if resolved_nout == 2 else resolved_nout - 1
         if y.shape[1] <= dt_channel:
             raise ValueError(
                 "Predicted tensor channel count is incompatible with DT channel selection: "
                 f"got shape={y.shape}, selected_channel={dt_channel}"
             )
 
-        return np.asarray(y[0, dt_channel], dtype=np.float32)
+        foreground_prob = None
+        if resolved_nout == 2:
+            fg_logit = np.clip(np.asarray(y[0, 0], dtype=np.float32), -60.0, 60.0)
+            foreground_prob = (1.0 / (1.0 + np.exp(-fg_logit))).astype(np.float32, copy=False)
+
+        return np.asarray(y[0, dt_channel], dtype=np.float32), foreground_prob
 
     @staticmethod
     def _prep_input(x: np.ndarray, in_channels: int) -> np.ndarray:
@@ -150,14 +158,3 @@ class OnnxFiberposeModel:
             arr = np.zeros_like(arr, dtype=np.float32)
 
         return arr.astype(np.float32, copy=False)
-
-    @staticmethod
-    def _dt_channel_index(nout: int) -> int:
-        if nout >= 3:
-            return 2
-        if nout == 1:
-            return 0
-        raise ValueError(
-            f"Unsupported DT channel mapping for nout={nout}. "
-            "Expected nout == 1 or nout >= 3."
-        )

@@ -94,6 +94,7 @@ class FiberAnalyzer_2D:
         self._dt: Optional[np.ndarray] = None
         self._dt_u8: Optional[np.ndarray] = None
         self._dt_norm: Optional[np.ndarray] = None
+        self._foreground_prob: Optional[np.ndarray] = None
         self._gx: Optional[np.ndarray] = None
         self._gy: Optional[np.ndarray] = None
         self._laplacian: Optional[np.ndarray] = None
@@ -195,7 +196,7 @@ class FiberAnalyzer_2D:
             pass
         return stride
 
-    def _run_model(self, image: np.ndarray) -> np.ndarray:
+    def _run_model(self, image: np.ndarray) -> tuple[np.ndarray, Optional[np.ndarray]]:
 
         """Provide an internal helper for run model.
         
@@ -203,7 +204,7 @@ class FiberAnalyzer_2D:
             image (np.ndarray): Array-like data carrying image values for analysis.
         
         Returns:
-            np.ndarray: Array containing the run model output aligned with downstream expectations."""
+            Tuple of `(dt, foreground_prob)`, where `foreground_prob` is None without foreground output."""
         predictor = self._ensure_predictor()
         stride = self._infer_model_stride()
         H, W = image.shape[:2]
@@ -217,11 +218,21 @@ class FiberAnalyzer_2D:
             image_pad = np.pad(image, pad_width, mode="reflect")
         else:
             image_pad = image
-        dt_pad = predictor.predict(image_pad)
+        dt_pad, fg_pad = predictor.predict(image_pad)
         dt = dt_pad[:H, :W] if dt_pad.ndim == 2 else dt_pad[:H, :W, 0]
-        return np.asarray(dt, dtype=np.float32)
+        foreground_prob = None
+        if fg_pad is not None:
+            foreground_prob = fg_pad[:H, :W] if fg_pad.ndim == 2 else fg_pad[:H, :W, 0]
+            foreground_prob = np.asarray(foreground_prob, dtype=np.float32)
+        return np.asarray(dt, dtype=np.float32), foreground_prob
 
-    def _set_dt_and_gradients(self, dt: np.ndarray, gx: np.ndarray, gy: np.ndarray):
+    def _set_dt_and_gradients(
+        self,
+        dt: np.ndarray,
+        gx: np.ndarray,
+        gy: np.ndarray,
+        foreground_prob: Optional[np.ndarray] = None,
+    ):
         """Provide an internal helper for set dt and gradients.
         
         Args:
@@ -234,10 +245,17 @@ class FiberAnalyzer_2D:
         self._dt = np.asarray(dt, dtype=np.float32)
         self._dt_u8 = np.clip(self._dt, 0, 255).astype(np.uint8)
         self._dt_norm = self._dt / 255.0
+        self._foreground_prob = (
+            np.asarray(foreground_prob, dtype=np.float32)
+            if foreground_prob is not None
+            else None
+        )
         self._gx = np.asarray(gx, dtype=np.float32)
         self._gy = np.asarray(gy, dtype=np.float32)
         if self._gx.shape != self._dt.shape or self._gy.shape != self._dt.shape:
             raise ValueError("Gradient arrays must match DT shape.")
+        if self._foreground_prob is not None and self._foreground_prob.shape != self._dt.shape:
+            raise ValueError("Foreground probability must match DT shape.")
 
     # ------------------------------------------------------------------ #
     # Public pipeline
@@ -261,14 +279,14 @@ class FiberAnalyzer_2D:
 
         self._reset_prediction_state()
 
-        dt = self._run_model(image)
+        dt, foreground_prob = self._run_model(image)
         dt_smooth = gaussian_filter(dt, sigma=float(smooth_sigma))
         gy, gx = np.gradient(dt_smooth)
         gy = gaussian_filter(gy, sigma=float(grad_sigma))
         gx = gaussian_filter(gx, sigma=float(grad_sigma))
         lapl_img = laplace(dt_smooth)
 
-        self._set_dt_and_gradients(dt, gx, gy)
+        self._set_dt_and_gradients(dt, gx, gy, foreground_prob=foreground_prob)
         self._laplacian = lapl_img
 
         if centerline_kwargs:
@@ -766,8 +784,8 @@ class FiberAnalyzer_2D:
         Run segmentation from cached prediction/centerline state.
 
         Supported modes:
-            - watershed: params = {"threshold_u8": int}
-            - radial_expansion: params = {"expansion_factor": float}
+            - watershed: params include {"threshold_u8": int}
+            - radial_expansion: params include {"expansion_factor": float}
         """
         if self._dt_u8 is None:
             raise ValueError("Distance transform not available. Call predict_dt first.")
@@ -779,16 +797,27 @@ class FiberAnalyzer_2D:
             thr_u8 = int(opts.get("threshold_u8", 128))
             if self._segmentation_markers is None or self._segmentation_markers.max() == 0:
                 self.process_centerlines(self._last_max_angle, **self._centerline_kwargs)
-            return self.segment_watershed(thr_u8=thr_u8)
+            return self.segment_watershed(
+                thr_u8=thr_u8,
+                foreground_threshold=float(opts.get("foreground_threshold", 0.5)),
+                max_segment_background_fraction=float(opts.get("max_segment_background_fraction", 0.2)),
+            )
 
         if mode_name == "radial_expansion":
             return self.segment_radial_expansion(
                 expansion_factor=float(opts.get("expansion_factor", 1.0)),
+                foreground_threshold=float(opts.get("foreground_threshold", 0.5)),
+                max_segment_background_fraction=float(opts.get("max_segment_background_fraction", 0.2)),
             )
 
         raise ValueError(f"Unsupported segmentation mode: {mode}")
 
-    def segment_watershed(self, thr_u8: int) -> np.ndarray:
+    def segment_watershed(
+        self,
+        thr_u8: int,
+        foreground_threshold: float = 0.5,
+        max_segment_background_fraction: float = 0.2,
+    ) -> np.ndarray:
         """
         Run watershed segmentation using cached DT and markers.
         """
@@ -801,6 +830,12 @@ class FiberAnalyzer_2D:
         logger.info("Running watershed segmentation")
 
         labels = self.watershed_dt_segmentation(self._dt_u8, self._segmentation_markers, thr_u8=thr_u8)
+        labels = self._prune_labels_by_foreground(
+            labels,
+            foreground_prob=self._foreground_prob,
+            foreground_threshold=foreground_threshold,
+            max_segment_background_fraction=max_segment_background_fraction,
+        )
         self._update_centerline_overlay_with_watershed(self._segmentation_markers, labels)
         self._labels = labels
         return labels
@@ -826,7 +861,12 @@ class FiberAnalyzer_2D:
         ).astype(np.uint16)
         return labels
 
-    def segment_radial_expansion(self, expansion_factor: float = 1.0) -> np.ndarray:
+    def segment_radial_expansion(
+        self,
+        expansion_factor: float = 1.0,
+        foreground_threshold: float = 0.5,
+        max_segment_background_fraction: float = 0.2,
+    ) -> np.ndarray:
         """Segment using the cached expanded ridge-label map."""
         if self._dt_u8 is None:
             raise ValueError("Distance transform not available. Call predict_dt first.")
@@ -846,8 +886,48 @@ class FiberAnalyzer_2D:
             )
         labels_i32 = np.asarray(self._radial_expansion_labels, dtype=np.int32, copy=False)
         labels = np.clip(labels_i32, 0, np.iinfo(np.uint16).max).astype(np.uint16, copy=False)
+        labels = self._prune_labels_by_foreground(
+            labels,
+            foreground_prob=self._foreground_prob,
+            foreground_threshold=foreground_threshold,
+            max_segment_background_fraction=max_segment_background_fraction,
+        )
         self._labels = labels
         return labels
+
+    @staticmethod
+    def _prune_labels_by_foreground(
+        labels: np.ndarray,
+        *,
+        foreground_prob: Optional[np.ndarray],
+        foreground_threshold: float = 0.5,
+        max_segment_background_fraction: float = 0.2,
+    ) -> np.ndarray:
+        if foreground_prob is None:
+            return labels
+        labels_arr = np.asarray(labels)
+        foreground_arr = np.asarray(foreground_prob, dtype=np.float32)
+        if labels_arr.shape != foreground_arr.shape:
+            raise ValueError("Foreground probability must match label shape.")
+
+        threshold = float(foreground_threshold)
+        if not np.isfinite(threshold):
+            threshold = 0.5
+        max_background = float(max_segment_background_fraction)
+        if not np.isfinite(max_background):
+            max_background = 0.2
+        max_background = float(np.clip(max_background, 0.0, 1.0))
+
+        foreground_mask = foreground_arr >= threshold
+        pruned = labels_arr.copy()
+        for label_id in np.unique(labels_arr):
+            if int(label_id) <= 0:
+                continue
+            label_mask = labels_arr == label_id
+            background_fraction = float(np.mean(~foreground_mask[label_mask]))
+            if background_fraction > max_background:
+                pruned[label_mask] = 0
+        return pruned.astype(labels_arr.dtype, copy=False)
 
     @staticmethod
     def _render_markers(shape: Tuple[int, int], segments: List[FiberFragment]) -> np.ndarray:
@@ -900,6 +980,10 @@ class FiberAnalyzer_2D:
         Returns:
             Optional[np.ndarray]: Array containing the transformed or derived data."""
         return self._dt_norm
+
+    def get_foreground_prob(self) -> Optional[np.ndarray]:
+        """Return model foreground probability, if the checkpoint provides it."""
+        return self._foreground_prob
 
     def get_gradients(self) -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]:
         """Return gradients in the format expected by downstream consumers.

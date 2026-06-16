@@ -1066,6 +1066,7 @@ class ViewMode(str, Enum):
 
     ORIGINAL = "Original"
     DT = "DT"
+    FOREGROUND = "Foreground"
     LAPLACIAN = "Laplacian"
     CENTERLINES = "Centerlines"
     SEGMENTATION = "Segmentation"
@@ -1174,6 +1175,7 @@ class ViewRenderer:
         handlers: dict[str, Callable[[], np.ndarray | None]] = {
             ViewMode.ORIGINAL.value: lambda: ensure_rgb_u8(frame.orig_img),
             ViewMode.DT.value: lambda: to_uint8_for_view(frame.dt_normalized),
+            ViewMode.FOREGROUND.value: lambda: to_uint8_for_view(frame.foreground_prob),
             ViewMode.LAPLACIAN.value: lambda: to_uint8_for_view(frame.lapl_img),
             ViewMode.CENTERLINES.value: lambda: self._centerline_view(frame.centerlines_comparison_overlay_img, frame.labels_2d),
             ViewMode.SEGMENTATION.value: lambda: labels_rgb,

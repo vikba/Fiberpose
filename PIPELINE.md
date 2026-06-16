@@ -19,6 +19,7 @@
 - `Frame`: per-slice state container (`orig_img`, prediction outputs, segmentation outputs, measurement outputs).
 - `BatchResult`: `frame_results: list[Frame]`.
 - `dt`: model output distance transform (`float32`).
+- `foreground_prob`: optional foreground probability (`float32`) from `nout == 2` checkpoints.
 - `dt_u8`, `dt_normalized`, `gx`, `gy`, `laplacian`: cached prediction products.
 - `segmentation_centerlines`: `list[FiberFragment]` built directly from raw ridges.
 - `measurement_centerlines`: `list[FiberFragment]` filtered from `segmentation_centerlines`.
@@ -58,6 +59,7 @@
 5. If no cached DT prediction, run:
 - `FiberAnalyzer.predict_dt(...)`
 - internally: `_run_model()` -> `OnnxFiberposeModel.predict(...)`
+- `predict(...)` returns `(dt, foreground_prob)`; `nout != 2` uses the last channel as DT and has no foreground
 - then smooth DT, compute gradients/laplacian, cache outputs
 6. Always run `FiberAnalyzer.process_centerlines(...)`:
 - `RidgeDetector.detect_ridges(...)` (raw ridge lines)
@@ -72,6 +74,7 @@
 - `FiberAnalyzer.segment(mode=..., params=...)`
 - watershed uses threshold_u8
 - radial_expansion uses the precomputed expanded ridge labels
+- foreground, when available, prunes labels after pure-DT segmentation
 9. Build label colors + overlay and store via `set_segmentation_outputs(...)`.
 
 ## Per-Frame Measurement Flow

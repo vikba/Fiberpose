@@ -37,6 +37,8 @@ class AppConfig:
     merge_expansion_factor: float = 0.7
     segmentation_expansion_factor: float = 1.0
     seg_threshold: int = 1
+    foreground_threshold: float = 0.5
+    max_segment_background_fraction: float = 0.2
     
     # --- Analysis & Physical Units ---
     sample_spacing: float = 5.0
@@ -570,6 +572,7 @@ class Frame:
     dt: Optional[np.ndarray] = None
     dt_u8: Optional[np.ndarray] = None
     dt_normalized: Optional[np.ndarray] = None
+    foreground_prob: Optional[np.ndarray] = None
     lapl_img: Optional[np.ndarray] = None
     gx: Optional[np.ndarray] = None
     gy: Optional[np.ndarray] = None
@@ -636,6 +639,7 @@ class Frame:
         self.dt = None
         self.dt_u8 = None
         self.dt_normalized = None
+        self.foreground_prob = None
         self.lapl_img = None
         self.gx = None
         self.gy = None
@@ -717,6 +721,7 @@ class Frame:
         gy: Optional[np.ndarray],
         dt_u8: Optional[np.ndarray],
         dt_normalized: Optional[np.ndarray],
+        foreground_prob: Optional[np.ndarray],
         lapl_img: Optional[np.ndarray],
         orig_img_scaled: Optional[np.ndarray],
         scale_factor: float,
@@ -730,6 +735,7 @@ class Frame:
             gy (Optional[np.ndarray]): Value for gy interpreted by this routine.
             dt_u8 (Optional[np.ndarray]): Value for dt u8 interpreted by this routine.
             dt_normalized (Optional[np.ndarray]): Value for dt normalized interpreted by this routine.
+            foreground_prob (Optional[np.ndarray]): Foreground probability predicted by the model, if available.
             lapl_img (Optional[np.ndarray]): Value for lapl img interpreted by this routine.
             orig_img_scaled (Optional[np.ndarray]): Numeric control parameter for orig img scaled during computation.
             scale_factor (float): Numeric control parameter for scale factor during computation.
@@ -742,6 +748,7 @@ class Frame:
         self.gy = gy
         self.dt_u8 = dt_u8
         self.dt_normalized = dt_normalized
+        self.foreground_prob = foreground_prob
         self.lapl_img = lapl_img
         self.orig_img_scaled = orig_img_scaled
         self.scale_factor = float(scale_factor)
@@ -861,6 +868,7 @@ class Frame:
         clone.dt = _clone_array(clone.dt)
         clone.dt_u8 = _clone_array(clone.dt_u8)
         clone.dt_normalized = _clone_array(clone.dt_normalized)
+        clone.foreground_prob = _clone_array(clone.foreground_prob)
         clone.lapl_img = _clone_array(clone.lapl_img)
         clone.gx = _clone_array(clone.gx)
         clone.gy = _clone_array(clone.gy)
