@@ -628,7 +628,7 @@ class PipelineController:
     def _angle_to_bgr(angle_deg: float) -> tuple[int, int, int]:
         if not np.isfinite(angle_deg):
             return (200, 200, 200)
-        ang = float(np.clip(angle_deg, -90.0, 90.0))
+        ang = ((-angle_deg + 30.) % 180.0) - 90.0
         hue = (ang + 90.0) / 180.0 * 179.0
         hsv = np.uint8([[[hue, 255, 255]]])
         bgr = cv2.cvtColor(hsv, cv2.COLOR_HSV2BGR)[0, 0]

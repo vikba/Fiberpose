@@ -23,7 +23,6 @@ from PyQt6.QtWidgets import (
 from PyQt6.uic import loadUi
 
 import pyqtgraph as pg
-from scipy.spatial import cKDTree
 
 import logging
 logger = logging.getLogger(__name__)
@@ -1982,73 +1981,6 @@ class MainWindow(QMainWindow):
         self._refresh_save_actions()
         logger.info("Fiber analysis completed successfully.")
 
-    def _build_measurement_overlays(self):
-        self._pipeline_service.build_measurement_overlays(self.current_frame)
-
-    def _fill_orientation_overlay_by_label(self):
-        fr = self.current_frame
-        img = fr.orientations_overlay
-        labels = fr.labels_2d
-        samples = fr.drawing_samples or []
-        if img is None or labels is None or not samples:
-            return
-
-        sample_map: dict[int, list[tuple[float, float, float]]] = {}
-        height, width = labels.shape[:2]
-        for y, x, _ny, _nx, _r, angle_deg in samples:
-            iy = int(round(float(y)))
-            ix = int(round(float(x)))
-            if iy < 0 or iy >= height or ix < 0 or ix >= width:
-                continue
-            label_id = int(labels[iy, ix])
-            if label_id <= 0 or not np.isfinite(angle_deg):
-                continue
-            sample_map.setdefault(label_id, []).append((float(y), float(x), float(angle_deg)))
-
-        for label_id, label_samples in sample_map.items():
-            mask = labels == label_id
-            ys, xs = np.nonzero(mask)
-            if ys.size == 0:
-                continue
-
-            sample_arr = np.asarray(label_samples, dtype=np.float32)
-            tree = cKDTree(sample_arr[:, :2])
-            query_coords = np.stack([ys, xs], axis=1).astype(np.float32)
-
-            k = min(4, sample_arr.shape[0])
-            distances, indices = tree.query(query_coords, k=k)
-
-            angles = sample_arr[:, 2]
-            pixel_angles = self._weighted_axial_average_angles(angles, distances, indices)
-            pixel_colors = np.asarray(
-                [self._angle_to_bgr(float(angle)) for angle in pixel_angles],
-                dtype=np.uint8,
-            )
-            img[ys, xs] = pixel_colors
-
-
-    @staticmethod
-    def _weighted_axial_average_angles(
-        sample_angles_deg: np.ndarray,
-        distances: np.ndarray,
-        indices: np.ndarray,
-    ) -> np.ndarray:
-        distances = np.asarray(distances, dtype=np.float32)
-        indices = np.asarray(indices, dtype=np.int32)
-
-        if distances.ndim == 1:
-            distances = distances[:, None]
-            indices = indices[:, None]
-
-        neighbor_angles = sample_angles_deg[indices]
-        weights = 1.0 / (distances + 1e-6)
-
-        theta2 = np.deg2rad(2.0 * neighbor_angles)
-        c = np.sum(weights * np.cos(theta2), axis=1)
-        s = np.sum(weights * np.sin(theta2), axis=1)
-
-        return 0.5 * np.rad2deg(np.arctan2(s, c))
-
     def _render_vector_overlay(self):
         fr = self.current_frame
         img = fr.diameters_overlay
@@ -2064,86 +1996,6 @@ class MainWindow(QMainWindow):
         if self.cb_view.currentText() not in ("Measurements overlay", "Sampling"):
             self.cb_view.setCurrentText("Measurements overlay")
         self._set_pixmap_from_array(img)
-
-    @staticmethod
-    def _angle_to_bgr(angle_deg: float) -> tuple[int, int, int]:
-        if not np.isfinite(angle_deg):
-            return (200, 200, 200)
-        ang = float(np.clip(angle_deg, -90.0, 90.0))
-        hue = (ang + 90.0) / 180.0 * 179.0
-        hsv = np.uint8([[[hue, 255, 255]]])
-        bgr = cv2.cvtColor(hsv, cv2.COLOR_HSV2BGR)[0, 0]
-        return int(bgr[0]), int(bgr[1]), int(bgr[2])
-
-    def _clip_point(self, y, x, H, W):
-        """Clip float (y,x) to valid integer image coordinates."""
-        y = int(round(float(y))); x = int(round(float(x)))
-        if y < 0: y = 0
-        if x < 0: x = 0
-        if y >= H: y = H - 1
-        if x >= W: x = W - 1
-        return y, x
-
-    def _draw_line(self, img, p0, p1, color=(255, 255, 0), thickness=1):
-        """Draw a line on img using points p0,p1 in (y,x) coordinates."""
-        if img is None:
-            return
-        H, W = img.shape[:2]
-        y0, x0 = p0
-        y1, x1 = p1
-        y0, x0 = self._clip_point(y0, x0, H, W)
-        y1, x1 = self._clip_point(y1, x1, H, W)
-        cv2.line(img, (x0, y0), (x1, y1), color, int(thickness), cv2.LINE_AA)
-
-    def _draw_arrow_centered(self, img, y, x, tx, ty, length_px=10.0, color=(255, 255, 0), thickness=1, tip=0.25):
-        """
-        Draw an arrow centered at (y,x) along tangent (tx,ty) with length length_px.
-        tx,ty can be non-normalized; function normalizes internally.
-        """
-        if img is None or length_px <= 0:
-            return
-        vlen = float(np.hypot(tx, ty))
-        if not np.isfinite(vlen) or vlen <= 1e-6:
-            return
-        tx /= vlen; ty /= vlen
-        half = 0.5 * float(length_px)
-        p0 = (y - ty * half, x - tx * half)
-        p1 = (y + ty * half, x + tx * half)
-        H, W = img.shape[:2]
-        y0, x0 = self._clip_point(*p0, H, W)
-        y1, x1 = self._clip_point(*p1, H, W)
-        cv2.arrowedLine(img, (x0, y0), (x1, y1), color, int(thickness), tipLength=float(tip))
-
-
-    def _draw_circle(self, img: np.ndarray, center_xy: tuple[int, int], radius_px: int,
-                    color: tuple[int, int, int] = (255, 255, 0),  # yellow 
-                    thickness: int = 1,
-                    lineType: int = cv2.LINE_AA) -> None:
-        """
-        Draw a circle in-place on `img`, consistent with draw_line/draw_arrow helpers.
-        center_xy: (x, y), radius_px: int pixels.
-        """
-        cv2.circle(img, center_xy, int(radius_px), color, thickness=thickness, lineType=lineType)
-
-    def _pore_dt_to_rgb(self, pore_dt: np.ndarray, void_mask_u8: np.ndarray) -> np.ndarray:
-        """
-        Returns an RGB uint8 image where the void region shows the pore DT
-        as a TURBO colormap (normalized robustly), and fibers are black.
-        """
-        vm = (void_mask_u8.astype(np.uint8) > 0)
-        norm = np.zeros_like(pore_dt, dtype=np.float32)
-        if np.any(vm):
-            # robust upper bound to avoid blown highlights
-            vmax = float(np.percentile(pore_dt[vm], 99.0))
-            if vmax <= 0:
-                vmax = float(np.max(pore_dt))
-            if vmax > 0:
-                norm[vm] = (pore_dt[vm] / vmax).clip(0.0, 1.0)
-        base_gray = (norm * 255.0).astype(np.uint8)
-        base_rgb = cv2.applyColorMap(base_gray, cv2.COLORMAP_TURBO)
-        # zero out fibers for clarity
-        base_rgb[~vm] = (0, 0, 0)
-        return base_rgb
 
     @staticmethod
     def _default_grad_quality_points() -> tuple[float, float, float, float]:

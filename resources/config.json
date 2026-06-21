@@ -1,17 +1,17 @@
 {
-    "model_path": "checkpoints/R076_260610_epoch_2000.onnx",
+    "model_path": "checkpoints/model_fiber_2_no_bg.onnx",
     "use_gpu": true,
     "scale_label": "2x",
     "max_angle_deg": 30.0,
     "ridge_sigma": 1.0,
     "ridge_low": 0.15,
     "ridge_high": 0.35,
-    "min_fragment_centerline_length_px": 5.0,
-    "measurement_centerline_length_trim_fraction": 0.1,
-    "grad_quality_trim_fraction": 0.2,
+    "min_fragment_centerline_length_px": 2.0,
+    "measurement_centerline_length_trim_fraction": 0.05,
+    "grad_quality_trim_fraction": 0.05,
     "strict_centerlines": false,
     "keep_segments_without_measurement_centerlines": false,
-    "segmentation_mode": "radial_expansion",
+    "segmentation_mode": "watershed",
     "merge_expansion_factor": 0.7,
     "segmentation_expansion_factor": 1.0,
     "seg_threshold": 1,
@@ -25,15 +25,15 @@
         0.35
     ],
     "save_options": {
-        "dt": true,
-        "labels": true,
-        "overlay": true,
+        "collision": "suffix",
         "diameters": true,
+        "dt": true,
+        "image_format": "png",
+        "labels": true,
         "orientations": true,
         "outline": true,
+        "overlay": true,
         "tables": true,
-        "image_format": "png",
-        "collision": "suffix",
         "write_manifest": false
     }
 }
