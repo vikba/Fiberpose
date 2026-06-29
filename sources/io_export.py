@@ -20,7 +20,7 @@ class ExportService:
 
     @staticmethod
     def save_artifact_keys() -> tuple[str, ...]:
-        return ("dt", "labels", "overlay", "diameters", "orientations", "outline", "tables")
+        return ("dt", "foreground", "labels", "overlay", "diameters", "orientations", "outline", "tables")
 
     @classmethod
     def normalize_save_options(cls, raw_options: Any) -> dict[str, Any]:
@@ -170,11 +170,11 @@ from .utils import labels_to_color
 class BatchResultExporter:
     """Persist batch/frame outputs using a small dict-based export config."""
 
-    _ALL_ARTIFACTS = ("dt", "labels", "overlay", "diameters", "orientations", "outline", "tables")
+    _ALL_ARTIFACTS = ("dt", "foreground", "labels", "overlay", "diameters", "orientations", "outline", "tables")
     _PRESET_ARTIFACTS = {
-        "predictions": {"dt", "labels", "overlay", "diameters", "orientations", "outline"},
+        "predictions": {"dt", "foreground", "labels", "overlay", "diameters", "orientations", "outline"},
         "measurements": {"tables"},
-        "full": {"dt", "labels", "overlay", "diameters", "orientations", "outline", "tables"},
+        "full": {"dt", "foreground", "labels", "overlay", "diameters", "orientations", "outline", "tables"},
     }
 
     def __init__(self, export_config: dict[str, Any] | None = None):
@@ -305,6 +305,13 @@ class BatchResultExporter:
                         path = self._resolve_output_path(output_dir, base_name, "_dt", ".tiff", cfg)
                         iio.imwrite(path, np.asarray(frame.dt, dtype=np.float32))
                         written_files.append(path)
+                    elif artifact == "foreground":
+                        if frame.foreground_prob is None:
+                            skipped.append(self._skip_item(frame_index, artifact, "missing_data"))
+                            continue
+                        path = self._resolve_output_path(output_dir, base_name, "_foreground", ".tiff", cfg)
+                        iio.imwrite(path, np.asarray(frame.foreground_prob, dtype=np.float32))
+                        written_files.append(path)
                     elif artifact == "labels":
                         labels_rgb = self._labels_rgb_image(frame)
                         if labels_rgb is None:
@@ -396,6 +403,14 @@ class BatchResultExporter:
                     path = self._resolve_output_path(output_dir, base_name, "_dt", ".tiff", cfg)
                     iio.imwrite(path, np.stack(arrays, axis=0))
                     written_files.append(path)
+                elif artifact == "foreground":
+                    arrays = self._collect_stack_arrays(frames, artifact)
+                    if arrays is None:
+                        skipped.append(self._skip_item(-1, artifact, "missing_data"))
+                        continue
+                    path = self._resolve_output_path(output_dir, base_name, "_foreground", ".tiff", cfg)
+                    iio.imwrite(path, np.stack(arrays, axis=0))
+                    written_files.append(path)
                 elif artifact == "labels":
                     arrays = self._collect_stack_arrays(frames, artifact)
                     if arrays is None:
@@ -474,6 +489,11 @@ class BatchResultExporter:
         for frame in frames:
             if artifact == "dt":
                 src = frame.dt
+                if src is None:
+                    return None
+                arrays.append(np.asarray(src, dtype=np.float32))
+            elif artifact == "foreground":
+                src = frame.foreground_prob
                 if src is None:
                     return None
                 arrays.append(np.asarray(src, dtype=np.float32))

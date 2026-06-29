@@ -123,6 +123,7 @@ class SaveOptionsDialog(QtWidgets.QDialog):
 
         self._checkboxes: Dict[str, QtWidgets.QCheckBox] = {
             "dt": QtWidgets.QCheckBox("Distance transform (DT float32 TIFF)"),
+            "foreground": QtWidgets.QCheckBox("Foreground probability (float32 TIFF)"),
             "labels": QtWidgets.QCheckBox("Segmentation labels (RGB visualization)"),
             "overlay": QtWidgets.QCheckBox("Overlay visualization"),
             "diameters": QtWidgets.QCheckBox("Diameter measurements overlay"),
@@ -134,6 +135,7 @@ class SaveOptionsDialog(QtWidgets.QDialog):
         defaults = initial_options if isinstance(initial_options, dict) else {}
         default_states: Dict[str, bool] = {
             "dt": True,
+            "foreground": True,
             "labels": True,
             "overlay": True,
             "diameters": True,

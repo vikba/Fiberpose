@@ -799,15 +799,13 @@ class FiberAnalyzer_2D:
                 self.process_centerlines(self._last_max_angle, **self._centerline_kwargs)
             return self.segment_watershed(
                 thr_u8=thr_u8,
-                foreground_threshold=float(opts.get("foreground_threshold", 0.5)),
-                max_segment_background_fraction=float(opts.get("max_segment_background_fraction", 0.2)),
+                min_segment_foreground_mean=float(opts.get("min_segment_foreground_mean", 0.5)),
             )
 
         if mode_name == "radial_expansion":
             return self.segment_radial_expansion(
                 expansion_factor=float(opts.get("expansion_factor", 1.0)),
-                foreground_threshold=float(opts.get("foreground_threshold", 0.5)),
-                max_segment_background_fraction=float(opts.get("max_segment_background_fraction", 0.2)),
+                min_segment_foreground_mean=float(opts.get("min_segment_foreground_mean", 0.5)),
             )
 
         raise ValueError(f"Unsupported segmentation mode: {mode}")
@@ -815,8 +813,7 @@ class FiberAnalyzer_2D:
     def segment_watershed(
         self,
         thr_u8: int,
-        foreground_threshold: float = 0.5,
-        max_segment_background_fraction: float = 0.2,
+        min_segment_foreground_mean: float = 0.5,
     ) -> np.ndarray:
         """
         Run watershed segmentation using cached DT and markers.
@@ -833,8 +830,7 @@ class FiberAnalyzer_2D:
         labels = self._prune_labels_by_foreground(
             labels,
             foreground_prob=self._foreground_prob,
-            foreground_threshold=foreground_threshold,
-            max_segment_background_fraction=max_segment_background_fraction,
+            min_segment_foreground_mean=min_segment_foreground_mean,
         )
         self._update_centerline_overlay_with_watershed(self._segmentation_markers, labels)
         self._labels = labels
@@ -864,8 +860,7 @@ class FiberAnalyzer_2D:
     def segment_radial_expansion(
         self,
         expansion_factor: float = 1.0,
-        foreground_threshold: float = 0.5,
-        max_segment_background_fraction: float = 0.2,
+        min_segment_foreground_mean: float = 0.5,
     ) -> np.ndarray:
         """Segment using the cached expanded ridge-label map."""
         if self._dt_u8 is None:
@@ -889,8 +884,7 @@ class FiberAnalyzer_2D:
         labels = self._prune_labels_by_foreground(
             labels,
             foreground_prob=self._foreground_prob,
-            foreground_threshold=foreground_threshold,
-            max_segment_background_fraction=max_segment_background_fraction,
+            min_segment_foreground_mean=min_segment_foreground_mean,
         )
         self._labels = labels
         return labels
@@ -900,8 +894,7 @@ class FiberAnalyzer_2D:
         labels: np.ndarray,
         *,
         foreground_prob: Optional[np.ndarray],
-        foreground_threshold: float = 0.5,
-        max_segment_background_fraction: float = 0.2,
+        min_segment_foreground_mean: float = 0.5,
     ) -> np.ndarray:
         if foreground_prob is None:
             return labels
@@ -910,22 +903,17 @@ class FiberAnalyzer_2D:
         if labels_arr.shape != foreground_arr.shape:
             raise ValueError("Foreground probability must match label shape.")
 
-        threshold = float(foreground_threshold)
+        threshold = float(min_segment_foreground_mean)
         if not np.isfinite(threshold):
             threshold = 0.5
-        max_background = float(max_segment_background_fraction)
-        if not np.isfinite(max_background):
-            max_background = 0.2
-        max_background = float(np.clip(max_background, 0.0, 1.0))
+        threshold = float(np.clip(threshold, 0.0, 1.0))
 
-        foreground_mask = foreground_arr >= threshold
         pruned = labels_arr.copy()
         for label_id in np.unique(labels_arr):
             if int(label_id) <= 0:
                 continue
             label_mask = labels_arr == label_id
-            background_fraction = float(np.mean(~foreground_mask[label_mask]))
-            if background_fraction > max_background:
+            if float(np.mean(foreground_arr[label_mask])) < threshold:
                 pruned[label_mask] = 0
         return pruned.astype(labels_arr.dtype, copy=False)
 

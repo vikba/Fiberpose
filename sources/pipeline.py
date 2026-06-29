@@ -243,8 +243,7 @@ class PipelineController:
             "segmentation_mode": str(getattr(config, "segmentation_mode", "watershed")),
             "seg_threshold": int(getattr(config, "seg_threshold", 1)),
             "segmentation_expansion_factor": float(getattr(config, "segmentation_expansion_factor", 1.0)),
-            "foreground_threshold": float(getattr(config, "foreground_threshold", 0.5)),
-            "max_segment_background_fraction": float(getattr(config, "max_segment_background_fraction", 0.2)),
+            "min_segment_foreground_mean": float(getattr(config, "min_segment_foreground_mean", 0.5)),
         }
         return json.dumps(payload, sort_keys=True, default=str)
 
@@ -397,14 +396,12 @@ class PipelineController:
         params = (
             {
                 "threshold_u8": thr_u8,
-                "foreground_threshold": float(getattr(config, "foreground_threshold", 0.5)),
-                "max_segment_background_fraction": float(getattr(config, "max_segment_background_fraction", 0.2)),
+                "min_segment_foreground_mean": float(getattr(config, "min_segment_foreground_mean", 0.5)),
             }
             if mode == "watershed"
             else {
                 "expansion_factor": float(getattr(config, "segmentation_expansion_factor", 1.0)),
-                "foreground_threshold": float(getattr(config, "foreground_threshold", 0.5)),
-                "max_segment_background_fraction": float(getattr(config, "max_segment_background_fraction", 0.2)),
+                "min_segment_foreground_mean": float(getattr(config, "min_segment_foreground_mean", 0.5)),
             }
         )
         return mode, params

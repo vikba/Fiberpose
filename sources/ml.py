@@ -119,8 +119,7 @@ class OnnxFiberposeModel:
 
         foreground_prob = None
         if resolved_nout == 2:
-            fg_logit = np.clip(np.asarray(y[0, 0], dtype=np.float32), -60.0, 60.0)
-            foreground_prob = (1.0 / (1.0 + np.exp(-fg_logit))).astype(np.float32, copy=False)
+            foreground_prob = np.asarray(y[0, 0], dtype=np.float32)
 
         return np.asarray(y[0, dt_channel], dtype=np.float32), foreground_prob
 

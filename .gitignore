@@ -8,3 +8,4 @@ manuscript/
 resources/.DS_Store
 checkpoints/
 app.py
+resources/config.json

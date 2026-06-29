@@ -37,8 +37,7 @@ class AppConfig:
     merge_expansion_factor: float = 0.7
     segmentation_expansion_factor: float = 1.0
     seg_threshold: int = 1
-    foreground_threshold: float = 0.5
-    max_segment_background_fraction: float = 0.2
+    min_segment_foreground_mean: float = 0.5
     
     # --- Analysis & Physical Units ---
     sample_spacing: float = 5.0
@@ -54,6 +53,7 @@ class AppConfig:
     save_options: dict = field(
         default_factory=lambda: {
             "dt": True,
+            "foreground": True,
             "labels": True,
             "overlay": True,
             "diameters": True,
