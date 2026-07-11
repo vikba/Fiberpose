@@ -626,8 +626,10 @@ class BatchResultExporter:
                     "frame_index",
                     "z_index",
                     "frame_id",
-                    "mean_diameter",
-                    "std_diameter",
+                    "diam_mean",
+                    "diam_sd",
+                    "diam_mode",
+                    "diam_median",
                     "orientation_index",
                     "mean_angle_deg",
                     "std_angle_deg",
@@ -640,7 +642,7 @@ class BatchResultExporter:
                 ]
             )
             for frame_index, frame in enumerate(frames):
-                mean_val, std_val, orientation_index, mean_angle_deg, std_angle_deg, porosity, sample_count = (
+                diam_mean, diam_sd, diam_mode, diam_median, orientation_index, mean_angle_deg, std_angle_deg, porosity, sample_count = (
                     self._measurement_summary_from_frame(frame)
                 )
                 summary = getattr(frame, "fiber_summary", None) or {}
@@ -651,8 +653,10 @@ class BatchResultExporter:
                         int(frame_index),
                         int(getattr(frame, "z_index", frame_index)),
                         str(getattr(frame, "frame_id", f"frame_{frame_index:04d}")),
-                        f"{mean_val:.6f}",
-                        f"{std_val:.6f}",
+                        f"{diam_mean:.6f}",
+                        f"{diam_sd:.6f}",
+                        f"{diam_mode:.6f}",
+                        f"{diam_median:.6f}",
                         f"{orientation_index:.6f}",
                         f"{mean_angle_deg:.6f}",
                         f"{std_angle_deg:.6f}",
@@ -826,7 +830,7 @@ class BatchResultExporter:
         
         Returns:
             None: Result object produced by the write samples csv routine."""
-        mean_val, std_val, orientation_index, mean_angle_deg, std_angle_deg, porosity, sample_count = (
+        diam_mean, diam_sd, diam_mode, diam_median, orientation_index, mean_angle_deg, std_angle_deg, porosity, sample_count = (
             self._measurement_summary_from_frame(frame)
         )
 
@@ -834,8 +838,10 @@ class BatchResultExporter:
             summary = getattr(frame, "fiber_summary", None) or {}
             fragments_with_centerlines = int(summary.get("fragments_with_centerlines", 0))
             handle.write("metric,value\n")
-            handle.write(f"mean,{mean_val:.6f}\n")
-            handle.write(f"std,{std_val:.6f}\n")
+            handle.write(f"diam_mean,{diam_mean:.6f}\n")
+            handle.write(f"diam_sd,{diam_sd:.6f}\n")
+            handle.write(f"diam_mode,{diam_mode:.6f}\n")
+            handle.write(f"diam_median,{diam_median:.6f}\n")
             handle.write(f"orientation_index,{orientation_index:.6f}\n")
             handle.write(f"mean_angle_deg,{mean_angle_deg:.6f}\n")
             handle.write(f"std_angle_deg,{std_angle_deg:.6f}\n")
@@ -857,43 +863,26 @@ class BatchResultExporter:
 
     def _measurement_summary_from_frame(
         self, frame
-    ) -> tuple[float, float, float, float, float, float, int]:
+    ) -> tuple[float, float, float, float, float, float, float, float, int]:
         """Provide an internal helper for measurement summary from frame.
         
         Args:
             frame (Any): Array-like data carrying frame values for analysis.
         
         Returns:
-            tuple[float, float, float, float, float, float, int]: Tuple grouping the measurement summary from frame outputs in a stable positional order."""
-        summary = frame.fiber_summary
-        if summary:
-            return (
-                float(summary.get("mean_diameter", float("nan"))),
-                float(summary.get("std_diameter", float("nan"))),
-                float(summary.get("orientation_index", float("nan"))),
-                float(summary.get("mean_angle_deg", float("nan"))),
-                float(summary.get("std_angle_deg", float("nan"))),
-                float(summary.get("porosity", float("nan"))),
-                int(summary.get("sample_count", 0)),
-            )
-
-        diameters = (
-            np.asarray(frame.thickness_units)
-            if frame.thickness_units is not None
-            else np.array([])
+            Nine summary values in export column order."""
+        summary = frame.fiber_summary or {}
+        return (
+            float(summary.get("diam_mean", float("nan"))),
+            float(summary.get("diam_sd", float("nan"))),
+            float(summary.get("diam_mode", float("nan"))),
+            float(summary.get("diam_median", float("nan"))),
+            float(summary.get("orientation_index", float("nan"))),
+            float(summary.get("mean_angle_deg", float("nan"))),
+            float(summary.get("std_angle_deg", float("nan"))),
+            float(summary.get("porosity", float("nan"))),
+            int(summary.get("sample_count", 0)),
         )
-        angles = (
-            np.asarray([sample[5] for sample in (frame.measurement_samples or [])], dtype=np.float32)
-            if frame.measurement_samples is not None
-            else np.array([])
-        )
-
-        mean_val = float(np.mean(diameters)) if diameters.size else float("nan")
-        std_val = float(np.std(diameters)) if diameters.size else float("nan")
-        sample_count = int(frame.samples_table.shape[0]) if frame.samples_table is not None else int(diameters.size)
-        orientation_index, mean_angle_deg, std_angle_deg = self._compute_orientation_stats(angles)
-        porosity = float(frame.porosity) if frame.porosity is not None else float("nan")
-        return mean_val, std_val, orientation_index, mean_angle_deg, std_angle_deg, porosity, sample_count
 
     @staticmethod
     def _compute_orientation_stats(angles_samples_deg: np.ndarray) -> tuple[float, float, float]:

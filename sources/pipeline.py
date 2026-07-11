@@ -487,27 +487,26 @@ class PipelineController:
         )
 
         if thickness_units.size:
-            mean_thickness = float(np.mean(thickness_units))
-            std_thickness = float(np.std(thickness_units))
+            diam_mean = float(np.mean(thickness_units))
+            diam_sd = float(np.std(thickness_units))
+            diam_median = float(np.median(thickness_units))
+            if np.ptp(thickness_units) == 0:
+                diam_mode = float(thickness_units[0])
+            else:
+                hist, edges = np.histogram(thickness_units, bins=40)
+                peak = int(np.argmax(hist))
+                diam_mode = float((edges[peak] + edges[peak + 1]) / 2.0)
         else:
-            mean_thickness = float("nan")
-            std_thickness = float("nan")
+            diam_mean = diam_sd = diam_mode = diam_median = float("nan")
 
         orientation_index, mean_angle_deg, std_angle_deg = self._compute_orientation_stats(angles_arr)
         fragments_with_centerlines = self.analyzer.get_measurement_fragment_count() if self.analyzer is not None else 0
 
-        info_text = (
-            f"Mean diameter: {mean_thickness:.2f} {units_label}\n"
-            f"Std diameter: {std_thickness:.2f} {units_label}\n"
-            f"Orientation index: {orientation_index:.2f}\n"
-            f"Mean angle: {mean_angle_deg:.2f} deg\n"
-            f"Std angle: {std_angle_deg:.2f} deg\n"
-            f"Porosity (area fraction): {porosity*100:.1f} %\n"
-            f"Fragments with centerlines: {int(fragments_with_centerlines)}"
-        )
         fiber_summary = {
-            "mean_diameter": mean_thickness,
-            "std_diameter": std_thickness,
+            "diam_mean": diam_mean,
+            "diam_sd": diam_sd,
+            "diam_mode": diam_mode,
+            "diam_median": diam_median,
             "orientation_index": float(orientation_index),
             "mean_angle_deg": float(mean_angle_deg),
             "std_angle_deg": float(std_angle_deg),
@@ -521,7 +520,6 @@ class PipelineController:
             "thickness_units": thickness_units,
             "pore_diams_units": pore_diams_units,
             "fiber_summary": fiber_summary,
-            "info_text": info_text,
         }
 
     def measure(self, frame: Frame, config: AppConfig, sample_props: SampleProperties) -> dict[str, Any]:

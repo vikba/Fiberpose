@@ -524,13 +524,15 @@ class MainWindow(QMainWindow):
         summary = self.current_frame.fiber_summary or {}
         units_label = str(summary.get("units", "px"))
         info_text = (
-            f"Mean diameter: {summary.get('mean_diameter', float('nan')):.2f} {units_label}\n"
-            f"Std diameter: {summary.get('std_diameter', float('nan')):.2f} {units_label}\n"
-            f"Orientation index: {summary.get('orientation_index', float('nan')):.2f}\n"
-            f"Mean angle: {summary.get('mean_angle_deg', float('nan')):.2f} deg\n"
-            f"Std angle: {summary.get('std_angle_deg', float('nan')):.2f} deg\n"
-            f"Porosity (area fraction): {summary.get('porosity', float('nan'))*100:.1f} %\n"
-            f"Fragments with centerlines: {int(summary.get('fragments_with_centerlines', 0))}"
+            f"Diam Mean: {summary.get('diam_mean', float('nan')):.2f} {units_label}\n"
+            f"Diam SD: {summary.get('diam_sd', float('nan')):.2f} {units_label}\n"
+            f"Diam Mode: {summary.get('diam_mode', float('nan')):.2f} {units_label}\n"
+            f"Diam Median: {summary.get('diam_median', float('nan')):.2f} {units_label}\n"
+            f"Orientation Index: {summary.get('orientation_index', float('nan')):.2f}\n"
+            f"Angle Mean: {summary.get('mean_angle_deg', float('nan')):.2f} deg\n"
+            f"Angle SD: {summary.get('std_angle_deg', float('nan')):.2f} deg\n"
+            f"Porosity: {summary.get('porosity', float('nan'))*100:.1f} %\n"
+            f"Centerline Fragments: {int(summary.get('fragments_with_centerlines', 0))}"
         )
         self.text_edit2.setPlainText(info_text)
         self._update_distributions_pyqtgraph(units_label)
@@ -1962,21 +1964,25 @@ class MainWindow(QMainWindow):
         fr = self.current_frame
         summary = fr.fiber_summary or {}
         units_label = str(summary.get("units", "px"))
-        mean_thickness = float(summary.get("mean_diameter", float("nan")))
-        std_thickness = float(summary.get("std_diameter", float("nan")))
+        diam_mean = float(summary.get("diam_mean", float("nan")))
+        diam_sd = float(summary.get("diam_sd", float("nan")))
+        diam_mode = float(summary.get("diam_mode", float("nan")))
+        diam_median = float(summary.get("diam_median", float("nan")))
         orientation_index = float(summary.get("orientation_index", float("nan")))
         mean_angle_deg = float(summary.get("mean_angle_deg", float("nan")))
         std_angle_deg = float(summary.get("std_angle_deg", float("nan")))
         spacing_px_input = max(1.0, float(getattr(self.config, "sample_spacing", 5.0)))
         self._show_info(
             "Analysis complete",
-            f"Radius samples: {int(summary.get('sample_count', 0))} (spacing={int(spacing_px_input)} px)\n"
-            f"Stored drawing samples: {len(fr.drawing_samples) if fr.drawing_samples is not None else 0}\n"
-            f"Mean diameter: {mean_thickness:.2f} {units_label}\n"
-            f"Std diameter: {std_thickness:.2f} {units_label}\n"
-            f"Orientation index: {orientation_index:.2f}\n"
-            f"Mean angle: {mean_angle_deg:.2f} deg\n"
-            f"Std angle: {std_angle_deg:.2f} deg"
+            f"Measurement Samples: {int(summary.get('sample_count', 0))} (spacing={int(spacing_px_input)} px)\n"
+            f"Drawing Samples: {len(fr.drawing_samples) if fr.drawing_samples is not None else 0}\n"
+            f"Diam Mean: {diam_mean:.2f} {units_label}\n"
+            f"Diam SD: {diam_sd:.2f} {units_label}\n"
+            f"Diam Mode: {diam_mode:.2f} {units_label}\n"
+            f"Diam Median: {diam_median:.2f} {units_label}\n"
+            f"Orientation Index: {orientation_index:.2f}\n"
+            f"Angle Mean: {mean_angle_deg:.2f} deg\n"
+            f"Angle SD: {std_angle_deg:.2f} deg"
         )
         self._refresh_save_actions()
         logger.info("Fiber analysis completed successfully.")
@@ -2148,12 +2154,12 @@ class MainWindow(QMainWindow):
             if self.current_frame.thickness_units is not None
             else np.array([], dtype=np.float32)
         )
-        title = "Fiber thickness"
+        title = "Diameter Distribution"
         if self._stack_diameter_histogram_enabled and self._stack_diameter_histogram_data is not None:
             diameters = self._stack_diameter_histogram_data
-            title = "Fiber thickness (stack aggregate)"
+            title = "Diameter Distribution (Stack)"
 
-        self._style_plotwidget(self.graph_diameters, title, f"Thickness ({units_label})", "Frequency")
+        self._style_plotwidget(self.graph_diameters, title, f"Diameter ({units_label})", "Count")
         tu = np.asarray(diameters, dtype=np.float32)
         if tu.size:
             hist, edges = np.histogram(tu, bins=40)
@@ -2171,7 +2177,7 @@ class MainWindow(QMainWindow):
 
         if not show_pores:
             # Angles (-90..90)
-            ang_title = "Fiber orientation"
+            ang_title = "Orientation Distribution"
             ang = (
                 np.array([sample[5] for sample in (self.current_frame.measurement_samples or [])], dtype=np.float32)
                 if self.current_frame.measurement_samples is not None
@@ -2179,8 +2185,8 @@ class MainWindow(QMainWindow):
             )
             if self._stack_diameter_histogram_enabled and self._stack_angle_histogram_data is not None:
                 ang = self._stack_angle_histogram_data
-                ang_title = "Fiber orientation (stack aggregate)"
-            self._style_plotwidget(self.graph_angles, ang_title, "Angle (deg, canonical)", "Frequency")
+                ang_title = "Orientation Distribution (Stack)"
+            self._style_plotwidget(self.graph_angles, ang_title, "Angle (deg)", "Count")
             if ang.size:
                 hist, edges = np.histogram(ang, bins=36, range=(-90, 90))
                 centers = 0.5 * (edges[:-1] + edges[1:])
@@ -2193,7 +2199,7 @@ class MainWindow(QMainWindow):
                 )
                 self.graph_angles.addItem(bg)
         else:
-            self._style_plotwidget(self.graph_angles, "Pore size distribution", f"Diameter ({units_label})", "Count")
+            self._style_plotwidget(self.graph_angles, "Pore Diameter Distribution", f"Diameter ({units_label})", "Count")
             ds = self.current_frame.pore_diams_units if self.current_frame.pore_diams_units is not None else np.array([], dtype=np.float32)
             if ds.size:
                 hist, edges = np.histogram(ds, bins=40)
@@ -2293,13 +2299,15 @@ class MainWindow(QMainWindow):
         if self.current_frame.fiber_summary:
             units_label = self.current_frame.fiber_summary.get("units", "px")
             info_text = (
-                f"Mean diameter: {self.current_frame.fiber_summary.get('mean_diameter', float('nan')):.2f} {units_label}\n"
-                f"Std diameter: {self.current_frame.fiber_summary.get('std_diameter', float('nan')):.2f} {units_label}\n"
-                f"Orientation index: {self.current_frame.fiber_summary.get('orientation_index', float('nan')):.2f}\n"
-                f"Mean angle: {self.current_frame.fiber_summary.get('mean_angle_deg', float('nan')):.2f} deg\n"
-                f"Std angle: {self.current_frame.fiber_summary.get('std_angle_deg', float('nan')):.2f} deg\n"
-                f"Porosity (area fraction): {self.current_frame.fiber_summary.get('porosity', float('nan'))*100:.1f} %\n"
-                f"Fragments with centerlines: {int(self.current_frame.fiber_summary.get('fragments_with_centerlines', 0))}"
+                f"Diam Mean: {self.current_frame.fiber_summary.get('diam_mean', float('nan')):.2f} {units_label}\n"
+                f"Diam SD: {self.current_frame.fiber_summary.get('diam_sd', float('nan')):.2f} {units_label}\n"
+                f"Diam Mode: {self.current_frame.fiber_summary.get('diam_mode', float('nan')):.2f} {units_label}\n"
+                f"Diam Median: {self.current_frame.fiber_summary.get('diam_median', float('nan')):.2f} {units_label}\n"
+                f"Orientation Index: {self.current_frame.fiber_summary.get('orientation_index', float('nan')):.2f}\n"
+                f"Angle Mean: {self.current_frame.fiber_summary.get('mean_angle_deg', float('nan')):.2f} deg\n"
+                f"Angle SD: {self.current_frame.fiber_summary.get('std_angle_deg', float('nan')):.2f} deg\n"
+                f"Porosity: {self.current_frame.fiber_summary.get('porosity', float('nan'))*100:.1f} %\n"
+                f"Centerline Fragments: {int(self.current_frame.fiber_summary.get('fragments_with_centerlines', 0))}"
             )
             self.text_edit2.setPlainText(info_text)
             self._update_distributions_pyqtgraph(units_label)
