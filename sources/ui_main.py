@@ -492,15 +492,6 @@ class MainWindow(QMainWindow):
         )
         return self._handle_pipeline_outcome(outcome)
 
-    def _ensure_measurement_centerlines_ready(self) -> bool:
-        self.sync_ui_to_config()
-        outcome = self._pipeline_service.ensure_measurement_centerlines(
-            self.current_frame,
-            self.config,
-            invert_input=bool(self.chb_invert.isChecked()),
-        )
-        return self._handle_pipeline_outcome(outcome)
-
     def _ensure_segmentation_ready(self) -> bool:
         self.sync_ui_to_config()
         outcome = self._pipeline_service.ensure_segmentation(

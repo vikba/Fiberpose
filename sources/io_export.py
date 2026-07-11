@@ -614,7 +614,7 @@ class BatchResultExporter:
                     else:
                         diameter_val = float(t_px)
                     handle.write(
-                        f"{z_index},{frame_id},{int(x)},{int(y)},{diameter_val:.6f},{angle_val:.6f}\n"
+                        f"{z_index},{frame_id},{int(x)},{int(y)},{diameter_val:.2f},{angle_val:.2f}\n"
                     )
 
     def _write_batch_summary_csv(self, frames: list[Any], path: str) -> None:
@@ -653,14 +653,14 @@ class BatchResultExporter:
                         int(frame_index),
                         int(getattr(frame, "z_index", frame_index)),
                         str(getattr(frame, "frame_id", f"frame_{frame_index:04d}")),
-                        f"{diam_mean:.6f}",
-                        f"{diam_sd:.6f}",
-                        f"{diam_mode:.6f}",
-                        f"{diam_median:.6f}",
-                        f"{orientation_index:.6f}",
-                        f"{mean_angle_deg:.6f}",
-                        f"{std_angle_deg:.6f}",
-                        f"{porosity:.6f}",
+                        f"{diam_mean:.2f}",
+                        f"{diam_sd:.2f}",
+                        f"{diam_mode:.2f}",
+                        f"{diam_median:.2f}",
+                        f"{orientation_index:.2f}",
+                        f"{mean_angle_deg:.2f}",
+                        f"{std_angle_deg:.2f}",
+                        f"{porosity:.2f}",
                         int(sample_count),
                         fragments_with_centerlines,
                         units,
@@ -838,14 +838,14 @@ class BatchResultExporter:
             summary = getattr(frame, "fiber_summary", None) or {}
             fragments_with_centerlines = int(summary.get("fragments_with_centerlines", 0))
             handle.write("metric,value\n")
-            handle.write(f"diam_mean,{diam_mean:.6f}\n")
-            handle.write(f"diam_sd,{diam_sd:.6f}\n")
-            handle.write(f"diam_mode,{diam_mode:.6f}\n")
-            handle.write(f"diam_median,{diam_median:.6f}\n")
-            handle.write(f"orientation_index,{orientation_index:.6f}\n")
-            handle.write(f"mean_angle_deg,{mean_angle_deg:.6f}\n")
-            handle.write(f"std_angle_deg,{std_angle_deg:.6f}\n")
-            handle.write(f"porosity,{porosity:.6f}\n")
+            handle.write(f"diam_mean,{diam_mean:.2f}\n")
+            handle.write(f"diam_sd,{diam_sd:.2f}\n")
+            handle.write(f"diam_mode,{diam_mode:.2f}\n")
+            handle.write(f"diam_median,{diam_median:.2f}\n")
+            handle.write(f"orientation_index,{orientation_index:.2f}\n")
+            handle.write(f"mean_angle_deg,{mean_angle_deg:.2f}\n")
+            handle.write(f"std_angle_deg,{std_angle_deg:.2f}\n")
+            handle.write(f"porosity,{porosity:.2f}\n")
             handle.write(f"sample_number,{sample_count}\n")
             handle.write(f"fragments_with_centerlines,{fragments_with_centerlines}\n")
             handle.write("\n\n")
@@ -859,7 +859,7 @@ class BatchResultExporter:
                     diameter_val = float(thickness_units[idx - 1])
                 else:
                     diameter_val = float(t_px)
-                handle.write(f"{int(x)},{int(y)},{diameter_val:.6f},{angle_val:.6f}\n")
+                handle.write(f"{int(x)},{int(y)},{diameter_val:.2f},{angle_val:.2f}\n")
 
     def _measurement_summary_from_frame(
         self, frame

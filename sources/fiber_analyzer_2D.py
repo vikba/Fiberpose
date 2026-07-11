@@ -99,7 +99,6 @@ class FiberAnalyzer_2D:
         self._gy: Optional[np.ndarray] = None
         self._laplacian: Optional[np.ndarray] = None
         self._fiber_fragments: Optional[List[FiberFragment]] = None
-        self._measurement_normals_xy: Optional[List[np.ndarray]] = None
         self._segmentation_centerlines_rgb: Optional[np.ndarray] = None
         self._measurement_centerlines_rgb: Optional[np.ndarray] = None
         self._centerlines_comparison_rgb: Optional[np.ndarray] = None
@@ -412,7 +411,6 @@ class FiberAnalyzer_2D:
                 measurement_segments_xy.append(polyline_xy.reshape(-1, 1, 2))
                 measurement_normals_xy.append(self._polyline_normals(polyline_xy))
         self._fiber_fragments = active_fragments
-        self._measurement_normals_xy = measurement_normals_xy
         self._segmentation_centerlines_rgb = segmentation_centerlines_rgb
         self._measurement_centerlines_rgb = measurement_centerlines_rgb
         self._centerlines_comparison_rgb = centerlines_comparison_rgb
@@ -426,7 +424,7 @@ class FiberAnalyzer_2D:
             len(raw_fragments),
             len(measurement_segments_xy),
         )
-        return measurement_segments_xy, self._measurement_normals_xy, measurement_centerlines_rgb, markers
+        return measurement_segments_xy, measurement_normals_xy, measurement_centerlines_rgb, markers
 
     @classmethod
     def _group_detected_polylines_into_segmentation_fragments(
@@ -797,18 +795,31 @@ class FiberAnalyzer_2D:
             thr_u8 = int(opts.get("threshold_u8", 128))
             if self._segmentation_markers is None or self._segmentation_markers.max() == 0:
                 self.process_centerlines(self._last_max_angle, **self._centerline_kwargs)
-            return self.segment_watershed(
+            labels = self.segment_watershed(
                 thr_u8=thr_u8,
                 min_segment_foreground_mean=float(opts.get("min_segment_foreground_mean", 0.5)),
             )
-
-        if mode_name == "radial_expansion":
-            return self.segment_radial_expansion(
+        elif mode_name == "radial_expansion":
+            labels = self.segment_radial_expansion(
                 expansion_factor=float(opts.get("expansion_factor", 1.0)),
                 min_segment_foreground_mean=float(opts.get("min_segment_foreground_mean", 0.5)),
             )
+        else:
+            raise ValueError(f"Unsupported segmentation mode: {mode}")
 
-        raise ValueError(f"Unsupported segmentation mode: {mode}")
+        surviving_ids = set(np.unique(labels)) - {0}
+        self._fiber_fragments = [
+            fragment
+            for fragment in self._fiber_fragments or []
+            if int(fragment.parent_fiber_id) in surviving_ids
+        ]
+        self._measurement_centerlines_rgb = self._render_centerlines_rgb(
+            self._dt_u8, self._fiber_fragments, centerline_color=(0, 255, 0), measurement_only=True
+        )
+        self._centerlines_comparison_rgb = self._render_centerline_comparison_rgb(
+            self._dt_u8, self._fiber_fragments
+        )
+        return labels
 
     def segment_watershed(
         self,
@@ -1023,17 +1034,6 @@ class FiberAnalyzer_2D:
         if not self._fiber_fragments:
             return 0
         return sum(1 for seg in self._fiber_fragments if seg.has_measurement_centerline)
-
-    def get_centerline_segments(self) -> List[np.ndarray]:
-        """Backward-compatible alias for measurement centerline segments."""
-        return self.get_measurement_centerline_segments()
-
-    def get_centerline_normals(self) -> List[np.ndarray]:
-        """Return centerline normals in the format expected by downstream consumers.
-        
-        Returns:
-            List[np.ndarray]: Array containing the transformed or derived data."""
-        return self._measurement_normals_xy or []
 
     def get_markers(self) -> Optional[np.ndarray]:
         """Return markers in the format expected by downstream consumers.

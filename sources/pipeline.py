@@ -235,11 +235,11 @@ class PipelineController:
 
     @classmethod
     def segmentation_signature(cls, frame: Frame, config: AppConfig, *, invert_input: bool) -> str | None:
-        segmentation_centerline_sig = cls.segmentation_centerline_signature(frame, config, invert_input=invert_input)
-        if segmentation_centerline_sig is None:
+        measurement_centerline_sig = cls.measurement_centerline_signature(frame, config, invert_input=invert_input)
+        if measurement_centerline_sig is None:
             return None
         payload = {
-            "segmentation_centerline_sig": segmentation_centerline_sig,
+            "measurement_centerline_sig": measurement_centerline_sig,
             "segmentation_mode": str(getattr(config, "segmentation_mode", "watershed")),
             "seg_threshold": int(getattr(config, "seg_threshold", 1)),
             "segmentation_expansion_factor": float(getattr(config, "segmentation_expansion_factor", 1.0)),
@@ -256,14 +256,13 @@ class PipelineController:
         *,
         invert_input: bool,
     ) -> str | None:
-        measurement_centerline_sig = cls.measurement_centerline_signature(frame, config, invert_input=invert_input)
-        if measurement_centerline_sig is None:
+        segmentation_sig = cls.segmentation_signature(frame, config, invert_input=invert_input)
+        if segmentation_sig is None:
             return None
         props = sample_props if sample_props is not None else SampleProperties.defaults()
         payload = {
-            "measurement_centerline_sig": measurement_centerline_sig,
+            "segmentation_sig": segmentation_sig,
             "sample_spacing": float(getattr(config, "sample_spacing", 5.0)),
-            "seg_threshold": int(getattr(config, "seg_threshold", 1)),
             "pixel_size_x": float(props.pixel_size_x),
             "pixel_size_y": float(props.pixel_size_y),
             "voxel_size_z": float(props.voxel_size_z),
@@ -423,8 +422,8 @@ class PipelineController:
         return {
             "labels_2d": labels,
             "segmentation_centerlines_overlay_img": centerlines["segmentation_centerlines_overlay_img"],
-            "measurement_centerlines_overlay_img": centerlines["measurement_centerlines_overlay_img"],
-            "centerlines_comparison_overlay_img": centerlines["centerlines_comparison_overlay_img"],
+            "measurement_centerlines_overlay_img": self.analyzer.get_measurement_centerlines_image(),
+            "centerlines_comparison_overlay_img": self.analyzer.get_centerlines_comparison_image(),
             "overlay_img": self._create_overlay(base_img, labels, alpha=0.5, labels_rgb=labels_rgb),
             "labels_rgb_cache": labels_cache,
             "segmentation_outline_cache": outline_cache,
@@ -807,25 +806,6 @@ class PipelineController:
         frame.measurement_sig = None
         return PipelineOutcome(True)
 
-    def ensure_measurement_centerlines(self, frame: Frame, config: AppConfig, *, invert_input: bool) -> PipelineOutcome:
-        outcome = self.ensure_segmentation_centerlines(frame, config, invert_input=invert_input)
-        if not outcome.ok:
-            return outcome
-
-        target_sig = self.measurement_centerline_signature(frame, config, invert_input=invert_input)
-        if target_sig is None:
-            return PipelineOutcome(False)
-        if (
-            frame.measurement_centerline_sig == target_sig
-            and self.analyzer is not None
-            and frame.measurement_centerlines_overlay_img is not None
-        ):
-            return PipelineOutcome(True)
-
-        frame.segmentation_centerline_sig = None
-        frame.measurement_centerline_sig = None
-        return self.ensure_segmentation_centerlines(frame, config, invert_input=invert_input)
-
     def ensure_segmentation(self, frame: Frame, config: AppConfig, *, invert_input: bool) -> PipelineOutcome:
         if frame.orig_img is None:
             return PipelineOutcome(False, info_title="Load original", info_message="Please load an original image first.")
@@ -836,7 +816,12 @@ class PipelineController:
         target_sig = self.segmentation_signature(frame, config, invert_input=invert_input)
         if target_sig is None:
             return PipelineOutcome(False)
-        if frame.has_segmentation and frame.labels_2d is not None and frame.segmentation_sig == target_sig:
+        if (
+            frame.has_segmentation
+            and frame.labels_2d is not None
+            and frame.segmentation_sig == target_sig
+            and self.analyzer.get_labels() is frame.labels_2d
+        ):
             return PipelineOutcome(True)
 
         centerline_state = self.ensure_segmentation_centerlines(frame, config, invert_input=invert_input)
@@ -881,9 +866,9 @@ class PipelineController:
         *,
         invert_input: bool,
     ) -> PipelineOutcome:
-        prediction_ready = self.ensure_prediction(frame, config, invert_input=invert_input)
-        if not prediction_ready.ok:
-            return prediction_ready
+        segmentation_ready = self.ensure_segmentation(frame, config, invert_input=invert_input)
+        if not segmentation_ready.ok:
+            return segmentation_ready
         if self.analyzer is None:
             return PipelineOutcome(False, info_title="No analyzer", info_message="Measurement data unavailable.")
 
@@ -894,9 +879,6 @@ class PipelineController:
             return PipelineOutcome(True)
 
         self.invalidate_measurements(frame)
-        centerline_ready = self.ensure_measurement_centerlines(frame, config, invert_input=invert_input)
-        if not centerline_ready.ok:
-            return centerline_ready
         if not self.analyzer.get_measurement_centerline_segments():
             return PipelineOutcome(False, info_title="No centerlines", info_message="No measurement centerlines available.")
 
