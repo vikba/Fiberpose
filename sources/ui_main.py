@@ -2235,6 +2235,10 @@ class MainWindow(QMainWindow):
             current = self._current_z_index + 1 if total > 0 else 0
             kind = self._image_batch.kind
             name = self._image_batch.name
+            if kind == "Folder":
+                filename = self._image_batch.metadata["filenames"][self._current_z_index]
+                self._slice_label.setText(f"Folder: {name}  |  Image: {filename} ({current}/{total})")
+                return
         else:
             total = 1
             current = 0

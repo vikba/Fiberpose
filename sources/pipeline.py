@@ -434,22 +434,20 @@ class PipelineController:
         if angles_samples_deg is None or getattr(angles_samples_deg, "size", 0) == 0:
             return float("nan"), float("nan"), float("nan")
 
-        angles_rad = np.deg2rad(angles_samples_deg)
+        angles_rad = np.deg2rad(2.0 * angles_samples_deg)
         mean_cos = float(np.mean(np.cos(angles_rad)))
         mean_sin = float(np.mean(np.sin(angles_rad)))
         orientation_index = float(np.clip(np.hypot(mean_cos, mean_sin), 0.0, 1.0))
 
-        mean_angle_rad = float(np.arctan2(mean_sin, mean_cos))
+        mean_angle_rad = 0.5 * float(np.arctan2(mean_sin, mean_cos))
         mean_angle_deg = float(np.rad2deg(mean_angle_rad))
-        if mean_angle_deg > 90.0:
-            mean_angle_deg -= 180.0
-        elif mean_angle_deg <= -90.0:
+        if mean_angle_deg <= -90.0:
             mean_angle_deg += 180.0
 
         if orientation_index > 0 and np.isfinite(orientation_index):
             r = float(np.clip(orientation_index, 1e-8, 1.0))
             std_angle_rad = float(np.sqrt(max(0.0, -2.0 * np.log(r))))
-            std_angle_deg = float(np.rad2deg(std_angle_rad))
+            std_angle_deg = 0.5 * float(np.rad2deg(std_angle_rad))
         else:
             std_angle_deg = float("nan")
 
