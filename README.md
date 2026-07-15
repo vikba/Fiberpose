@@ -81,7 +81,7 @@ For training, install the PyTorch build that matches your CUDA version using the
 By default, Fiberpose expects an ONNX checkpoint at:
 
 ```text
-checkpoints/model_fiber_1.onnx
+checkpoints/model_fiber_2_no_bg.onnx
 ```
 
 If the model file is not included in the repository, download it from the project release page or place your own compatible ONNX model in the `checkpoints/` directory. You can also select a model in the GUI or specify it through `resources/config.json`.
@@ -232,7 +232,7 @@ Fiberpose/
 │   ├── config.json            # Default configuration
 │   └── fiber_tool.ui          # Qt GUI layout
 ├── checkpoints/
-│   └── fiber_2000_epoch.onnx  # Default ONNX model checkpoint
+│   └── model_fiber_2_no_bg.onnx  # Default ONNX model checkpoint
 └── sources/
     ├── ui_main.py             # Main PyQt GUI
     ├── pipeline.py            # Pipeline orchestration
@@ -268,7 +268,7 @@ Training scripts and dataset-preparation utilities may change while the project 
 Check that the default model exists:
 
 ```text
-checkpoints/fiber_2000_epoch.onnx
+checkpoints/model_fiber_2_no_bg.onnx
 ```
 
 or update the model path in `resources/config.json`.

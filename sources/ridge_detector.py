@@ -11,49 +11,13 @@ Usage:
     det = RidgeDetector()
     polylines = det.detect_ridges(img, sigma=2.0, low=8, high=15, polarity="dark")
 
-CLI demo:
-    python ridge_detector_numba.py in.png out.png --sigma 2 --low 8 --high 15 --polarity dark
 """
 
 from __future__ import annotations
-from dataclasses import dataclass
-from typing import Any, Callable, Optional, List, Tuple
+from typing import List, Tuple
 import math
 import numpy as np
 from numba import njit
-
-
-# -------------------------
-# Data model
-# -------------------------
-
-@dataclass(slots=True)
-class RidgeLine:
-    """Represent ridge line state used across processing and visualization workflows."""
-    pts: np.ndarray            # (N,2) float32 [row, col]
-    angle: np.ndarray          # (N,)  float32 normal angle beta (radians)
-    response: np.ndarray       # (N,)  float32 interpolated ridge response
-    width: Optional[np.ndarray] = None
-    intensity: Optional[np.ndarray] = None
-    asymmetry: Optional[np.ndarray] = None
-
-    def __post_init__(self):
-        """Normalize and validate dataclass fields after instance construction."""
-        self.pts = np.asarray(self.pts, dtype=np.float32)
-        self.angle = np.asarray(self.angle, dtype=np.float32)
-        self.response = np.asarray(self.response, dtype=np.float32)
-
-
-@dataclass(slots=True)
-class Junction:
-    """Represent junction state used across processing and visualization workflows."""
-    pt: np.ndarray   # (2,) float32 [row, col]
-    a: int           # index of line A
-    b: int           # index of line B
-
-    def __post_init__(self):
-        """Normalize and validate dataclass fields after instance construction."""
-        self.pt = np.asarray(self.pt, dtype=np.float32)
 
 
 # -------------------------
@@ -62,14 +26,6 @@ class Junction:
 
 @njit(cache=True)
 def _mirror_r_jit(r: int, h: int) -> int:
-    """Provide an internal helper for mirror r jit.
-    
-    Args:
-        r (int): Value for r interpreted by this routine.
-        h (int): Value for h interpreted by this routine.
-    
-    Returns:
-        int: Result object produced by the mirror r jit routine."""
     if r < 0:
         return -r
     if r >= h:
@@ -78,14 +34,6 @@ def _mirror_r_jit(r: int, h: int) -> int:
 
 @njit(cache=True)
 def _mirror_c_jit(c: int, w: int) -> int:
-    """Provide an internal helper for mirror c jit.
-    
-    Args:
-        c (int): Value for c interpreted by this routine.
-        w (int): Value for w interpreted by this routine.
-    
-    Returns:
-        int: Result object produced by the mirror c jit routine."""
     if c < 0:
         return -c
     if c >= w:
@@ -94,17 +42,6 @@ def _mirror_c_jit(c: int, w: int) -> int:
 
 @njit(cache=True)
 def _convolve_rows_flat(image: np.ndarray, mask: np.ndarray, n: int, w: int, h: int) -> np.ndarray:
-    """Provide an internal helper for convolve rows flat.
-    
-    Args:
-        image (np.ndarray): Array-like data carrying image values for analysis.
-        mask (np.ndarray): Array-like data carrying mask values for analysis.
-        n (int): Value for n interpreted by this routine.
-        w (int): Value for w interpreted by this routine.
-        h (int): Value for h interpreted by this routine.
-    
-    Returns:
-        np.ndarray: Array containing the convolve rows flat output aligned with downstream expectations."""
     out = np.empty((w * h,), dtype=np.float32)
 
     # inner
@@ -143,17 +80,6 @@ def _convolve_rows_flat(image: np.ndarray, mask: np.ndarray, n: int, w: int, h: 
 
 @njit(cache=True)
 def _convolve_cols_flat(tmp: np.ndarray, mask: np.ndarray, n: int, w: int, h: int) -> np.ndarray:
-    """Provide an internal helper for convolve cols flat.
-    
-    Args:
-        tmp (np.ndarray): Value for tmp interpreted by this routine.
-        mask (np.ndarray): Array-like data carrying mask values for analysis.
-        n (int): Value for n interpreted by this routine.
-        w (int): Value for w interpreted by this routine.
-        h (int): Value for h interpreted by this routine.
-    
-    Returns:
-        np.ndarray: Array containing the convolve cols flat output aligned with downstream expectations."""
     out = np.empty((w * h,), dtype=np.float32)
 
     # inner
@@ -189,14 +115,6 @@ def _convolve_cols_flat(tmp: np.ndarray, mask: np.ndarray, n: int, w: int, h: in
 
 @njit(cache=True)
 def _solve_linear_jit(a: float, b: float) -> Tuple[int, float]:
-    """Provide an internal helper for solve linear jit.
-    
-    Args:
-        a (float): Value for a interpreted by this routine.
-        b (float): Value for b interpreted by this routine.
-    
-    Returns:
-        Tuple[int, float]: Tuple grouping the solve linear jit outputs in a stable positional order."""
     if a == 0.0:
         return 0, 0.0
     return 1, -b / a
@@ -241,23 +159,6 @@ def _eigen_2x2_jit(drr: float, drc: float, dcc: float) -> Tuple[float, float, fl
 def _ridge_candidates_jit(dr, dc, drr, drc, dcc, w: int, h: int,
                          low: float, high: float, mode: int,
                          pixel_boundary: float) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    """Provide an internal helper for ridge candidates jit.
-    
-    Args:
-        dr (Any): Value for dr interpreted by this routine.
-        dc (Any): Value for dc interpreted by this routine.
-        drr (Any): Value for drr interpreted by this routine.
-        drc (Any): Value for drc interpreted by this routine.
-        dcc (Any): Value for dcc interpreted by this routine.
-        w (int): Value for w interpreted by this routine.
-        h (int): Value for h interpreted by this routine.
-        low (float): Value for low interpreted by this routine.
-        high (float): Value for high interpreted by this routine.
-        mode (int): Value for mode interpreted by this routine.
-        pixel_boundary (float): Value for pixel boundary interpreted by this routine.
-    
-    Returns:
-        Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]: Array containing the ridge candidates jit output aligned with downstream expectations."""
     N = w * h
     ismax = np.zeros((N,), dtype=np.uint8)
     ev = np.zeros((N,), dtype=np.float32)
@@ -305,73 +206,28 @@ def _ridge_candidates_jit(dr, dc, drr, drc, dcc, w: int, h: int,
 # Numba kernels for link_contours
 # -------------------------
 
-import numpy as np
 import numba as nb
 
-@nb.njit(cache=True, fastmath=True)
-def _bilinear_ev(ev1d, x, y, w, h):
-    # ev is 1D flattened (h*w,), x=row, y=col but px/py are subpixel in the same coord system you used.
-    # Here x,y are float pixel coords in image space (row/col).
-    """Provide an internal helper for bilinear ev.
-    
-    Args:
-        ev1d (Any): Value for ev1d interpreted by this routine.
-        x (Any): Coordinate component representing the x axis value.
-        y (Any): Coordinate component representing the y axis value.
-        w (Any): Value for w interpreted by this routine.
-        h (Any): Value for h interpreted by this routine.
-    
-    Returns:
-        Any: Object containing the bilinear ev outcome for downstream use."""
-    if x < 0.0: x = 0.0
-    if y < 0.0: y = 0.0
-    if x > h - 1.001: x = h - 1.001
-    if y > w - 1.001: y = w - 1.001
-
-    x0 = int(x)
-    y0 = int(y)
-    x1 = x0 + 1
-    y1 = y0 + 1
-    if x1 >= h: x1 = h - 1
-    if y1 >= w: y1 = w - 1
-
-    dx = x - x0
-    dy = y - y0
-
-    p00 = x0 * w + y0
-    p01 = x0 * w + y1
-    p10 = x1 * w + y0
-    p11 = x1 * w + y1
-
-    v00 = ev1d[p00]
-    v01 = ev1d[p01]
-    v10 = ev1d[p10]
-    v11 = ev1d[p11]
-
-    v0 = v00 * (1.0 - dy) + v01 * dy
-    v1 = v10 * (1.0 - dy) + v11 * dy
-    return v0 * (1.0 - dx) + v1 * dx
 
 
 @nb.njit(cache=True, fastmath=True, boundscheck=True)
 def _trace_one_direction(
     x0, y0,
     dir_flag,                  # 1 or 2 (same semantics as your it loop)
-    ismax, ev, px, py,
-    alpha_arr, oct4_arr, beta0_arr,
+    ismax, px, py,
+    alpha_arr, oct4_arr,
     label, indx, cross_done,
     w, h,
     DIRTAB, CLEARTAB,
     max_angle_diff,
     line_id,
-    # output buffers:
-    out_x, out_y, out_ang, out_resp,
+    out_x, out_y,
     out_start
 ):
     """
     Traces one direction starting at (x0,y0) excluding the seed itself.
     Writes points to flat arrays starting at out_start.
-    Returns (out_end, hit_existing_label, hit_label_id_minus1, hit_x, hit_y).
+    Returns the next free output index.
     """
     x = x0
     y = y0
@@ -382,16 +238,7 @@ def _trace_one_direction(
     if dir_flag == 2:
         last_oct += 4
 
-    last_beta = alpha_p + 0.5 * np.pi
-    if last_beta >= np.pi:
-        last_beta -= np.pi
-
     out_i = out_start
-    hit = 0
-    hit_a = -1
-    hit_b = -1
-    hit_px = 0.0
-    hit_py = 0.0
 
     while True:
         p = x * w + y
@@ -469,37 +316,16 @@ def _trace_one_direction(
         pp = x * w + y
 
         if out_i >= out_x.shape[0]:
-            return out_i, 0, -1, -1, 0.0, 0.0
+            return out_i
 
 
         # append point (excluding seed)
         out_x[out_i] = px[pp]
         out_y[out_i] = py[pp]
 
-        beta = beta0_arr[pp]  # [0,π)
-        d1 = abs(beta - last_beta)
-        if d1 >= np.pi:
-            d1 = 2.0*np.pi - d1
-        d2 = abs(beta + np.pi - last_beta)
-        if d2 >= np.pi:
-            d2 = 2.0*np.pi - d2
-
-        if d1 < d2:
-            out_ang[out_i] = beta
-            last_beta = beta
-        else:
-            out_ang[out_i] = beta + np.pi
-            last_beta = beta + np.pi
-
-        out_resp[out_i] = _bilinear_ev(ev, x, y, w, h)  # uses integer x,y like your call did
         out_i += 1
 
         if label[pp] > 0:
-            hit = 1
-            hit_a = label[pp] - 1
-            hit_b = line_id - 1
-            hit_px = px[pp]
-            hit_py = py[pp]
             break
 
         label[pp] = line_id
@@ -507,42 +333,19 @@ def _trace_one_direction(
         if idx != 0:
             cross_done[idx - 1] = True
 
-    return out_i, hit, hit_a, hit_b, hit_px, hit_py
+    return out_i
 
 
 @nb.njit(cache=True, fastmath=True, boundscheck=True)
 def _link_contours_trace_numba(
     cross_x, cross_y, cross_val, cross_done,
-    ismax, ev, px, py,
-    alpha_arr, oct4_arr, beta0_arr,
+    ismax, px, py,
+    alpha_arr, oct4_arr,
     indx,
     w, h,
     DIRTAB, CLEARTAB,
     max_angle_diff
 ):
-    """Provide an internal helper for link contours trace numba.
-    
-    Args:
-        cross_x (Any): Value for cross x interpreted by this routine.
-        cross_y (Any): Value for cross y interpreted by this routine.
-        cross_val (Any): Value for cross val interpreted by this routine.
-        cross_done (Any): Value for cross done interpreted by this routine.
-        ismax (Any): Value for ismax interpreted by this routine.
-        ev (Any): Value for ev interpreted by this routine.
-        px (Any): Value for px interpreted by this routine.
-        py (Any): Value for py interpreted by this routine.
-        alpha_arr (Any): Array-like data carrying alpha arr values for analysis.
-        oct4_arr (Any): Array-like data carrying oct4 arr values for analysis.
-        beta0_arr (Any): Array-like data carrying beta0 arr values for analysis.
-        indx (Any): Value for indx interpreted by this routine.
-        w (Any): Value for w interpreted by this routine.
-        h (Any): Value for h interpreted by this routine.
-        DIRTAB (Any): Filesystem location describing where d i r t a b is read or written.
-        CLEARTAB (Any): Value for c l e a r t a b interpreted by this routine.
-        max_angle_diff (Any): Numeric control parameter for max angle diff during computation.
-    
-    Returns:
-        Any: Object containing the link contours trace numba outcome for downstream use."""
     area = cross_x.shape[0]
     label = np.zeros((w*h,), dtype=np.int32)
 
@@ -550,20 +353,11 @@ def _link_contours_trace_numba(
     max_points = area * 2 + 8
     pts_x = np.empty((max_points,), dtype=np.float32)
     pts_y = np.empty((max_points,), dtype=np.float32)
-    pts_ang = np.empty((max_points,), dtype=np.float32)
-    pts_resp = np.empty((max_points,), dtype=np.float32)
 
     # line offsets (start index into flat arrays)
     line_offsets = np.empty((area + 1,), dtype=np.int32)
     line_count = 0
     out_i = 0
-
-    # junctions (upper bound: number of lines)
-    j_x = np.empty((area,), dtype=np.float32)
-    j_y = np.empty((area,), dtype=np.float32)
-    j_a = np.empty((area,), dtype=np.int32)
-    j_b = np.empty((area,), dtype=np.int32)
-    j_count = 0
 
     indx_max = 0
     while True:
@@ -595,11 +389,6 @@ def _link_contours_trace_numba(
         pts_y[out_i] = py[pos0]
 
         alpha0 = alpha_arr[pos0]               # [0,π)
-        beta_seed = alpha0 + 0.5*np.pi
-        if beta_seed >= np.pi:
-            beta_seed -= np.pi
-        pts_ang[out_i] = beta_seed
-        pts_resp[out_i] = _bilinear_ev(ev, x0, y0, w, h)
         out_i += 1
 
         # clear double responses around seed (uses oct4)
@@ -622,16 +411,16 @@ def _link_contours_trace_numba(
 
         # Trace direction 2 (backward) into temp, then direction 1 (forward) into main, so order matches your reverse+append behavior.
         tmp_start = out_i
-        tmp_end, hit2, ha2, hb2, hpx2, hpy2 = _trace_one_direction(
+        tmp_end = _trace_one_direction(
             x0, y0, 2,
-            ismax, ev, px, py,
-            alpha_arr, oct4_arr, beta0_arr,
+            ismax, px, py,
+            alpha_arr, oct4_arr,
             label, indx, cross_done,
             w, h,
             DIRTAB, CLEARTAB,
             max_angle_diff,
             line_id,
-            pts_x, pts_y, pts_ang, pts_resp,
+            pts_x, pts_y,
             tmp_start
         )
         tmp_len = tmp_end - tmp_start
@@ -640,37 +429,25 @@ def _link_contours_trace_numba(
         for k in range(tmp_len // 2):
             a = tmp_start + k
             b = tmp_start + (tmp_len - 1 - k)
-            # swap x,y,ang,resp
+            # swap x,y
             tx = pts_x[a]; pts_x[a] = pts_x[b]; pts_x[b] = tx
             ty = pts_y[a]; pts_y[a] = pts_y[b]; pts_y[b] = ty
-            ta = pts_ang[a]; pts_ang[a] = pts_ang[b]; pts_ang[b] = ta
-            tr = pts_resp[a]; pts_resp[a] = pts_resp[b]; pts_resp[b] = tr
 
         out_i = tmp_end
 
         # forward direction appends after seed+backward
-        out_i, hit1, ha1, hb1, hpx1, hpy1 = _trace_one_direction(
+        out_i = _trace_one_direction(
             x0, y0, 1,
-            ismax, ev, px, py,
-            alpha_arr, oct4_arr, beta0_arr,
+            ismax, px, py,
+            alpha_arr, oct4_arr,
             label, indx, cross_done,
             w, h,
             DIRTAB, CLEARTAB,
             max_angle_diff,
             line_id,
-            pts_x, pts_y, pts_ang, pts_resp,
+            pts_x, pts_y,
             out_i
         )
-
-        # junction (if either direction hit)
-        if hit2 == 1:
-            j_x[j_count] = hpx2; j_y[j_count] = hpy2
-            j_a[j_count] = ha2;  j_b[j_count] = hb2
-            j_count += 1
-        elif hit1 == 1:
-            j_x[j_count] = hpx1; j_y[j_count] = hpy1
-            j_a[j_count] = ha1;  j_b[j_count] = hb1
-            j_count += 1
 
         # keep only lines with >=2 points
         line_len = out_i - line_offsets[line_count]
@@ -686,14 +463,9 @@ def _link_contours_trace_numba(
     # trim outputs
     pts_x = pts_x[:out_i]
     pts_y = pts_y[:out_i]
-    pts_ang = pts_ang[:out_i]
-    pts_resp = pts_resp[:out_i]
     line_offsets = line_offsets[:line_count+1]
 
-    j_x = j_x[:j_count]; j_y = j_y[:j_count]
-    j_a = j_a[:j_count]; j_b = j_b[:j_count]
-
-    return pts_x, pts_y, pts_ang, pts_resp, line_offsets, j_x, j_y, j_a, j_b
+    return pts_x, pts_y, line_offsets
 
 
 
@@ -750,20 +522,6 @@ class RidgeDetector:
         high: float = 10.0,
         polarity: str = "dark",
     ) -> List[np.ndarray]:
-        """Orchestrate detect ridges within the current module workflow.
-        
-        Args:
-            image2d (np.ndarray): Array-like data carrying image2d values for analysis.
-            sigma (float): Numeric control parameter for sigma during computation.
-            low (float): Value for low interpreted by this routine.
-            high (float): Value for high interpreted by this routine.
-            polarity (str): Value for polarity interpreted by this routine.
-        
-        Returns:
-            List[np.ndarray]: Plain detected polylines in `(x, y)` order.
-        
-        Raises:
-            ValueError: If provided values violate validation or domain constraints."""
         img = np.asarray(image2d, dtype=np.float32)
         if img.ndim != 2:
             raise ValueError("image must be 2D grayscale")
@@ -774,10 +532,8 @@ class RidgeDetector:
         dr, dc, drr, drc, dcc = cls._gauss_derivatives(img, sigma)
         ismax, ev, nx, ny, px, py = cls._ridge_candidates(dr, dc, drr, drc, dcc, w, h, low, high, mode)
 
-        alpha, oct4, beta0 = cls._precompute_angles(nx, ny, w, h)
-
-        lines, _junctions = cls._link_contours(ismax, ev, nx, ny, px, py, w, h, alpha, oct4, beta0)
-        return [np.asarray(line.pts[:, [1, 0]], dtype=np.float32) for line in lines]
+        alpha, oct4 = cls._precompute_angles(nx, ny)
+        return cls._link_contours(ismax, ev, px, py, w, h, alpha, oct4)
 
     # -------------------------
     # Helpers
@@ -785,104 +541,27 @@ class RidgeDetector:
 
     @staticmethod
     def _mask_size(maxv: float, sigma: float) -> int:
-        """Provide an internal helper for mask size.
-        
-        Args:
-            maxv (float): Value for maxv interpreted by this routine.
-            sigma (float): Numeric control parameter for sigma during computation.
-        
-        Returns:
-            int: Result object produced by the mask size routine."""
         return int(math.ceil(maxv * sigma))
 
-    @staticmethod
-    def _lin(r: int, c: int, w: int) -> int:
-        """Provide an internal helper for lin.
-        
-        Args:
-            r (int): Value for r interpreted by this routine.
-            c (int): Value for c interpreted by this routine.
-            w (int): Value for w interpreted by this routine.
-        
-        Returns:
-            int: Result object produced by the lin routine."""
-        return r * w + c
 
-    @staticmethod
-    def _mirror_r(r: int, h: int) -> int:
-        """Provide an internal helper for mirror r.
-        
-        Args:
-            r (int): Value for r interpreted by this routine.
-            h (int): Value for h interpreted by this routine.
-        
-        Returns:
-            int: Result object produced by the mirror r routine."""
-        return (-r) if r < 0 else (h - r + h - 2) if r >= h else r
 
-    @staticmethod
-    def _mirror_c(c: int, w: int) -> int:
-        """Provide an internal helper for mirror c.
-        
-        Args:
-            c (int): Value for c interpreted by this routine.
-            w (int): Value for w interpreted by this routine.
-        
-        Returns:
-            int: Result object produced by the mirror c routine."""
-        return (-c) if c < 0 else (w - c + w - 2) if c >= w else c
-
-    # -------------------------
-    # Gaussian masks (small; Python is fine)
-    # -------------------------
 
     @staticmethod
     def _phi0(x: float, sigma: float) -> float:
-        """Provide an internal helper for phi0.
-        
-        Args:
-            x (float): Coordinate component representing the x axis value.
-            sigma (float): Numeric control parameter for sigma during computation.
-        
-        Returns:
-            float: Result object produced by the phi0 routine."""
         return 0.5 * (1.0 + math.erf(x / (sigma * math.sqrt(2.0))))
 
     @classmethod
     def _phi1(cls, x: float, sigma: float) -> float:
-        """Provide an internal helper for phi1.
-        
-        Args:
-            x (float): Coordinate component representing the x axis value.
-            sigma (float): Numeric control parameter for sigma during computation.
-        
-        Returns:
-            float: Result object produced by the phi1 routine."""
         t = x / sigma
         return cls.SQRT_2_PI_INV / sigma * math.exp(-0.5 * t * t)
 
     @classmethod
     def _phi2(cls, x: float, sigma: float) -> float:
-        """Provide an internal helper for phi2.
-        
-        Args:
-            x (float): Coordinate component representing the x axis value.
-            sigma (float): Numeric control parameter for sigma during computation.
-        
-        Returns:
-            float: Result object produced by the phi2 routine."""
         t = x / sigma
         return -x * cls.SQRT_2_PI_INV / (sigma ** 3.0) * math.exp(-0.5 * t * t)
 
     @classmethod
     def _gauss_mask_0(cls, sigma: float) -> Tuple[np.ndarray, int]:
-        """Provide an internal helper for gauss mask 0.
-        
-        Args:
-            sigma (float): Numeric control parameter for sigma during computation.
-        
-        Returns:
-            Tuple[np.ndarray, int]: Array containing the gauss mask 0 output aligned with downstream expectations."""
         n = cls._mask_size(cls.MAX_SIZE_MASK_0, sigma)
         h = np.zeros((2 * n + 1,), dtype=np.float64)
         for i in range(-n + 1, n):
@@ -893,13 +572,6 @@ class RidgeDetector:
 
     @classmethod
     def _gauss_mask_1(cls, sigma: float) -> Tuple[np.ndarray, int]:
-        """Provide an internal helper for gauss mask 1.
-        
-        Args:
-            sigma (float): Numeric control parameter for sigma during computation.
-        
-        Returns:
-            Tuple[np.ndarray, int]: Array containing the gauss mask 1 output aligned with downstream expectations."""
         n = cls._mask_size(cls.MAX_SIZE_MASK_1, sigma)
         h = np.zeros((2 * n + 1,), dtype=np.float64)
         for i in range(-n + 1, n):
@@ -910,13 +582,6 @@ class RidgeDetector:
 
     @classmethod
     def _gauss_mask_2(cls, sigma: float) -> Tuple[np.ndarray, int]:
-        """Provide an internal helper for gauss mask 2.
-        
-        Args:
-            sigma (float): Numeric control parameter for sigma during computation.
-        
-        Returns:
-            Tuple[np.ndarray, int]: Array containing the gauss mask 2 output aligned with downstream expectations."""
         n = cls._mask_size(cls.MAX_SIZE_MASK_2, sigma)
         h = np.zeros((2 * n + 1,), dtype=np.float64)
         for i in range(-n + 1, n):
@@ -931,20 +596,6 @@ class RidgeDetector:
 
     @classmethod
     def _convolve_gauss(cls, image_flat: np.ndarray, w: int, h: int, sigma: float, deriv: int) -> np.ndarray:
-        """Provide an internal helper for convolve gauss.
-        
-        Args:
-            image_flat (np.ndarray): Array-like data carrying image flat values for analysis.
-            w (int): Value for w interpreted by this routine.
-            h (int): Value for h interpreted by this routine.
-            sigma (float): Numeric control parameter for sigma during computation.
-            deriv (int): Value for deriv interpreted by this routine.
-        
-        Returns:
-            np.ndarray: Array containing the convolve gauss output aligned with downstream expectations.
-        
-        Raises:
-            ValueError: If provided values violate validation or domain constraints."""
         if deriv == cls.DERIV_R:
             hr, nr = cls._gauss_mask_1(sigma); hc, nc = cls._gauss_mask_0(sigma)
         elif deriv == cls.DERIV_C:
@@ -968,14 +619,6 @@ class RidgeDetector:
 
     @classmethod
     def _gauss_derivatives(cls, img: np.ndarray, sigma: float):
-        """Provide an internal helper for gauss derivatives.
-        
-        Args:
-            img (np.ndarray): Value for img interpreted by this routine.
-            sigma (float): Numeric control parameter for sigma during computation.
-        
-        Returns:
-            Any: Object containing the gauss derivatives outcome for downstream use."""
         h, w = img.shape
         flat = np.ascontiguousarray(img.reshape(-1))
 
@@ -993,22 +636,6 @@ class RidgeDetector:
     @classmethod
     def _ridge_candidates(cls, dr, dc, drr, drc, dcc, w, h, low, high, mode):
         # mode is 1/2 already. Keep pixel boundary exact.
-        """Provide an internal helper for ridge candidates.
-        
-        Args:
-            dr (Any): Value for dr interpreted by this routine.
-            dc (Any): Value for dc interpreted by this routine.
-            drr (Any): Value for drr interpreted by this routine.
-            drc (Any): Value for drc interpreted by this routine.
-            dcc (Any): Value for dcc interpreted by this routine.
-            w (Any): Value for w interpreted by this routine.
-            h (Any): Value for h interpreted by this routine.
-            low (Any): Value for low interpreted by this routine.
-            high (Any): Value for high interpreted by this routine.
-            mode (Any): Value for mode interpreted by this routine.
-        
-        Returns:
-            Any: Object containing the ridge candidates outcome for downstream use."""
         return _ridge_candidates_jit(dr, dc, drr, drc, dcc, w, h, low, high, mode, cls.PIXEL_BOUNDARY)
 
     # -------------------------
@@ -1044,61 +671,9 @@ class RidgeDetector:
         return list(zip(rs.astype(int).tolist(), cs.astype(int).tolist(), ce.astype(int).tolist()))
 
 
-    @classmethod
-    def _interpolate_response(cls, resp: np.ndarray, x: int, y: int, px: float, py: float, w: int, h: int) -> float:
-        """Provide an internal helper for interpolate response.
-        
-        Args:
-            resp (np.ndarray): Value for resp interpreted by this routine.
-            x (int): Coordinate component representing the x axis value.
-            y (int): Coordinate component representing the y axis value.
-            px (float): Value for px interpreted by this routine.
-            py (float): Value for py interpreted by this routine.
-            w (int): Value for w interpreted by this routine.
-            h (int): Value for h interpreted by this routine.
-        
-        Returns:
-            float: Result object produced by the interpolate response routine."""
-        def at(rr, cc):
-            """Orchestrate at within the current module workflow.
-            
-            Args:
-                rr (Any): Value for rr interpreted by this routine.
-                cc (Any): Value for cc interpreted by this routine.
-            
-            Returns:
-                Any: Object containing the at outcome for downstream use."""
-            return float(resp[cls._lin(cls._mirror_r(rr, h), cls._mirror_c(cc, w), w)])
-
-        i1 = at(x-1, y-1); i2 = at(x-1, y); i3 = at(x-1, y+1)
-        i4 = at(x,   y-1); i5 = at(x,   y); i6 = at(x,   y+1)
-        i7 = at(x+1, y-1); i8 = at(x+1, y); i9 = at(x+1, y+1)
-
-        t1 = i1+i2+i3; t2 = i4+i5+i6; t3 = i7+i8+i9
-        t4 = i1+i4+i7; t5 = i2+i5+i8; t6 = i3+i6+i9
-        d   = (-i1 + 2*i2 - i3 + 2*i4 + 5*i5 + 2*i6 - i7 + 2*i8 - i9) / 9.0
-        dr  = (t3 - t1) / 6.0
-        dc  = (t6 - t4) / 6.0
-        drr = (t1 - 2*t2 + t3) / 6.0
-        dcc = (t4 - 2*t5 + t6) / 6.0
-        drc = (i1 - i3 - i7 + i9) / 4.0
-        xx = px - x
-        yy = py - y
-        return d + xx*dr + yy*dc + xx*xx*drr + xx*yy*drc + yy*yy*dcc
-    
     @staticmethod
-    def _precompute_angles(nx, ny, w, h):
+    def _precompute_angles(nx, ny):
         # Flatten to 1D to match your indexing (p = x*w + y)
-        """Provide an internal helper for precompute angles.
-        
-        Args:
-            nx (Any): Value for nx interpreted by this routine.
-            ny (Any): Value for ny interpreted by this routine.
-            w (Any): Value for w interpreted by this routine.
-            h (Any): Value for h interpreted by this routine.
-        
-        Returns:
-            Any: Object containing the precompute angles outcome for downstream use."""
         nx1 = np.asarray(nx, np.float32).reshape(-1)
         ny1 = np.asarray(ny, np.float32).reshape(-1)
 
@@ -1110,33 +685,11 @@ class RidgeDetector:
         # oct4 = round(4/pi*alpha) mod 4  (matches your floor(...+0.5))
         oct4 = (np.floor((4.0/np.pi) * alpha + 0.5).astype(np.int32) & 3).astype(np.uint8)
 
-        # beta0 = atan2(ny, nx) normalized to [0, π)
-        beta0 = np.arctan2(ny1, nx1).astype(np.float32)
-        beta0 = np.where(beta0 < 0.0, beta0 + 2.0*np.pi, beta0)
-        beta0 = np.where(beta0 >= np.pi, beta0 - np.pi, beta0)  # [0,π)
-
-        return alpha, oct4, beta0
+        return alpha, oct4
 
     @classmethod
-    def _link_contours(cls, ismax, ev, nx, ny, px, py, w, h, alpha_arr, oct4_arr, beta0_arr) -> Tuple[List[RidgeLine], List[Junction]]:
+    def _link_contours(cls, ismax, ev, px, py, w, h, alpha_arr, oct4_arr) -> List[np.ndarray]:
 
-        """Provide an internal helper for link contours.
-        
-        Args:
-            ismax (Any): Value for ismax interpreted by this routine.
-            ev (Any): Value for ev interpreted by this routine.
-            nx (Any): Value for nx interpreted by this routine.
-            ny (Any): Value for ny interpreted by this routine.
-            px (Any): Value for px interpreted by this routine.
-            py (Any): Value for py interpreted by this routine.
-            w (Any): Value for w interpreted by this routine.
-            h (Any): Value for h interpreted by this routine.
-            alpha_arr (Any): Array-like data carrying alpha arr values for analysis.
-            oct4_arr (Any): Array-like data carrying oct4 arr values for analysis.
-            beta0_arr (Any): Array-like data carrying beta0 arr values for analysis.
-        
-        Returns:
-            Tuple[List[RidgeLine], List[Junction]]: Tuple grouping the link contours outputs in a stable positional order."""
         label = np.zeros((w * h,), dtype=np.int32)
         indx  = np.zeros((w * h,), dtype=np.int32)
 
@@ -1144,7 +697,7 @@ class RidgeDetector:
         area = sum((ce - cb + 1) for (_, cb, ce) in runs)
 
         if area == 0:
-            return [], []
+            return []
 
         cross_x = np.empty((area,), dtype=np.int16)
         cross_y = np.empty((area,), dtype=np.int16)
@@ -1172,18 +725,16 @@ class RidgeDetector:
         DIRTAB = np.asarray(cls._DIRTAB, dtype=np.int8)
         CLEARTAB = np.asarray(cls._CLEARTAB, dtype=np.int8)
 
-        pts_x, pts_y, pts_ang, pts_resp, offsets, jx, jy, ja, jb = _link_contours_trace_numba(
+        pts_x, pts_y, offsets = _link_contours_trace_numba(
             cross_x.astype(np.int32),
             cross_y.astype(np.int32),
             cross_val.astype(np.float32),
             cross_done,                        # bool ok
             ismax.astype(np.uint8),            # or np.int8
-            ev.astype(np.float32),
             px.astype(np.float32),
             py.astype(np.float32),
             alpha_arr.astype(np.float32),
             oct4_arr.astype(np.uint8),
-            beta0_arr.astype(np.float32),
             indx.astype(np.int32),
             w, h,
             DIRTAB, CLEARTAB,
@@ -1196,63 +747,9 @@ class RidgeDetector:
             a = int(offsets[i]); b = int(offsets[i+1])
             if b - a <= 1:
                 continue
-            pts = np.empty((b - a, 2), np.float32)
-            pts[:, 0] = pts_x[a:b]
-            pts[:, 1] = pts_y[a:b]
-            lines.append(RidgeLine(
-                pts=pts,
-                angle=pts_ang[a:b].copy(),
-                response=pts_resp[a:b].copy(),
-            ))
+            points_xy = np.empty((b - a, 2), np.float32)
+            points_xy[:, 0] = pts_y[a:b]
+            points_xy[:, 1] = pts_x[a:b]
+            lines.append(points_xy)
 
-        junctions = []
-        for i in range(jx.shape[0]):
-            junctions.append(Junction(
-                pt=np.array([jx[i], jy[i]], dtype=np.float32),
-                a=int(ja[i]),
-                b=int(jb[i]),
-            ))
-
-        return lines, junctions
-
-
-# -------------------------
-# CLI demo
-# -------------------------
-
-def main():
-    """Run the module entry point and orchestrate command-line execution."""
-    import argparse
-    from PIL import Image
-
-    p = argparse.ArgumentParser()
-    p.add_argument("input")
-    p.add_argument("output")
-    p.add_argument("--sigma", type=float, default=1.5)
-    p.add_argument("--low", type=float, default=5.0)
-    p.add_argument("--high", type=float, default=10.0)
-    p.add_argument("--polarity", choices=["dark", "light"], default="light")
-    args = p.parse_args()
-
-    img = Image.open(args.input).convert("L")
-    arr = np.asarray(img, dtype=np.float32)
-
-    det = RidgeDetector()
-    polylines = det.detect_ridges(
-        arr, sigma=args.sigma, low=args.low, high=args.high, polarity=args.polarity
-    )
-
-    vis = np.stack([arr, arr, arr], axis=-1)
-    vis = np.clip(vis, 0, 255).astype(np.uint8)
-
-    for polyline_xy in polylines:
-        cc = np.clip(np.round(polyline_xy[:, 0]).astype(int), 0, vis.shape[1] - 1)
-        rr = np.clip(np.round(polyline_xy[:, 1]).astype(int), 0, vis.shape[0] - 1)
-        vis[rr, cc] = (255, 0, 0)
-
-    Image.fromarray(vis).save(args.output)
-    print(f"Saved {args.output}. Polylines={len(polylines)}")
-
-
-if __name__ == "__main__":
-    main()
+        return lines

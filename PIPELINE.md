@@ -5,12 +5,12 @@
 - Covers GUI and CLI startup, segmentation, measurement, and batch execution/export.
 
 ## Runtime Modes and Flags
-- `segmentation.mode=watershed` calls `FiberAnalyzer.segment(mode="watershed", params={"threshold_u8": ...})`.
-- `segmentation.mode=radial_expansion` calls `FiberAnalyzer.segment(mode="radial_expansion", params={"expansion_factor": ...})`.
-- `radial_expansion_factor` controls ridge expansion as a fraction of local DT (default `0.7`).
+- `segmentation.mode=watershed` calls `FiberAnalyzer_2D.segment(mode="watershed", params={"threshold_u8": ...})`.
+- `segmentation.mode=radial_expansion` calls `FiberAnalyzer_2D.segment(mode="radial_expansion", params={"expansion_factor": ...})`.
+- `merge_expansion_factor` controls overlap-based ridge-fragment merging (default `0.7`).
+- `segmentation_expansion_factor` controls radial label expansion (default `1.0`).
 - `strict_centerlines` affects the measurement-centerline filtering stage.
 - `keep_segments_without_measurement_centerlines` keeps segmentation fragments even when no measurement centerline survives filtering.
-- `clustering.enabled` toggles optional centerline stitching links for debug visualization.
 - `scale factor` (`cb_scale`) rescales input for prediction/segmentation and rescales thresholds/measurements back to original units.
 - `pores view` changes overlay/histogram to pore circles and pore diameter distribution.
 
@@ -44,7 +44,7 @@
 2. `BatchService.run_batch(...)` loops frames and invokes the provided per-frame callback.
 3. Per-frame callback in `_run_batch_analysis(...)`:
 - `_reset_internal_state(preserve_original=False)`
-- `current_frame.begin_frame(frame, frame_id, z_index)`
+- create or hydrate `current_frame` with `Frame.empty(...)` or `Frame.snapshot(...)`
 - call `segment()` or `analyze_fibers()` (with `_is_batch_processing=True`, so no recursive batch dispatch)
 - capture result with `current_frame.snapshot(include_measurements=...)`
 4. Collected outputs become `BatchResult(frame_results=[...])`.
@@ -57,21 +57,21 @@
 3. Resolve current scale and processing image in `PipelineController`.
 4. Read runtime config from `AppConfig` (+ `invert_input` flag from GUI checkbox or CLI argument).
 5. If no cached DT prediction, run:
-- `FiberAnalyzer.predict_dt(...)`
+- `FiberAnalyzer_2D.predict_dt(...)`
 - internally: `_run_model()` -> `OnnxFiberposeModel.predict(...)`
 - `predict(...)` returns `(dt, foreground_prob)`; `nout != 2` uses the last channel as DT and has no foreground
 - then smooth DT, compute gradients/laplacian, cache outputs
-6. Always run `FiberAnalyzer.process_centerlines(...)`:
+6. Always run `FiberAnalyzer_2D.process_centerlines(...)`:
 - `RidgeDetector.detect_ridges(...)` (raw ridge lines)
-- `_ridge_lines_to_segmentation_fragments(...)`:
+- `_group_detected_polylines_into_segmentation_fragments(...)`:
   - sample local DT radius on raw ridges
-  - expand ridges by `radial_expansion_factor * DT`
+  - merge locally expanded ridge regions using `merge_expansion_factor * DT`
   - merge overlapping expanded regions and assign stable label ids
 - `_filter_measurement_centerlines(...)` derives measurement centerlines from segmentation centerlines
 - render segmentation/measurement/comparison centerline overlays
 7. Copy analyzer prediction caches into `Frame` via `set_prediction_outputs(...)`.
 8. Segment by mode through unified dispatch:
-- `FiberAnalyzer.segment(mode=..., params=...)`
+- `FiberAnalyzer_2D.segment(mode=..., params=...)`
 - watershed uses threshold_u8
 - radial_expansion uses the precomputed expanded ridge labels
 - foreground, when available, prunes labels after pure-DT segmentation
@@ -80,10 +80,7 @@
 ## Per-Frame Measurement Flow
 1. GUI `analyze_fibers()` or CLI measurement mode ensures prediction + measurement centerlines are ready.
 2. Sets `analyzer.scale_factor = frame.scale_factor`.
-3. Calls `FiberAnalyzer.analyze(spacing_px_scaled)` returning:
-- `radius_samples` (center/radius mapped back to original scale)
-- `angles_samples_deg`
-- `overlay_samples`
+3. Calls `FiberAnalyzer_2D.analyze(spacing_px=...)` returning measurement and drawing samples.
 4. Builds thickness arrays/sample table and orientation stats in `PipelineController`.
 5. Computes porosity and pore sampling:
 - `void_mask_and_pore_dt(thr_u8)`

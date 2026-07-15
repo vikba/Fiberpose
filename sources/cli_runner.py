@@ -16,7 +16,7 @@ from tqdm import tqdm
 HERE = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.dirname(HERE)
 DEFAULT_CONFIG_PATH = os.path.join(PROJECT_ROOT, "resources", "config.json")
-DEFAULT_MODEL_PATH = os.path.join(PROJECT_ROOT, "checkpoints", "fiber_2000_epoch.onnx")
+DEFAULT_MODEL_PATH = os.path.join(PROJECT_ROOT, "checkpoints", "model_fiber_2_no_bg.onnx")
 
 
 class CliRunner:
@@ -41,7 +41,7 @@ class CliRunner:
 
     @staticmethod
     def _resolve_model_path(config: AppConfig) -> str:
-        model_entry = str(getattr(config, "model_path", "") or "").strip()
+        model_entry = str(config.model_path or "").strip()
         if not model_entry:
             return DEFAULT_MODEL_PATH
         if os.path.isabs(model_entry):
@@ -52,7 +52,7 @@ class CliRunner:
     def _resolve_device(config: AppConfig) -> str:
         from .ml import onnx_cuda_available
 
-        if bool(getattr(config, "use_gpu", False)) and onnx_cuda_available():
+        if bool(config.use_gpu) and onnx_cuda_available():
             return "cuda"
         return "cpu"
 
@@ -233,7 +233,7 @@ class CliRunner:
         sample_props = SampleProperties.from_image_metadata(metadata, source_path=folder_path)
         image_batch_stub = ImageBatch(frames=[], metadata=metadata)
 
-        save_options = ExportService.normalize_save_options(getattr(config, "save_options", {}))
+        save_options = ExportService.normalize_save_options(config.save_options)
         export_config = ExportService.build_export_config(
             kind=self.save_kind,
             layout="frames",
@@ -354,7 +354,7 @@ class CliRunner:
             return 2
 
         try:
-            config = AppConfig.load_from_json(self.config_path, strict=True)
+            config = AppConfig.load_from_json(self.config_path)
         except Exception as exc:
             print(f"Error: failed to load config '{self.config_path}': {exc}")
             return 2
@@ -376,12 +376,12 @@ class CliRunner:
                 device=device,
                 strict=config.strict_centerlines,
                 keep_segments_without_measurement_centerlines=bool(
-                    getattr(config, "keep_segments_without_measurement_centerlines", False)
+                    config.keep_segments_without_measurement_centerlines
                 ),
             )
             analyzer.set_strict_centerline_filter(bool(config.strict_centerlines))
             analyzer.set_keep_segments_without_measurement_centerlines(
-                bool(getattr(config, "keep_segments_without_measurement_centerlines", False))
+                bool(config.keep_segments_without_measurement_centerlines)
             )
             controller = PipelineController(analyzer)
         except Exception as exc:
@@ -419,7 +419,7 @@ class CliRunner:
 
         from .io_export import ExportService
 
-        save_options = ExportService.normalize_save_options(getattr(config, "save_options", {}))
+        save_options = ExportService.normalize_save_options(config.save_options)
         layout = ExportService.current_save_layout(image_batch)
         source_base_name = ExportService.current_source_base_name(image_batch, current_image_name=None)
         export_config = ExportService.build_export_config(

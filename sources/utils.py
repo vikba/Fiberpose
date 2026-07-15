@@ -40,13 +40,6 @@ def labels_to_color(labels: np.ndarray | None) -> np.ndarray | None:
 
 # ------------- image helpers -------------
 def to_uint8_for_view(img: np.ndarray | None) -> np.ndarray | None:
-    """Convert values into uint8 for view for downstream compatibility.
-    
-    Args:
-        img (np.ndarray | None): Value for img interpreted by this routine.
-    
-    Returns:
-        np.ndarray | None: Array containing the to uint8 for view output aligned with downstream expectations."""
     if img is None:
         return None
     arr = img.astype(np.float32, copy=False)
@@ -60,13 +53,6 @@ def to_uint8_for_view(img: np.ndarray | None) -> np.ndarray | None:
 
 
 def ensure_rgb_u8(img: np.ndarray | None) -> np.ndarray | None:
-    """Ensure rgb u8 is initialized and ready before use.
-    
-    Args:
-        img (np.ndarray | None): Value for img interpreted by this routine.
-    
-    Returns:
-        np.ndarray | None: Array containing the ensure rgb u8 output aligned with downstream expectations."""
     if img is None:
         return None
     if img.ndim == 2:
@@ -84,14 +70,6 @@ def ensure_rgb_u8(img: np.ndarray | None) -> np.ndarray | None:
 # ------------- core math helpers -------------
 @njit(cache=True)
 def _normalize(v, eps=1e-12):
-    """Provide an internal helper for normalize.
-    
-    Args:
-        v (Any): Value for v interpreted by this routine.
-        eps (Any): Value for eps interpreted by this routine.
-    
-    Returns:
-        Any: Object containing the normalize outcome for downstream use."""
     n = np.sqrt(np.sum(v * v))
     return v / (n + eps)
 
@@ -221,9 +199,3 @@ def resample_polyline_xy(points_xy: np.ndarray, step: float) -> np.ndarray:
                 a = (s - cum[k]) / ds
                 out.append(pts[k] * (1 - a) + pts[k+1] * a)
     return np.asarray(out, dtype=np.float64)
-
-def clamp_to_bounds_xy(p: np.ndarray, w: int, h: int) -> np.ndarray:
-    """Clamp a 2D point [x, y] to image bounds [0..w-1], [0..h-1]."""
-    x = float(np.clip(p[0], 0, w - 1))
-    y = float(np.clip(p[1], 0, h - 1))
-    return np.array([x, y], dtype=np.float64)

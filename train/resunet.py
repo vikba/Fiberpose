@@ -3,46 +3,13 @@
 
 from __future__ import annotations
 
-from typing import Any, Sequence
+from typing import Sequence
 
 import numpy as np
 import torch
 import torch.nn as nn
 
 
-__all__ = [
-    "torch_GPU",
-    "torch_CPU",
-    "empty_cache",
-    "dilation_list",
-    "batchconv",
-    "parse_nbase",
-    "_safe_torch_load",
-    "resdown",
-    "convdown",
-    "batchconvstyle",
-    "resup",
-    "convup",
-    "downsample",
-    "upsample",
-    "make_style",
-    "ResUnet",
-    "build_resunet",
-]
-
-
-# -----------------------------------------------------------------------------
-# Device helpers
-# -----------------------------------------------------------------------------
-
-torch_GPU = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-torch_CPU = torch.device("cpu")
-
-
-def empty_cache() -> None:
-    """Release cached CUDA memory if CUDA is available."""
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
 
 
 # -----------------------------------------------------------------------------
@@ -75,14 +42,6 @@ def parse_nbase(s: str | Sequence[int]) -> list[int]:
     return vals
 
 
-def _safe_torch_load(path: str, map_location: Any, weights_only: bool = True) -> Any:
-    """
-    Load a PyTorch object while remaining compatible with older torch versions.
-    """
-    try:
-        return torch.load(path, map_location=map_location, weights_only=weights_only)
-    except TypeError:
-        return torch.load(path, map_location=map_location)
 
 
 def _batchnorm_cls(dim: int) -> type[nn.Module]:
@@ -511,76 +470,3 @@ class ResUnet(nn.Module):
             T0 = T0.to_dense()
 
         return T0, style0
-
-    def save_model(self, filename: str) -> None:
-        """Save model weights as a state dict."""
-        torch.save(self.state_dict(), filename)
-
-    def load_model(
-        self,
-        filename: str,
-        map_location: Any = None,
-        strict: bool = True,
-        cpu: bool | None = None,
-    ) -> "ResUnet":
-        """
-        Load model weights into the current instance.
-
-        Parameters
-        ----------
-        filename
-            Checkpoint path.
-        map_location
-            Passed to torch.load. Defaults to CPU if not specified.
-        strict
-            Passed to load_state_dict.
-        cpu
-            Backward-compatible alias. If provided, overrides map_location.
-        """
-        if cpu is not None:
-            map_location = torch_CPU if cpu else torch_GPU
-        if map_location is None:
-            map_location = torch_CPU
-
-        state_dict = _safe_torch_load(filename, map_location=map_location, weights_only=True)
-        self.load_state_dict(state_dict, strict=strict)
-        return self
-
-
-# -----------------------------------------------------------------------------
-# Convenience constructor
-# -----------------------------------------------------------------------------
-
-def build_resunet(
-    nbase,
-    nout: int = 3,
-    sz: int = 3,
-    residual_on: bool = True,
-    style_on: bool = True,
-    concatenation: bool = False,
-    mkldnn: bool = False,
-    dim: int = 2,
-    checkpoint: bool = False,
-    dropout: bool = False,
-    kernel_size: int = 2,
-    scale_factor: int = 2,
-    dilation: int = 1,
-) -> ResUnet:
-    """
-    Convenience wrapper around ResUnet with the same parameter names.
-    """
-    return ResUnet(
-        nbase=nbase,
-        nout=nout,
-        sz=sz,
-        residual_on=residual_on,
-        style_on=style_on,
-        concatenation=concatenation,
-        mkldnn=mkldnn,
-        dim=dim,
-        checkpoint=checkpoint,
-        dropout=dropout,
-        kernel_size=kernel_size,
-        scale_factor=scale_factor,
-        dilation=dilation,
-    )

@@ -47,15 +47,6 @@ class FiberAnalyzer_2D:
         strict: bool | None = None,
         keep_segments_without_measurement_centerlines: bool | None = None,
     ):
-        """Initialize fiber analyzer 2 d and establish required runtime state.
-        
-        Args:
-            model_path (str): Filesystem location describing where model path is read or written.
-            device (Any): Execution target device (for example CPU or CUDA).
-            model_kwargs (Optional[Dict[str, Any]]): Value for model kwargs interpreted by this routine.
-            strict (bool | None): Boolean flag that toggles strict behavior.
-            keep_segments_without_measurement_centerlines (bool | None): Keep/remove behavior for segments
-                that do not produce measurement centerlines."""
         self.model_path = model_path
         self.device = device
 
@@ -75,8 +66,6 @@ class FiberAnalyzer_2D:
             else False
         )
 
-        self._centerline_kwargs: Dict[str, Any] = self._default_centerline_kwargs()
-        self._last_max_angle: float = 0.0
         self._segment_counter: int = 0
 
         self.scale_factor: float = 1.0
@@ -85,9 +74,6 @@ class FiberAnalyzer_2D:
     # ------------------------------------------------------------------ #
     # Internal helpers / state
 
-    def _has_dt_prediction(self) -> bool:
-        """Return whether a distance-transform prediction is currently cached."""
-        return self._dt is not None
 
     def _reset_prediction_state(self) -> None:
         """Clear all cached prediction, segmentation, and analysis state."""
@@ -110,33 +96,20 @@ class FiberAnalyzer_2D:
 
     @staticmethod
     def _default_centerline_kwargs() -> Dict[str, Any]:
-        """Provide an internal helper for default centerline kwargs.
-        
-        Returns:
-            Dict[str, Any]: Mapping containing named default centerline kwargs outputs and metadata."""
         return {
             "sigma": 1.0,
             "low": 0.01,
             "high": 0.4,
             "polarity": "light",
             "trim": 3,
-            "tol": 3.0,
             "win_len": 25.0,
             "std_thresh": 0.8,
         }
 
     def set_strict_centerline_filter(self, strict: bool):
-        """Update strict centerline filter and synchronize dependent runtime state.
-        
-        Args:
-            strict (bool): Boolean flag that toggles strict behavior."""
         self._strict_centerlines = bool(strict)
 
     def set_keep_segments_without_measurement_centerlines(self, keep: bool):
-        """Update whether segmentation keeps fragments lacking measurement centerlines.
-        
-        Args:
-            keep (bool): Boolean flag that toggles keep behavior."""
         self._keep_segments_without_measurement_centerlines = bool(keep)
 
     def set_device(self, device: Any):
@@ -161,10 +134,6 @@ class FiberAnalyzer_2D:
         logger.info("FiberAnalyzer_2D model switched to %s", model_path)
 
     def _ensure_predictor(self) -> OnnxFiberposeModel:
-        """Provide an internal helper for ensure predictor.
-        
-        Returns:
-            OnnxFiberposeModel: Result object produced by the ensure predictor routine."""
         if self._predictor is not None:
             return self._predictor
         kwargs = dict(self._model_kwargs)
@@ -176,10 +145,6 @@ class FiberAnalyzer_2D:
         return self._predictor
 
     def _infer_model_stride(self) -> int:
-        """Provide an internal helper for infer model stride.
-        
-        Returns:
-            int: Result object produced by the infer model stride routine."""
         stride = 16
         predictor = self._ensure_predictor()
         try:
@@ -197,13 +162,6 @@ class FiberAnalyzer_2D:
 
     def _run_model(self, image: np.ndarray) -> tuple[np.ndarray, Optional[np.ndarray]]:
 
-        """Provide an internal helper for run model.
-        
-        Args:
-            image (np.ndarray): Array-like data carrying image values for analysis.
-        
-        Returns:
-            Tuple of `(dt, foreground_prob)`, where `foreground_prob` is None without foreground output."""
         predictor = self._ensure_predictor()
         stride = self._infer_model_stride()
         H, W = image.shape[:2]
@@ -232,15 +190,6 @@ class FiberAnalyzer_2D:
         gy: np.ndarray,
         foreground_prob: Optional[np.ndarray] = None,
     ):
-        """Provide an internal helper for set dt and gradients.
-        
-        Args:
-            dt (np.ndarray): Value for dt interpreted by this routine.
-            gx (np.ndarray): Value for gx interpreted by this routine.
-            gy (np.ndarray): Value for gy interpreted by this routine.
-        
-        Raises:
-            ValueError: If provided values violate validation or domain constraints."""
         self._dt = np.asarray(dt, dtype=np.float32)
         self._dt_u8 = np.clip(self._dt, 0, 255).astype(np.uint8)
         self._dt_norm = self._dt / 255.0
@@ -262,8 +211,6 @@ class FiberAnalyzer_2D:
     def predict_dt(
         self,
         image: np.ndarray,
-        max_angle_deg: float,
-        centerline_kwargs: Optional[Dict[str, Any]] = None,
         smooth_sigma: float = 1.5,
         grad_sigma: float = 1.0,
     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -288,13 +235,6 @@ class FiberAnalyzer_2D:
         self._set_dt_and_gradients(dt, gx, gy, foreground_prob=foreground_prob)
         self._laplacian = lapl_img
 
-        if centerline_kwargs:
-            self._centerline_kwargs = centerline_kwargs
-        else:
-            self._centerline_kwargs = self._default_centerline_kwargs()
-
-        self._last_max_angle = float(max_angle_deg)
-
         return self._dt, self._gx, self._gy
 
     def process_centerlines(
@@ -305,7 +245,6 @@ class FiberAnalyzer_2D:
         high: float = 0.4,
         polarity: str = "light",
         trim: int = 3,
-        tol: float = 3.0,
         win_len: float = 25.0,
         std_thresh: float = 0.8,
         merge_expansion_factor: float = 0.7,
@@ -313,7 +252,7 @@ class FiberAnalyzer_2D:
         measurement_centerline_length_trim_fraction: float = 0.05,
         grad_quality_trim_fraction: float = 0.0,
         segmentation_expansion_factor: float = 1.0,
-    ) -> Tuple[List[np.ndarray], List[np.ndarray], Optional[np.ndarray], Optional[np.ndarray]]:
+    ) -> None:
         """
         Build both centerline sets from one ridge-detection pass:
           1) segmentation_centerlines from raw ridges + radial expansion
@@ -404,12 +343,6 @@ class FiberAnalyzer_2D:
             fragments=active_fragments,
         )
 
-        measurement_segments_xy: List[np.ndarray] = []
-        measurement_normals_xy: List[np.ndarray] = []
-        for seg in active_fragments:
-            for polyline_xy in seg.measurement_centerlines_xy:
-                measurement_segments_xy.append(polyline_xy.reshape(-1, 1, 2))
-                measurement_normals_xy.append(self._polyline_normals(polyline_xy))
         self._fiber_fragments = active_fragments
         self._segmentation_centerlines_rgb = segmentation_centerlines_rgb
         self._measurement_centerlines_rgb = measurement_centerlines_rgb
@@ -422,9 +355,8 @@ class FiberAnalyzer_2D:
             "Centerlines built: segmentation=%d/%d measurement=%d",
             len(active_fragments),
             len(raw_fragments),
-            len(measurement_segments_xy),
+            sum(len(seg.measurement_centerlines_xy) for seg in active_fragments),
         )
-        return measurement_segments_xy, measurement_normals_xy, measurement_centerlines_rgb, markers
 
     @classmethod
     def _group_detected_polylines_into_segmentation_fragments(
@@ -662,10 +594,7 @@ class FiberAnalyzer_2D:
         active_segmentation_fragments: List[FiberFragment] = []
         for seg in segmentation_fragments:
             seg.measurement_centerlines_xy = []
-            seg.measurement_radii = []
-            seg.measurement_source_indices = []
-            seg.total_measurement_centerline_length_px = 0.0
-            for source_index, polyline_xy in enumerate(seg.segment_centerlines_xy):
+            for polyline_xy in seg.segment_centerlines_xy:
                 seg_xy = polyline_xy.reshape(-1, 1, 2)
                 windows_xy = cls._sliding_window_filter(
                     seg_xy,
@@ -682,13 +611,7 @@ class FiberAnalyzer_2D:
                     pts_xy = window_xy.reshape(-1, 2).astype(np.float32, copy=False)
                     if pts_xy.shape[0] < 2:
                         continue
-                    x_idx = np.clip(np.rint(pts_xy[:, 0]).astype(np.int32), 0, dt.shape[1] - 1)
-                    y_idx = np.clip(np.rint(pts_xy[:, 1]).astype(np.int32), 0, dt.shape[0] - 1)
-                    radii = np.asarray(dt[y_idx, x_idx], dtype=np.float32)
                     seg.measurement_centerlines_xy.append(pts_xy)
-                    seg.measurement_radii.append(radii)
-                    seg.measurement_source_indices.append(int(source_index))
-                    seg.total_measurement_centerline_length_px += FiberFragment._centerline_length(pts_xy)
             seg.recompute_total_measurement_centerline_length_px()
             if seg.has_measurement_centerline:
                 active_segmentation_fragments.append(seg)
@@ -710,14 +633,6 @@ class FiberAnalyzer_2D:
         centerline_color: Tuple[int, int, int] = (255, 0, 0),
         measurement_only: bool = False,
     ) -> np.ndarray:
-        """Provide an internal helper for render centerlines rgb.
-        
-        Args:
-            dt_u8 (np.ndarray): Value for dt u8 interpreted by this routine.
-            segments (List[Any]): Value for segments interpreted by this routine.
-        
-        Returns:
-            np.ndarray: Array containing the render centerlines rgb output aligned with downstream expectations."""
         base_dt = to_uint8_for_view(dt_u8)
         centerlines_rgb = cv2.cvtColor(base_dt, cv2.COLOR_GRAY2BGR)
 
@@ -793,8 +708,8 @@ class FiberAnalyzer_2D:
 
         if mode_name == "watershed":
             thr_u8 = int(opts.get("threshold_u8", 128))
-            if self._segmentation_markers is None or self._segmentation_markers.max() == 0:
-                self.process_centerlines(self._last_max_angle, **self._centerline_kwargs)
+            if self._segmentation_markers is None:
+                raise ValueError("Centerlines not available. Call process_centerlines first.")
             labels = self.segment_watershed(
                 thr_u8=thr_u8,
                 min_segment_foreground_mean=float(opts.get("min_segment_foreground_mean", 0.5)),
@@ -878,18 +793,14 @@ class FiberAnalyzer_2D:
             raise ValueError("Distance transform not available. Call predict_dt first.")
         target_factor = float(expansion_factor)
         cached_factor = self._segmentation_expansion_factor
-        needs_rebuild = (
+        missing_or_stale = (
             self._radial_expansion_labels is None
             or cached_factor is None
             or (not np.isfinite(cached_factor))
             or (not np.isclose(float(cached_factor), target_factor, rtol=1e-9, atol=1e-9))
         )
-        if needs_rebuild:
-            self.process_centerlines(
-                self._last_max_angle,
-                **self._centerline_kwargs,
-                segmentation_expansion_factor=target_factor,
-            )
+        if missing_or_stale:
+            raise ValueError("Centerlines not available. Call process_centerlines first.")
         labels_i32 = np.asarray(self._radial_expansion_labels, dtype=np.int32, copy=False)
         labels = np.clip(labels_i32, 0, np.iinfo(np.uint16).max).astype(np.uint16, copy=False)
         labels = self._prune_labels_by_foreground(
@@ -930,14 +841,6 @@ class FiberAnalyzer_2D:
 
     @staticmethod
     def _render_markers(shape: Tuple[int, int], segments: List[FiberFragment]) -> np.ndarray:
-        """Provide an internal helper for render markers.
-        
-        Args:
-            shape (Tuple[int, int]): Value for shape interpreted by this routine.
-            segments (List[FiberFragment]): Value for segments interpreted by this routine.
-        
-        Returns:
-            np.ndarray: Array containing the render markers output aligned with downstream expectations."""
         markers = np.zeros(shape, dtype=np.int32)
         for seg in segments:
             for polyline_xy in seg.segment_centerlines_xy:
@@ -1010,17 +913,7 @@ class FiberAnalyzer_2D:
         """Return combined centerline debug overlay image."""
         return self._centerlines_comparison_rgb
 
-    def get_centerlines_image(self) -> Optional[np.ndarray]:
-        """Backward-compatible alias for segmentation centerline image."""
-        return self.get_segmentation_centerlines_image()
 
-    def get_segmentation_centerline_segments(self) -> List[np.ndarray]:
-        if not self._fiber_fragments:
-            return []
-        segments_xy: List[np.ndarray] = []
-        for seg in self._fiber_fragments:
-            segments_xy.extend(polyline_xy.reshape(-1, 1, 2) for polyline_xy in seg.segment_centerlines_xy)
-        return segments_xy
 
     def get_measurement_centerline_segments(self) -> List[np.ndarray]:
         if not self._fiber_fragments:
@@ -1035,12 +928,6 @@ class FiberAnalyzer_2D:
             return 0
         return sum(1 for seg in self._fiber_fragments if seg.has_measurement_centerline)
 
-    def get_markers(self) -> Optional[np.ndarray]:
-        """Return markers in the format expected by downstream consumers.
-        
-        Returns:
-            Optional[np.ndarray]: Array containing the transformed or derived data."""
-        return self._segmentation_markers
 
     def get_labels(self) -> Optional[np.ndarray]:
         """Return labels in the format expected by downstream consumers.
@@ -1138,18 +1025,6 @@ class FiberAnalyzer_2D:
         peak_footprint: int = 3,
         max_pores: int | None = None,
     ) -> List[dict]:
-        """Orchestrate sample inscribed circles within the current module workflow.
-        
-        Args:
-            pore_dt (np.ndarray): Value for pore dt interpreted by this routine.
-            void_mask (np.ndarray): Array-like data carrying void mask values for analysis.
-            min_radius_px (float): Numeric control parameter for min radius px during computation.
-            min_peak_px (float): Value for min peak px interpreted by this routine.
-            peak_footprint (int): Value for peak footprint interpreted by this routine.
-            max_pores (int | None): Value for max pores interpreted by this routine.
-        
-        Returns:
-            List[dict]: List of sample inscribed circles results produced for downstream iteration."""
         if pore_dt is None or void_mask is None:
             return []
 
@@ -1301,7 +1176,7 @@ class FiberAnalyzer_2D:
 
         return measurement_samples, drawing_samples
 
-    def analyze(self, constant_segments: Optional[List[np.ndarray]] = None, spacing_px: float = 5.0):
+    def analyze(self, spacing_px: float = 5.0):
         """
         Run thickness/orientation sampling on current centerline segments.
 
@@ -1312,9 +1187,7 @@ class FiberAnalyzer_2D:
         Note:
             `_xy` suffix denotes (x, y) ordering, while `_yx` denotes (y, x).
         """
-        if constant_segments is not None:
-            constant_segments_xy = constant_segments
-        elif self._fiber_fragments:
+        if self._fiber_fragments:
             constant_segments_xy = []
             for seg in self._fiber_fragments:
                 constant_segments_xy.extend(
@@ -1335,44 +1208,6 @@ class FiberAnalyzer_2D:
     # ------------------------------------------------------------------ #
     # Local utilities (used internally and optionally by GUI helpers)
 
-    @staticmethod
-    def _split_and_trim_contour(
-        contour: np.ndarray,
-        junction_points: List[Tuple[int, int]],
-        trim: int = 3,
-        tol: float = 3.0,
-    ) -> List[np.ndarray]:
-        """Provide an internal helper for split and trim contour.
-        
-        Args:
-            contour (np.ndarray): Array-like data carrying contour values for analysis.
-            junction_points (List[Tuple[int, int]]): Value for junction points interpreted by this routine.
-            trim (int): Value for trim interpreted by this routine.
-            tol (float): Value for tol interpreted by this routine.
-        
-        Returns:
-            List[np.ndarray]: Array containing the split and trim contour output aligned with downstream expectations."""
-        pts_xy = contour.reshape(-1, 2)
-        split_indices: List[int] = []
-        for (jx, jy) in junction_points:
-            dists = np.sqrt((pts_xy[:, 0] - jx) ** 2 + (pts_xy[:, 1] - jy) ** 2)
-            idxs = np.where(dists < tol)[0]
-            if idxs.size > 0:
-                min_idx = idxs[np.argmin(dists[idxs])]
-                split_indices.append(int(min_idx))
-        split_indices = sorted(set(split_indices))
-
-        segments: List[np.ndarray] = []
-        boundaries = [0] + split_indices + [len(pts_xy) - 1]
-        for i in range(len(boundaries) - 1):
-            seg_xy = pts_xy[boundaries[i] : boundaries[i + 1] + 1]
-            if len(seg_xy) > 2 * trim:
-                seg_xy = seg_xy[trim:-trim]
-            else:
-                continue
-            if len(seg_xy) >= 2:
-                segments.append(seg_xy.reshape(-1, 1, 2))
-        return segments
 
     @staticmethod
     def _sliding_window_filter(
@@ -1389,27 +1224,6 @@ class FiberAnalyzer_2D:
         radius_rel_tol: float = 0.25,
         min_valid_fraction: float = 0.7,
     ) -> List[np.ndarray]:
-        """Provide an internal helper for sliding window filter.
-        
-        Args:
-            seg_xy (np.ndarray): Value for seg xy interpreted by this routine.
-            image (np.ndarray): Array-like data carrying image values for analysis.
-            dt (np.ndarray | None): Value for dt interpreted by this routine.
-            grad_x (np.ndarray | None): Value for grad x interpreted by this routine.
-            grad_y (np.ndarray | None): Value for grad y interpreted by this routine.
-            win_len (float): Value for win len interpreted by this routine.
-            std_thresh (float): Value for std thresh interpreted by this routine.
-            max_angle (float): Numeric control parameter for max angle during computation.
-            strict (bool): Boolean flag that toggles strict behavior.
-            grad_alignment_cos (float): Value for grad alignment cos interpreted by this routine.
-            radius_rel_tol (float): Numeric control parameter for radius rel tol during computation.
-            min_valid_fraction (float): Value for min valid fraction interpreted by this routine.
-        
-        Returns:
-            List[np.ndarray]: Array containing the sliding window filter output aligned with downstream expectations.
-        
-        Raises:
-            ValueError: If provided values violate validation or domain constraints."""
         if strict and (dt is None or grad_x is None or grad_y is None):
             raise ValueError("Strict centerline filtering requires dt, grad_x, and grad_y.")
 
@@ -1432,13 +1246,6 @@ class FiberAnalyzer_2D:
         h, w = gray.shape[:2]
 
         def sample_intensity(p_xy: np.ndarray) -> float:
-            """Orchestrate sample intensity within the current module workflow.
-            
-            Args:
-                p_xy (np.ndarray): Value for p xy interpreted by this routine.
-            
-            Returns:
-                float: Result object produced by the sample intensity routine."""
             x, y = int(round(p_xy[0])), int(round(p_xy[1]))
             x = min(max(x, 0), w - 1)
             y = min(max(y, 0), h - 1)
@@ -1578,91 +1385,3 @@ class FiberAnalyzer_2D:
         if total == 0:
             return False
         return (valid / float(total)) >= float(min_valid_fraction)
-
-    @staticmethod
-    def _polyline_normals(
-        pts_xy: np.ndarray,
-        window: int = 8,
-        angle_thresh_deg: float = 60.0,
-        side: str = "left",
-    ) -> np.ndarray:
-        """Provide an internal helper for polyline normals.
-        
-        Args:
-            pts_xy (np.ndarray): Value for pts xy interpreted by this routine.
-            window (int): Value for window interpreted by this routine.
-            angle_thresh_deg (float): Numeric control parameter for angle thresh deg during computation.
-            side (str): Value for side interpreted by this routine.
-        
-        Returns:
-            np.ndarray: Array containing the polyline normals output aligned with downstream expectations.
-        
-        Raises:
-            ValueError: If provided values violate validation or domain constraints."""
-        pts_xy = np.asarray(pts_xy, dtype=np.float32).reshape(-1, 2)
-        n = len(pts_xy)
-        if n < 2:
-            raise ValueError("Need at least 2 points for an open polyline.")
-
-        eps = 1e-12
-        seg = pts_xy[1:] - pts_xy[:-1]
-        seg_norm = np.linalg.norm(seg, axis=1, keepdims=True) + eps
-        u = seg / seg_norm
-
-        def rot90(v: np.ndarray) -> np.ndarray:
-            """Orchestrate rot90 within the current module workflow.
-            
-            Args:
-                v (np.ndarray): Value for v interpreted by this routine.
-            
-            Returns:
-                np.ndarray: Array containing the rot90 output aligned with downstream expectations."""
-            return np.stack([-v[:, 1], v[:, 0]], axis=1)
-
-        def unit(v: np.ndarray) -> np.ndarray:
-            """Orchestrate unit within the current module workflow.
-            
-            Args:
-                v (np.ndarray): Value for v interpreted by this routine.
-            
-            Returns:
-                np.ndarray: Array containing the unit output aligned with downstream expectations."""
-            nrm = np.linalg.norm(v, axis=1, keepdims=True) + eps
-            return v / nrm
-
-        angle_thresh = np.deg2rad(angle_thresh_deg)
-        normals = np.zeros((n, 2), dtype=np.float32)
-
-        t0 = u[0:1]
-        tn = u[-1:]
-        normals[0] = rot90(t0)[0]
-        normals[-1] = rot90(tn)[0]
-
-        for i in range(1, n - 1):
-            d_prev = u[i - 1 : i]
-            d_next = u[i : i + 1]
-            cosang = np.clip(np.sum(d_prev * d_next, axis=1), -1.0, 1.0)[0]
-            ang = np.arccos(cosang)
-
-            if ang >= angle_thresh:
-                t = unit(d_prev + d_next)
-                if np.linalg.norm(t) < 1e-6:
-                    t = d_next
-            else:
-                seg_lo = max(0, i - window)
-                seg_hi = min(n - 2, i + window - 1)
-                if seg_lo > seg_hi:
-                    seg_lo, seg_hi = i - 1, i
-                inds = np.arange(seg_lo, seg_hi + 1)
-                center = i - 0.5
-                dist = np.abs(inds + 0.5 - center)
-                weights = (window + 1) - dist
-                weights = np.clip(weights, 1.0, None)
-                weights = (weights / (weights.sum() + eps)).reshape(-1, 1)
-                t = unit((u[inds] * weights).sum(axis=0, keepdims=True))
-
-            normals[i] = rot90(t)[0]
-
-        if side == "right":
-            normals = -normals
-        return normals.astype(np.float32)

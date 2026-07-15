@@ -1,6 +1,5 @@
 """Generate vector-style training targets and previews from mask annotations."""
 
-import os
 import json
 import numpy as np
 import cv2
@@ -33,13 +32,6 @@ PREVIEW_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def to_gray_u8(img):
-    """Convert values into gray u8 for downstream compatibility.
-    
-    Args:
-        img (Any): Value for img interpreted by this routine.
-    
-    Returns:
-        Any: Object containing the to gray u8 outcome for downstream use."""
     if img is None:
         return None
     if img.ndim == 2:
@@ -57,27 +49,12 @@ def to_gray_u8(img):
     return gray.astype(np.uint8)
 
 def component_mean_brightness(gray_img, comp):
-    """Orchestrate component mean brightness within the current module workflow.
-    
-    Args:
-        gray_img (Any): Value for gray img interpreted by this routine.
-        comp (Any): Value for comp interpreted by this routine.
-    
-    Returns:
-        Any: Object containing the component mean brightness outcome for downstream use."""
     vals = gray_img[comp > 0]
     if vals.size == 0:
         return 0.0
     return float(vals.mean())
 
 def component_aspect_ratio(comp):
-    """Orchestrate component aspect ratio within the current module workflow.
-    
-    Args:
-        comp (Any): Value for comp interpreted by this routine.
-    
-    Returns:
-        Any: Object containing the component aspect ratio outcome for downstream use."""
     ys, xs = np.where(comp > 0)
     if len(xs) < 5:
         return 0.0
@@ -90,23 +67,6 @@ def component_aspect_ratio(comp):
     a = max(w, h) / max(1e-6, min(w, h))
     return float(a)
 
-def component_circularity(comp):
-    """Orchestrate component circularity within the current module workflow.
-    
-    Args:
-        comp (Any): Value for comp interpreted by this routine.
-    
-    Returns:
-        Any: Object containing the component circularity outcome for downstream use."""
-    contours, _ = cv2.findContours(comp, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
-    if not contours:
-        return 0.0
-    cnt = max(contours, key=cv2.contourArea)
-    area = float(cv2.contourArea(cnt))
-    perim = float(cv2.arcLength(cnt, True))
-    if perim <= 1e-6:
-        return 0.0
-    return float(4.0 * np.pi * area / (perim * perim))
 
 def get_gradients(dt):
     """
@@ -164,14 +124,6 @@ def save_hsv_preview(flow_x, flow_y, filename):
     cv2.imwrite(str(filename), bgr)
 
 def smooth_contour_moving_average(points, window):
-    """Orchestrate smooth contour moving average within the current module workflow.
-    
-    Args:
-        points (Any): Value for points interpreted by this routine.
-        window (Any): Value for window interpreted by this routine.
-    
-    Returns:
-        Any: Object containing the smooth contour moving average outcome for downstream use."""
     if window <= 1 or len(points) < window:
         return points
     if window % 2 == 0:
@@ -228,13 +180,6 @@ def process_instance_ma(mask_shape, contour, supersample=2):
         return np.zeros((h, w), dtype=np.float32)
 
 def process_file(mask_path):
-    """Orchestrate process file within the current module workflow.
-    
-    Args:
-        mask_path (Any): Filesystem location describing where mask path is read or written.
-    
-    Returns:
-        Any: Object containing the process file outcome for downstream use."""
     mask = cv2.imread(str(mask_path), cv2.IMREAD_UNCHANGED)
     image_path = str(mask_path).replace("/masks/", "/images/")
     image_path = image_path.replace("_masks.",".")

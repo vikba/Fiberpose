@@ -22,7 +22,6 @@ Notes:
 from __future__ import annotations
 
 import argparse
-import os
 from pathlib import Path
 from typing import Any
 
@@ -30,14 +29,6 @@ import torch
 import torch.nn as nn
 
 from resunet import ResUnet, parse_nbase
-
-
-def safe_torch_load(path: str, map_location: Any = "cpu", weights_only: bool = True) -> Any:
-    """Load checkpoint with compatibility for older PyTorch versions."""
-    try:
-        return torch.load(path, map_location=map_location, weights_only=weights_only)
-    except TypeError:
-        return torch.load(path, map_location=map_location)
 
 
 def extract_state_dict(payload: Any) -> dict[str, Any]:
@@ -145,7 +136,7 @@ def export_onnx(args: argparse.Namespace) -> None:
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    payload = safe_torch_load(str(checkpoint_path), map_location="cpu", weights_only=True)
+    payload = torch.load(checkpoint_path, map_location="cpu", weights_only=True)
     state_dict = extract_state_dict(payload)
 
     nout = args.nout if args.nout is not None else infer_nout_from_state_dict(state_dict)

@@ -41,7 +41,7 @@ class PipelineController:
 
     @staticmethod
     def _effective_scale_factor(config: AppConfig) -> float:
-        token = str(getattr(config, "scale_label", "1x") or "1x").strip().lower().replace("×", "x")
+        token = str(config.scale_label or "1x").strip().lower().replace("×", "x")
         if token.endswith("x"):
             token = token[:-1]
         try:
@@ -139,15 +139,15 @@ class PipelineController:
     @staticmethod
     def _configured_centerline_kwargs(config: AppConfig) -> dict[str, Any]:
         kwargs = dict(FiberAnalyzer_2D._default_centerline_kwargs())
-        kwargs["sigma"] = float(getattr(config, "ridge_sigma", kwargs["sigma"]))
-        kwargs["low"] = float(getattr(config, "ridge_low", kwargs["low"]))
-        kwargs["high"] = float(getattr(config, "ridge_high", kwargs["high"]))
+        kwargs["sigma"] = float(config.ridge_sigma)
+        kwargs["low"] = float(config.ridge_low)
+        kwargs["high"] = float(config.ridge_high)
         return kwargs
 
     @classmethod
     def prediction_params(cls, config: AppConfig) -> dict[str, Any]:
         return {
-            "max_angle_deg": float(getattr(config, "max_angle_deg", 30.0)),
+            "max_angle_deg": float(config.max_angle_deg),
             "centerline_kwargs": cls._configured_centerline_kwargs(config),
         }
 
@@ -156,21 +156,21 @@ class PipelineController:
         params = cls.prediction_params(config)
         params.update(
             {
-                "strict_centerlines": bool(getattr(config, "strict_centerlines", False)),
+                "strict_centerlines": bool(config.strict_centerlines),
                 "keep_segments_without_measurement_centerlines": bool(
-                    getattr(config, "keep_segments_without_measurement_centerlines", False)
+                    config.keep_segments_without_measurement_centerlines
                 ),
-                "merge_expansion_factor": float(getattr(config, "merge_expansion_factor", 0.7)),
+                "merge_expansion_factor": float(config.merge_expansion_factor),
                 "min_fragment_centerline_length_px": float(
-                    getattr(config, "min_fragment_centerline_length_px", 10.0)
+                    config.min_fragment_centerline_length_px
                 ),
                 "measurement_centerline_length_trim_fraction": FiberAnalyzer_2D._clamp_trim_fraction(
-                    float(getattr(config, "measurement_centerline_length_trim_fraction", 0.05))
+                    float(config.measurement_centerline_length_trim_fraction)
                 ),
                 "grad_quality_trim_fraction": FiberAnalyzer_2D._clamp_trim_fraction(
-                    float(getattr(config, "grad_quality_trim_fraction", 0.0))
+                    float(config.grad_quality_trim_fraction)
                 ),
-                "segmentation_expansion_factor": float(getattr(config, "segmentation_expansion_factor", 1.0)),
+                "segmentation_expansion_factor": float(config.segmentation_expansion_factor),
             }
         )
         return params
@@ -178,8 +178,8 @@ class PipelineController:
     @staticmethod
     def measurement_params(config: AppConfig) -> dict[str, Any]:
         return {
-            "sample_spacing": max(1.0, float(getattr(config, "sample_spacing", 5.0))),
-            "seg_threshold": int(getattr(config, "seg_threshold", 1)),
+            "sample_spacing": max(1.0, float(config.sample_spacing)),
+            "seg_threshold": int(config.seg_threshold),
         }
 
     @classmethod
@@ -191,7 +191,7 @@ class PipelineController:
             "image_id": int(id(image)),
             "shape": tuple(int(v) for v in image.shape),
             "dtype": str(image.dtype),
-            "model_path": str(getattr(config, "model_path", "")),
+            "model_path": str(config.model_path),
             "invert_input": bool(invert_input),
             "scale_factor": float(cls._effective_scale_factor(config)),
         }
@@ -204,18 +204,18 @@ class PipelineController:
             return None
         payload = {
             "prediction_sig": prediction_sig,
-            "merge_expansion_factor": float(getattr(config, "merge_expansion_factor", 0.7)),
+            "merge_expansion_factor": float(config.merge_expansion_factor),
             "min_fragment_centerline_length_px": float(
-                getattr(config, "min_fragment_centerline_length_px", 10.0)
+                config.min_fragment_centerline_length_px
             ),
             "keep_segments_without_measurement_centerlines": bool(
-                getattr(config, "keep_segments_without_measurement_centerlines", False)
+                config.keep_segments_without_measurement_centerlines
             ),
             "measurement_centerline_length_trim_fraction": FiberAnalyzer_2D._clamp_trim_fraction(
-                float(getattr(config, "measurement_centerline_length_trim_fraction", 0.05))
+                float(config.measurement_centerline_length_trim_fraction)
             ),
             "grad_quality_trim_fraction": FiberAnalyzer_2D._clamp_trim_fraction(
-                float(getattr(config, "grad_quality_trim_fraction", 0.0))
+                float(config.grad_quality_trim_fraction)
             ),
             "centerline_kwargs": cls._configured_centerline_kwargs(config),
         }
@@ -228,8 +228,8 @@ class PipelineController:
             return None
         payload = {
             "segmentation_centerline_sig": segmentation_centerline_sig,
-            "max_angle_deg": float(getattr(config, "max_angle_deg", 30.0)),
-            "strict_centerlines": bool(getattr(config, "strict_centerlines", False)),
+            "max_angle_deg": float(config.max_angle_deg),
+            "strict_centerlines": bool(config.strict_centerlines),
         }
         return json.dumps(payload, sort_keys=True, default=str)
 
@@ -240,10 +240,10 @@ class PipelineController:
             return None
         payload = {
             "measurement_centerline_sig": measurement_centerline_sig,
-            "segmentation_mode": str(getattr(config, "segmentation_mode", "watershed")),
-            "seg_threshold": int(getattr(config, "seg_threshold", 1)),
-            "segmentation_expansion_factor": float(getattr(config, "segmentation_expansion_factor", 1.0)),
-            "min_segment_foreground_mean": float(getattr(config, "min_segment_foreground_mean", 0.5)),
+            "segmentation_mode": str(config.segmentation_mode),
+            "seg_threshold": int(config.seg_threshold),
+            "segmentation_expansion_factor": float(config.segmentation_expansion_factor),
+            "min_segment_foreground_mean": float(config.min_segment_foreground_mean),
         }
         return json.dumps(payload, sort_keys=True, default=str)
 
@@ -262,7 +262,7 @@ class PipelineController:
         props = sample_props if sample_props is not None else SampleProperties.defaults()
         payload = {
             "segmentation_sig": segmentation_sig,
-            "sample_spacing": float(getattr(config, "sample_spacing", 5.0)),
+            "sample_spacing": float(config.sample_spacing),
             "pixel_size_x": float(props.pixel_size_x),
             "pixel_size_y": float(props.pixel_size_y),
             "voxel_size_z": float(props.voxel_size_z),
@@ -302,9 +302,6 @@ class PipelineController:
     def _hydrate_analyzer_from_prediction(
         self,
         frame: Frame,
-        *,
-        max_angle_deg: float,
-        centerline_kwargs: dict[str, Any],
     ) -> None:
         if self.analyzer is None or frame.dt is None or frame.gx is None or frame.gy is None:
             return
@@ -317,8 +314,6 @@ class PipelineController:
             foreground_prob=frame.foreground_prob,
         )
         self.analyzer._laplacian = frame.lapl_img
-        self.analyzer._last_max_angle = float(max_angle_deg)
-        self.analyzer._centerline_kwargs = dict(centerline_kwargs)
 
     def predict(
         self,
@@ -329,14 +324,11 @@ class PipelineController:
     ) -> dict[str, Any]:
         if self.analyzer is None:
             raise RuntimeError("Fiber analyzer has not been initialized.")
-        params = self.prediction_params(config)
         processing_img = self._processing_image(frame, config)
         if processing_img is None:
             raise RuntimeError("Missing input image.")
         self.analyzer.predict_dt(
             image=self._image_for_inference(processing_img, invert_input=invert_input),
-            max_angle_deg=float(params["max_angle_deg"]),
-            centerline_kwargs=dict(params["centerline_kwargs"]),
         )
         dt = self.analyzer.get_dt()
         gx, gy = self.analyzer.get_gradients()
@@ -360,11 +352,7 @@ class PipelineController:
         if self.analyzer is None:
             raise RuntimeError("Fiber analyzer has not been initialized.")
         params = self.centerline_params(config)
-        self._hydrate_analyzer_from_prediction(
-            frame,
-            max_angle_deg=float(params["max_angle_deg"]),
-            centerline_kwargs=dict(params["centerline_kwargs"]),
-        )
+        self._hydrate_analyzer_from_prediction(frame)
         self.analyzer.set_strict_centerline_filter(bool(params["strict_centerlines"]))
         self.analyzer.set_keep_segments_without_measurement_centerlines(
             bool(params["keep_segments_without_measurement_centerlines"])
@@ -388,19 +376,19 @@ class PipelineController:
 
     @staticmethod
     def _segmentation_params(config: AppConfig) -> tuple[str, dict[str, Any]]:
-        mode = str(getattr(config, "segmentation_mode", "watershed") or "watershed")
-        thr_u8 = int(getattr(config, "seg_threshold", 1))
+        mode = str(config.segmentation_mode or "watershed")
+        thr_u8 = int(config.seg_threshold)
         if mode not in ("watershed", "radial_expansion"):
             mode = "watershed"
         params = (
             {
                 "threshold_u8": thr_u8,
-                "min_segment_foreground_mean": float(getattr(config, "min_segment_foreground_mean", 0.5)),
+                "min_segment_foreground_mean": float(config.min_segment_foreground_mean),
             }
             if mode == "watershed"
             else {
-                "expansion_factor": float(getattr(config, "segmentation_expansion_factor", 1.0)),
-                "min_segment_foreground_mean": float(getattr(config, "min_segment_foreground_mean", 0.5)),
+                "expansion_factor": float(config.segmentation_expansion_factor),
+                "min_segment_foreground_mean": float(config.min_segment_foreground_mean),
             }
         )
         return mode, params
@@ -743,17 +731,12 @@ class PipelineController:
         if self.analyzer is None:
             return PipelineOutcome(False, error_title="Analyzer unavailable", error_message="Fiber analyzer has not been initialized.")
 
-        prediction_params = self.prediction_params(config)
         target_sig = self.prediction_signature(frame, config, invert_input=invert_input)
         if target_sig is None:
             return PipelineOutcome(False)
 
         if frame.has_prediction and frame.dt is not None and frame.prediction_sig == target_sig:
-            self._hydrate_analyzer_from_prediction(
-                frame,
-                max_angle_deg=float(prediction_params["max_angle_deg"]),
-                centerline_kwargs=dict(prediction_params["centerline_kwargs"]),
-            )
+            self._hydrate_analyzer_from_prediction(frame)
             return PipelineOutcome(True)
 
         try:

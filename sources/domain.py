@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field, asdict
 from copy import copy
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Optional
 import os
 import imageio.v3 as iio
 import numpy as np
@@ -75,50 +75,25 @@ class AppConfig:
             json.dump(asdict(self), f, indent=4)
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any], *, strict: bool = False) -> "AppConfig":
-        """Normalize a config mapping into AppConfig, with backward compatibility."""
+    def from_dict(cls, data: Dict[str, Any]) -> "AppConfig":
+        """Normalize a config mapping into AppConfig."""
         if not isinstance(data, dict):
             raise ValueError("Config JSON root must be an object.")
         data = dict(data)
-        if "radial_expansion_factor" in data and "merge_expansion_factor" not in data:
-            data["merge_expansion_factor"] = data["radial_expansion_factor"]
         valid_keys = set(cls.__dataclass_fields__)
         unknown_keys = sorted(set(data.keys()) - valid_keys)
         if unknown_keys:
-            if strict:
-                raise ValueError(f"Unknown config key(s): {', '.join(unknown_keys)}")
-            data = {k: v for k, v in data.items() if k in valid_keys}
+            raise ValueError(f"Unknown config key(s): {', '.join(unknown_keys)}")
         return cls(**data)
 
     @classmethod
-    def load_from_json(cls, filepath: str, *, strict: bool = False) -> "AppConfig":
-        """Load from json from storage and normalize it for use.
-        
-        Args:
-            filepath (str): Filesystem location describing where filepath is read or written.
-            strict (bool): Boolean flag that toggles strict behavior.
-        
-        Returns:
-            'AppConfig': Result object produced by the load from json routine.
-        
-        Raises:
-            ValueError: If provided values violate validation or domain constraints."""
+    def load_from_json(cls, filepath: str) -> "AppConfig":
         try:
             with open(filepath, "r", encoding="utf-8") as f:
                 data = json.load(f)
-            return cls.from_dict(data, strict=strict)
+            return cls.from_dict(data)
         except FileNotFoundError:
-            if strict:
-                raise
             logger.info("Config file not found: %s. Using defaults.", filepath)
-        except json.JSONDecodeError as exc:
-            if strict:
-                raise
-            logger.error("Invalid JSON in config file %s: %s. Using defaults.", filepath, exc)
-        except Exception:
-            if strict:
-                raise
-            logger.exception("Failed to load config file %s. Using defaults.", filepath)
         return cls()
 
 
@@ -135,14 +110,6 @@ class SampleProperties:
 
     @staticmethod
     def _as_positive(value: Any, default: float = 1.0) -> float:
-        """Provide an internal helper for as positive.
-        
-        Args:
-            value (Any): Value for value interpreted by this routine.
-            default (float): Value for default interpreted by this routine.
-        
-        Returns:
-            float: Result object produced by the as positive routine."""
         if isinstance(value, (tuple, list)) and len(value) == 2:
             try:
                 value = float(value[0]) / float(value[1])
@@ -158,10 +125,6 @@ class SampleProperties:
 
     @classmethod
     def defaults(cls) -> "SampleProperties":
-        """Orchestrate defaults within the current module workflow.
-        
-        Returns:
-            'SampleProperties': Result object produced by the defaults routine."""
         return cls(
             pixel_size_x=1.0,
             pixel_size_y=1.0,
@@ -178,14 +141,6 @@ class SampleProperties:
         *,
         source_path: str = "",
     ) -> "SampleProperties":
-        """Construct an instance from image metadata while validating inputs.
-        
-        Args:
-            metadata (Optional[Dict[str, Any]]): Value for metadata interpreted by this routine.
-            source_path (str): Filesystem location describing where source path is read or written.
-        
-        Returns:
-            'SampleProperties': Result object produced by the from image metadata routine."""
         meta = metadata or {}
         px_raw = meta.get("pixel_width")
         py_raw = meta.get("pixel_height")
@@ -222,19 +177,11 @@ class SampleProperties:
         )
 
     def effective_pixel_size_xy(self) -> float:
-        """Orchestrate effective pixel size xy within the current module workflow.
-        
-        Returns:
-            float: Result object produced by the effective pixel size xy routine."""
         x = self._as_positive(self.pixel_size_x)
         y = self._as_positive(self.pixel_size_y)
         return 0.5 * (x + y)
 
     def spacing_zyx(self) -> tuple[float, float, float]:
-        """Orchestrate spacing zyx within the current module workflow.
-        
-        Returns:
-            tuple[float, float, float]: Tuple grouping the spacing zyx outputs in a stable positional order."""
         return (
             self._as_positive(self.voxel_size_z),
             self._as_positive(self.pixel_size_y),
@@ -257,7 +204,7 @@ class ImageBatch:
     @property
     def kind(self) -> str:
         """Returns the kind of loaded info: 'Image', 'Folder', or 'Stack'."""
-        return self.metadata.get("source_type", "image")
+        return self.metadata.get("source_type", "Image")
 
     @property
     def name(self) -> str:
@@ -273,13 +220,6 @@ class ImageBatch:
         sizes = {"pixel_width": None, "pixel_height": None, "voxel_depth": None, "unit": None}
 
         def _positive(value: Any) -> Optional[float]:
-            """Provide an internal helper for positive.
-            
-            Args:
-                value (Any): Value for value interpreted by this routine.
-            
-            Returns:
-                Optional[float]: Result object produced by the positive routine."""
             if value is None:
                 return None
             if isinstance(value, (tuple, list)) and len(value) == 2:
@@ -296,13 +236,6 @@ class ImageBatch:
             return out
 
         def _unit_scale_to_um(unit_value: Any) -> Optional[float]:
-            """Provide an internal helper for unit scale to um.
-            
-            Args:
-                unit_value (Any): Value for unit value interpreted by this routine.
-            
-            Returns:
-                Optional[float]: Result object produced by the unit scale to um routine."""
             if unit_value is None:
                 return None
             token = str(getattr(unit_value, "name", unit_value)).strip().lower()
@@ -398,16 +331,6 @@ class ImageBatch:
 
     @staticmethod
     def _normalize_stack(data: np.ndarray) -> List[np.ndarray]:
-        """Provide an internal helper for normalize stack.
-        
-        Args:
-            data (np.ndarray): Value for data interpreted by this routine.
-        
-        Returns:
-            List[np.ndarray]: Array containing the normalize stack output aligned with downstream expectations.
-        
-        Raises:
-            ValueError: If provided values violate validation or domain constraints."""
         if data.ndim == 2:
             return [data]
         if data.ndim == 3:
@@ -420,13 +343,6 @@ class ImageBatch:
 
     @classmethod
     def from_path(cls, path: str) -> "ImageBatch":
-        """Construct an instance from path while validating inputs.
-        
-        Args:
-            path (str): Filesystem location describing where path is read or written.
-        
-        Returns:
-            'ImageBatch': Result object produced by the from path routine."""
         data = iio.imread(path)
         frames = cls._normalize_stack(data)
         source_type = "Image" if len(frames) == 1 else "Stack"
@@ -448,14 +364,6 @@ class ImageBatch:
     def from_folder(
         cls, folder: str, extensions: Optional[Iterable[str]] = None
     ) -> "ImageBatch":
-        """Construct an instance from folder while validating inputs.
-        
-        Args:
-            folder (str): Filesystem location describing where folder is read or written.
-            extensions (Optional[Iterable[str]]): Value for extensions interpreted by this routine.
-        
-        Returns:
-            'ImageBatch': Result object produced by the from folder routine."""
         entries = sorted(os.listdir(folder))
         ext_set = {ext.lower() for ext in extensions} if extensions else None
         frames: List[np.ndarray] = []
@@ -500,17 +408,6 @@ class ImageBatch:
     def from_source(
         cls, path: str, extensions: Optional[Iterable[str]] = None
     ) -> "ImageBatch":
-        """Construct an instance from source while validating inputs.
-        
-        Args:
-            path (str): Filesystem location describing where path is read or written.
-            extensions (Optional[Iterable[str]]): Value for extensions interpreted by this routine.
-        
-        Returns:
-            'ImageBatch': Result object produced by the from source routine.
-        
-        Raises:
-            FileNotFoundError: If an expected file or directory cannot be located."""
         if os.path.isdir(path):
             return cls.from_folder(path, extensions=extensions)
         if os.path.isfile(path):
@@ -523,13 +420,6 @@ class BatchResult:
     frame_results: List[Frame]
 
     def frame_at(self, index: int) -> Frame:
-        """Orchestrate frame at within the current module workflow.
-        
-        Args:
-            index (int): Zero-based index selecting which index to operate on.
-        
-        Returns:
-            Frame: Result object produced by the frame at routine."""
         return self.frame_results[index]
 
     def save_all(self, output_dir: str, export_config: Dict[str, Any] | None = None) -> Dict[str, Any]:
@@ -619,22 +509,9 @@ class Frame:
         z_index: int = 0,
         orig_img: Optional[np.ndarray] = None,
     ) -> "Frame":
-        """Orchestrate empty within the current module workflow.
-        
-        Args:
-            frame_id (str): Array-like data carrying frame id values for analysis.
-            z_index (int): Coordinate component representing the z index axis value.
-            orig_img (Optional[np.ndarray]): Value for orig img interpreted by this routine.
-        
-        Returns:
-            'Frame': Result object produced by the empty routine."""
         return cls(frame_id=str(frame_id), z_index=int(z_index), orig_img=orig_img)
 
     def clear_prediction(self) -> None:
-        """Clear cached prediction state that is no longer valid.
-        
-        Returns:
-            None: Result object produced by the clear prediction routine."""
         self.has_prediction = False
         self.dt = None
         self.dt_u8 = None
@@ -653,10 +530,6 @@ class Frame:
         self.error_message = None
 
     def clear_segmentation(self) -> None:
-        """Clear cached segmentation state that is no longer valid.
-        
-        Returns:
-            None: Result object produced by the clear segmentation routine."""
         self.has_segmentation = False
         self.labels_2d = None
         self.segmentation_centerlines_overlay_img = None
@@ -675,10 +548,6 @@ class Frame:
         self.measurement_sig = None
 
     def clear_measurements(self) -> None:
-        """Clear cached measurements state that is no longer valid.
-        
-        Returns:
-            None: Result object produced by the clear measurements routine."""
         self.has_measurements = False
         self.samples_table = None
         self.fiber_summary = None
@@ -695,23 +564,6 @@ class Frame:
         self.pores_overlay = None
         self.measurement_sig = None
 
-    def begin_frame(self, orig_img: Optional[np.ndarray], frame_id: str, z_index: int) -> None:
-        """Start frame and initialize per-run state tracking.
-        
-        Args:
-            orig_img (Optional[np.ndarray]): Value for orig img interpreted by this routine.
-            frame_id (str): Array-like data carrying frame id values for analysis.
-            z_index (int): Coordinate component representing the z index axis value.
-        
-        Returns:
-            None: Result object produced by the begin frame routine."""
-        self.frame_id = str(frame_id)
-        self.z_index = int(z_index)
-        self.orig_img = orig_img
-        self.clear_prediction()
-        self.clear_segmentation()
-        self.clear_measurements()
-        self.error_message = None
 
     def set_prediction_outputs(
         self,
@@ -727,22 +579,6 @@ class Frame:
         scale_factor: float,
         invalidate_downstream: bool = True,
     ) -> None:
-        """Update prediction outputs and synchronize dependent runtime state.
-        
-        Args:
-            dt (Optional[np.ndarray]): Value for dt interpreted by this routine.
-            gx (Optional[np.ndarray]): Value for gx interpreted by this routine.
-            gy (Optional[np.ndarray]): Value for gy interpreted by this routine.
-            dt_u8 (Optional[np.ndarray]): Value for dt u8 interpreted by this routine.
-            dt_normalized (Optional[np.ndarray]): Value for dt normalized interpreted by this routine.
-            foreground_prob (Optional[np.ndarray]): Foreground probability predicted by the model, if available.
-            lapl_img (Optional[np.ndarray]): Value for lapl img interpreted by this routine.
-            orig_img_scaled (Optional[np.ndarray]): Numeric control parameter for orig img scaled during computation.
-            scale_factor (float): Numeric control parameter for scale factor during computation.
-            invalidate_downstream (bool): Value for invalidate downstream interpreted by this routine.
-        
-        Returns:
-            None: Result object produced by the set prediction outputs routine."""
         self.dt = dt
         self.gx = gx
         self.gy = gy
@@ -771,19 +607,6 @@ class Frame:
         segmentation_outline_cache: Optional[tuple[Optional[int], Optional[np.ndarray]]] = None,
         invalidate_measurements: bool = True,
     ) -> None:
-        """Update segmentation outputs and synchronize dependent runtime state.
-        
-        Args:
-            labels_2d (Optional[np.ndarray]): Array-like data carrying labels 2d values for analysis.
-            centerlines_overlay_img (Optional[np.ndarray]): Value for centerlines overlay img interpreted by this routine.
-            overlay_img (Optional[np.ndarray]): Value for overlay img interpreted by this routine.
-            sampling_overlay (Optional[np.ndarray]): Value for sampling overlay interpreted by this routine.
-            labels_rgb_cache (Optional[tuple[Optional[int], Optional[np.ndarray]]]): Array-like data carrying labels rgb cache values for analysis.
-            segmentation_outline_cache (Optional[tuple[Optional[int], Optional[np.ndarray]]]): Value for segmentation outline cache interpreted by this routine.
-            invalidate_measurements (bool): Value for invalidate measurements interpreted by this routine.
-        
-        Returns:
-            None: Result object produced by the set segmentation outputs routine."""
         self.labels_2d = labels_2d
         self.segmentation_centerlines_overlay_img = segmentation_centerlines_overlay_img
         self.measurement_centerlines_overlay_img = measurement_centerlines_overlay_img
@@ -834,13 +657,6 @@ class Frame:
         self.error_message = None
 
     def fail(self, message: str) -> None:
-        """Orchestrate fail within the current module workflow.
-        
-        Args:
-            message (str): Value for message interpreted by this routine.
-        
-        Returns:
-            None: Result object produced by the fail routine."""
         self.error_message = str(message)
 
     def snapshot(
@@ -850,15 +666,6 @@ class Frame:
         frame_id: Optional[str] = None,
         z_index: Optional[int] = None,
     ) -> "Frame":
-        """Orchestrate snapshot within the current module workflow.
-        
-        Args:
-            include_measurements (bool): Value for include measurements interpreted by this routine.
-            frame_id (Optional[str]): Array-like data carrying frame id values for analysis.
-            z_index (Optional[int]): Coordinate component representing the z index axis value.
-        
-        Returns:
-            'Frame': Result object produced by the snapshot routine."""
         clone: Frame = copy(self)
         def _clone_array(value: Any) -> Any:
             if isinstance(value, np.ndarray):
@@ -914,8 +721,6 @@ class FiberFragment:
     segment_radii: Optional[list[np.ndarray]] = None
     parent_fiber_id: int = -1
     measurement_centerlines_xy: list[np.ndarray] = field(default_factory=list)
-    measurement_radii: list[np.ndarray] = field(default_factory=list)
-    measurement_source_indices: list[int] = field(default_factory=list)
     total_measurement_centerline_length_px: float = 0.0
     grad_quality_score: float = float("nan")
 
@@ -974,48 +779,11 @@ class FiberFragment:
         self.segment_centerlines_xy = [points_xy for points_xy, _ in pairs]
         self.segment_radii = [radii for _, radii in pairs]
 
-        measurement_centerlines_xy = [
+        self.measurement_centerlines_xy = [
             self._normalize_centerline(points_raw, "Measurement centerline")
             for points_raw in (self.measurement_centerlines_xy or [])
         ]
-        if not measurement_centerlines_xy:
-            if self.measurement_radii:
-                raise ValueError("measurement_radii requires measurement_centerlines_xy.")
-            if self.measurement_source_indices:
-                raise ValueError("measurement_source_indices requires measurement_centerlines_xy.")
-            self.measurement_centerlines_xy = []
-            self.measurement_radii = []
-            self.measurement_source_indices = []
-            self.total_measurement_centerline_length_px = 0.0
-        else:
-            if not self.measurement_radii:
-                measurement_radii = [
-                    np.zeros(points_xy.shape[0], dtype=np.float32)
-                    for points_xy in measurement_centerlines_xy
-                ]
-            else:
-                if len(self.measurement_radii) != len(measurement_centerlines_xy):
-                    raise ValueError("measurement_radii length must match measurement_centerlines_xy length.")
-                measurement_radii = [
-                    self._normalize_radii(radii_raw, points_xy.shape[0], "Measurement radii")
-                    for points_xy, radii_raw in zip(measurement_centerlines_xy, self.measurement_radii)
-                ]
-            if len(self.measurement_source_indices) != len(measurement_centerlines_xy):
-                raise ValueError(
-                    "measurement_source_indices length must match measurement_centerlines_xy length."
-                )
-            measurement_source_indices: list[int] = []
-            for source_index_raw in self.measurement_source_indices:
-                source_index = int(source_index_raw)
-                if source_index < 0 or source_index >= len(self.segment_centerlines_xy):
-                    raise ValueError(
-                        "measurement_source_indices entries must reference segmentation centerlines."
-                    )
-                measurement_source_indices.append(source_index)
-            self.measurement_centerlines_xy = measurement_centerlines_xy
-            self.measurement_radii = measurement_radii
-            self.measurement_source_indices = measurement_source_indices
-            self.recompute_total_measurement_centerline_length_px()
+        self.recompute_total_measurement_centerline_length_px()
 
         self.fragment_id = int(self.fragment_id)
         self.parent_fiber_id = int(self.parent_fiber_id)
@@ -1023,18 +791,3 @@ class FiberFragment:
     @property
     def has_measurement_centerline(self) -> bool:
         return bool(self.measurement_centerlines_xy)
-
-    @property
-    def points_xy(self) -> np.ndarray:
-        return self.measurement_centerlines_xy[0] if self.measurement_centerlines_xy else self.segment_centerlines_xy[0]
-
-    @property
-    def centerline_xy(self) -> np.ndarray:
-        return self.points_xy
-
-    @property
-    def radii(self) -> np.ndarray:
-        return self.measurement_radii[0] if self.measurement_radii else self.segment_radii[0]
-
-    def length(self) -> float:
-        return self._centerline_length(self.points_xy)

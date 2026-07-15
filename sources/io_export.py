@@ -178,10 +178,6 @@ class BatchResultExporter:
     }
 
     def __init__(self, export_config: dict[str, Any] | None = None):
-        """Initialize batch result exporter with validated runtime dependencies and defaults.
-        
-        Args:
-            export_config (dict[str, Any] | None): Configuration values controlling runtime behavior."""
         self.export_config = dict(export_config or {})
 
     def save_all(
@@ -253,15 +249,6 @@ class BatchResultExporter:
 
     @staticmethod
     def _skip_item(frame_index: int, artifact: str, reason: str) -> dict[str, Any]:
-        """Provide an internal helper for skip item.
-        
-        Args:
-            frame_index (int): Array-like data carrying frame index values for analysis.
-            artifact (str): Value for artifact interpreted by this routine.
-            reason (str): Value for reason interpreted by this routine.
-        
-        Returns:
-            dict[str, Any]: Mapping containing named skip item outputs and metadata."""
         return {
             "frame_index": int(frame_index),
             "artifact": artifact,
@@ -276,16 +263,6 @@ class BatchResultExporter:
         cfg: dict[str, Any],
         artifacts: set[str],
     ) -> tuple[list[str], list[dict[str, Any]], list[dict[str, Any]]]:
-        """Provide an internal helper for save framewise artifacts.
-        
-        Args:
-            batch_result (Any): Value for batch result interpreted by this routine.
-            output_dir (str): Filesystem location describing where output dir is read or written.
-            cfg (dict[str, Any]): Value for cfg interpreted by this routine.
-            artifacts (set[str]): Value for artifacts interpreted by this routine.
-        
-        Returns:
-            tuple[list[str], list[dict[str, Any]], list[dict[str, Any]]]: Tuple grouping the save framewise artifacts outputs in a stable positional order."""
         written_files: list[str] = []
         skipped: list[dict[str, Any]] = []
         errors: list[dict[str, Any]] = []
@@ -477,14 +454,6 @@ class BatchResultExporter:
         return written_files, skipped, errors
 
     def _collect_stack_arrays(self, frames: list[Any], artifact: str) -> list[np.ndarray] | None:
-        """Provide an internal helper for collect stack arrays.
-        
-        Args:
-            frames (list[Any]): Array-like data carrying frames values for analysis.
-            artifact (str): Value for artifact interpreted by this routine.
-        
-        Returns:
-            list[np.ndarray] | None: Array containing the collect stack arrays output aligned with downstream expectations."""
         arrays: list[np.ndarray] = []
         for frame in frames:
             if artifact == "dt":
@@ -544,9 +513,9 @@ class BatchResultExporter:
         return np.asarray(cached_img, dtype=np.uint8)
 
     @staticmethod
-    def _labels_rgb_image(frame: Any) -> np.ndarray | None:
+    def _labels_rgb_image(frame: Frame) -> np.ndarray | None:
         """Return segmentation labels as RGB using the same mapping as visualization."""
-        labels = getattr(frame, "labels_2d", None)
+        labels = frame.labels_2d
         if labels is None:
             return None
         labels_arr = np.asarray(labels)
@@ -555,7 +524,7 @@ class BatchResultExporter:
         if labels_arr.size == 0 or int(np.max(labels_arr)) <= 0:
             return None
 
-        cache = getattr(frame, "labels_rgb_cache", None)
+        cache = frame.labels_rgb_cache
         if isinstance(cache, tuple) and len(cache) == 2:
             cache_id, cache_img = cache
             if cache_img is not None and cache_id == id(labels):
@@ -567,14 +536,6 @@ class BatchResultExporter:
         return np.asarray(rendered, dtype=np.uint8)
 
     def _stack_base_name(self, frames: list[Any], cfg: dict[str, Any]) -> str:
-        """Provide an internal helper for stack base name.
-        
-        Args:
-            frames (list[Any]): Array-like data carrying frames values for analysis.
-            cfg (dict[str, Any]): Value for cfg interpreted by this routine.
-        
-        Returns:
-            str: String value representing the normalized stack base name outcome."""
         explicit_base = cfg.get("base_name")
         if explicit_base:
             return self._sanitize_name(str(explicit_base))
@@ -590,14 +551,6 @@ class BatchResultExporter:
 
     @staticmethod
     def _write_stack_samples_csv(frames: list[Any], path: str) -> None:
-        """Provide an internal helper for write stack samples csv.
-        
-        Args:
-            frames (list[Any]): Array-like data carrying frames values for analysis.
-            path (str): Filesystem location describing where path is read or written.
-        
-        Returns:
-            None: Result object produced by the write stack samples csv routine."""
         with open(path, "w", newline="") as handle:
             handle.write("z_index,frame_id,x,y,diameter,angle_deg\n")
             for frame in frames:
@@ -645,14 +598,14 @@ class BatchResultExporter:
                 diam_mean, diam_sd, diam_mode, diam_median, orientation_index, mean_angle_deg, std_angle_deg, porosity, sample_count = (
                     self._measurement_summary_from_frame(frame)
                 )
-                summary = getattr(frame, "fiber_summary", None) or {}
+                summary = frame.fiber_summary or {}
                 fragments_with_centerlines = int(summary.get("fragments_with_centerlines", 0))
                 units = str(summary.get("units", "px"))
                 writer.writerow(
                     [
                         int(frame_index),
-                        int(getattr(frame, "z_index", frame_index)),
-                        str(getattr(frame, "frame_id", f"frame_{frame_index:04d}")),
+                        int(frame.z_index),
+                        str(frame.frame_id),
                         f"{diam_mean:.2f}",
                         f"{diam_sd:.2f}",
                         f"{diam_mode:.2f}",
@@ -664,8 +617,8 @@ class BatchResultExporter:
                         int(sample_count),
                         fragments_with_centerlines,
                         units,
-                        int(bool(getattr(frame, "has_segmentation", False))),
-                        int(bool(getattr(frame, "has_measurements", False))),
+                        int(frame.has_segmentation),
+                        int(frame.has_measurements),
                     ]
                 )
 
@@ -734,13 +687,6 @@ class BatchResultExporter:
         return cfg
 
     def _resolve_artifacts(self, cfg: dict[str, Any]) -> set[str]:
-        """Provide an internal helper for resolve artifacts.
-        
-        Args:
-            cfg (dict[str, Any]): Value for cfg interpreted by this routine.
-        
-        Returns:
-            set[str]: Result object produced by the resolve artifacts routine."""
         artifacts = set(self._PRESET_ARTIFACTS[cfg["preset"]])
         for artifact in cfg.get("include", []):
             if artifact in self._ALL_ARTIFACTS:
@@ -750,15 +696,6 @@ class BatchResultExporter:
         return artifacts
 
     def _make_base_name(self, frame, index: int, cfg: dict[str, Any]) -> str:
-        """Provide an internal helper for make base name.
-        
-        Args:
-            frame (Any): Array-like data carrying frame values for analysis.
-            index (int): Zero-based index selecting which index to operate on.
-            cfg (dict[str, Any]): Value for cfg interpreted by this routine.
-        
-        Returns:
-            str: String value representing the normalized make base name outcome."""
         explicit_base = cfg.get("base_name")
         if explicit_base:
             return self._sanitize_name(str(explicit_base))
@@ -774,13 +711,6 @@ class BatchResultExporter:
 
     @staticmethod
     def _sanitize_name(value: str) -> str:
-        """Provide an internal helper for sanitize name.
-        
-        Args:
-            value (str): Value for value interpreted by this routine.
-        
-        Returns:
-            str: String value representing the normalized sanitize name outcome."""
         clean = os.path.basename(value).strip()
         return clean if clean else "frame"
 
@@ -792,20 +722,6 @@ class BatchResultExporter:
         extension: str,
         cfg: dict[str, Any],
     ) -> str:
-        """Provide an internal helper for resolve output path.
-        
-        Args:
-            output_dir (str): Filesystem location describing where output dir is read or written.
-            base_name (str): Value for base name interpreted by this routine.
-            suffix (str): Value for suffix interpreted by this routine.
-            extension (str): Value for extension interpreted by this routine.
-            cfg (dict[str, Any]): Value for cfg interpreted by this routine.
-        
-        Returns:
-            str: String value representing the normalized resolve output path outcome.
-        
-        Raises:
-            FileExistsError: If the routine encounters an unrecoverable error condition."""
         candidate = os.path.join(output_dir, f"{base_name}{suffix}{extension}")
         policy = cfg.get("collision", "suffix")
         if policy == "overwrite" or not os.path.exists(candidate):
@@ -822,20 +738,12 @@ class BatchResultExporter:
             i += 1
 
     def _write_samples_csv(self, frame, path: str) -> None:
-        """Provide an internal helper for write samples csv.
-        
-        Args:
-            frame (Any): Array-like data carrying frame values for analysis.
-            path (str): Filesystem location describing where path is read or written.
-        
-        Returns:
-            None: Result object produced by the write samples csv routine."""
         diam_mean, diam_sd, diam_mode, diam_median, orientation_index, mean_angle_deg, std_angle_deg, porosity, sample_count = (
             self._measurement_summary_from_frame(frame)
         )
 
         with open(path, "w", newline="") as handle:
-            summary = getattr(frame, "fiber_summary", None) or {}
+            summary = frame.fiber_summary or {}
             fragments_with_centerlines = int(summary.get("fragments_with_centerlines", 0))
             handle.write("metric,value\n")
             handle.write(f"diam_mean,{diam_mean:.2f}\n")
@@ -864,13 +772,6 @@ class BatchResultExporter:
     def _measurement_summary_from_frame(
         self, frame
     ) -> tuple[float, float, float, float, float, float, float, float, int]:
-        """Provide an internal helper for measurement summary from frame.
-        
-        Args:
-            frame (Any): Array-like data carrying frame values for analysis.
-        
-        Returns:
-            Nine summary values in export column order."""
         summary = frame.fiber_summary or {}
         return (
             float(summary.get("diam_mean", float("nan"))),
