@@ -145,35 +145,24 @@ class PipelineController:
         return kwargs
 
     @classmethod
-    def prediction_params(cls, config: AppConfig) -> dict[str, Any]:
+    def centerline_params(cls, config: AppConfig) -> dict[str, Any]:
         return {
             "max_angle_deg": float(config.max_angle_deg),
             "centerline_kwargs": cls._configured_centerline_kwargs(config),
+            "strict_centerlines": bool(config.strict_centerlines),
+            "keep_segments_without_measurement_centerlines": bool(
+                config.keep_segments_without_measurement_centerlines
+            ),
+            "merge_expansion_factor": float(config.merge_expansion_factor),
+            "min_fragment_centerline_length_px": float(config.min_fragment_centerline_length_px),
+            "measurement_centerline_length_trim_fraction": FiberAnalyzer_2D._clamp_trim_fraction(
+                float(config.measurement_centerline_length_trim_fraction)
+            ),
+            "grad_quality_trim_fraction": FiberAnalyzer_2D._clamp_trim_fraction(
+                float(config.grad_quality_trim_fraction)
+            ),
+            "segmentation_expansion_factor": float(config.segmentation_expansion_factor),
         }
-
-    @classmethod
-    def centerline_params(cls, config: AppConfig) -> dict[str, Any]:
-        params = cls.prediction_params(config)
-        params.update(
-            {
-                "strict_centerlines": bool(config.strict_centerlines),
-                "keep_segments_without_measurement_centerlines": bool(
-                    config.keep_segments_without_measurement_centerlines
-                ),
-                "merge_expansion_factor": float(config.merge_expansion_factor),
-                "min_fragment_centerline_length_px": float(
-                    config.min_fragment_centerline_length_px
-                ),
-                "measurement_centerline_length_trim_fraction": FiberAnalyzer_2D._clamp_trim_fraction(
-                    float(config.measurement_centerline_length_trim_fraction)
-                ),
-                "grad_quality_trim_fraction": FiberAnalyzer_2D._clamp_trim_fraction(
-                    float(config.grad_quality_trim_fraction)
-                ),
-                "segmentation_expansion_factor": float(config.segmentation_expansion_factor),
-            }
-        )
-        return params
 
     @staticmethod
     def measurement_params(config: AppConfig) -> dict[str, Any]:
@@ -198,52 +187,14 @@ class PipelineController:
         return json.dumps(payload, sort_keys=True, default=str)
 
     @classmethod
-    def segmentation_centerline_signature(cls, frame: Frame, config: AppConfig, *, invert_input: bool) -> str | None:
+    def segmentation_signature(cls, frame: Frame, config: AppConfig, *, invert_input: bool) -> str | None:
         prediction_sig = cls.prediction_signature(frame, config, invert_input=invert_input)
         if prediction_sig is None:
             return None
         payload = {
             "prediction_sig": prediction_sig,
-            "merge_expansion_factor": float(config.merge_expansion_factor),
-            "min_fragment_centerline_length_px": float(
-                config.min_fragment_centerline_length_px
-            ),
-            "keep_segments_without_measurement_centerlines": bool(
-                config.keep_segments_without_measurement_centerlines
-            ),
-            "measurement_centerline_length_trim_fraction": FiberAnalyzer_2D._clamp_trim_fraction(
-                float(config.measurement_centerline_length_trim_fraction)
-            ),
-            "grad_quality_trim_fraction": FiberAnalyzer_2D._clamp_trim_fraction(
-                float(config.grad_quality_trim_fraction)
-            ),
-            "centerline_kwargs": cls._configured_centerline_kwargs(config),
-        }
-        return json.dumps(payload, sort_keys=True, default=str)
-
-    @classmethod
-    def measurement_centerline_signature(cls, frame: Frame, config: AppConfig, *, invert_input: bool) -> str | None:
-        segmentation_centerline_sig = cls.segmentation_centerline_signature(frame, config, invert_input=invert_input)
-        if segmentation_centerline_sig is None:
-            return None
-        payload = {
-            "segmentation_centerline_sig": segmentation_centerline_sig,
-            "max_angle_deg": float(config.max_angle_deg),
-            "strict_centerlines": bool(config.strict_centerlines),
-        }
-        return json.dumps(payload, sort_keys=True, default=str)
-
-    @classmethod
-    def segmentation_signature(cls, frame: Frame, config: AppConfig, *, invert_input: bool) -> str | None:
-        measurement_centerline_sig = cls.measurement_centerline_signature(frame, config, invert_input=invert_input)
-        if measurement_centerline_sig is None:
-            return None
-        payload = {
-            "measurement_centerline_sig": measurement_centerline_sig,
-            "segmentation_mode": str(config.segmentation_mode),
-            "seg_threshold": int(config.seg_threshold),
-            "segmentation_expansion_factor": float(config.segmentation_expansion_factor),
-            "min_segment_foreground_mean": float(config.min_segment_foreground_mean),
+            "centerline_params": cls.centerline_params(config),
+            "segmentation_params": cls._segmentation_params(config),
         }
         return json.dumps(payload, sort_keys=True, default=str)
 
@@ -262,7 +213,7 @@ class PipelineController:
         props = sample_props if sample_props is not None else SampleProperties.defaults()
         payload = {
             "segmentation_sig": segmentation_sig,
-            "sample_spacing": float(config.sample_spacing),
+            "measurement_params": cls.measurement_params(config),
             "pixel_size_x": float(props.pixel_size_x),
             "pixel_size_y": float(props.pixel_size_y),
             "voxel_size_z": float(props.voxel_size_z),
@@ -275,25 +226,10 @@ class PipelineController:
         if analyzer is not None:
             analyzer._reset_prediction_state()
         frame.clear_prediction()
-        PipelineController.invalidate_measurements(frame)
 
     @staticmethod
-    def invalidate_segmentation(frame: Frame, invalidate_centerlines: bool = False) -> None:
-        if invalidate_centerlines:
-            frame.clear_segmentation()
-        else:
-            keep_seg_overlay = frame.segmentation_centerlines_overlay_img
-            keep_meas_overlay = frame.measurement_centerlines_overlay_img
-            keep_cmp_overlay = frame.centerlines_comparison_overlay_img
-            keep_seg_sig = frame.segmentation_centerline_sig
-            keep_meas_sig = frame.measurement_centerline_sig
-            frame.clear_segmentation()
-            frame.segmentation_centerlines_overlay_img = keep_seg_overlay
-            frame.measurement_centerlines_overlay_img = keep_meas_overlay
-            frame.centerlines_comparison_overlay_img = keep_cmp_overlay
-            frame.segmentation_centerline_sig = keep_seg_sig
-            frame.measurement_centerline_sig = keep_meas_sig
-        PipelineController.invalidate_measurements(frame)
+    def invalidate_segmentation(frame: Frame) -> None:
+        frame.clear_segmentation()
 
     @staticmethod
     def invalidate_measurements(frame: Frame) -> None:
@@ -755,7 +691,6 @@ class PipelineController:
             lapl_img=prediction["lapl_img"],
             orig_img_scaled=frame.orig_img_scaled,
             scale_factor=frame.scale_factor,
-            invalidate_downstream=True,
         )
         frame.prediction_sig = target_sig
         return PipelineOutcome(True)
@@ -767,11 +702,6 @@ class PipelineController:
         if self.analyzer is None:
             return PipelineOutcome(False, error_title="Analyzer unavailable", error_message="Fiber analyzer has not been initialized.")
 
-        segmentation_sig = self.segmentation_centerline_signature(frame, config, invert_input=invert_input)
-        measurement_sig = self.measurement_centerline_signature(frame, config, invert_input=invert_input)
-        if segmentation_sig is None or measurement_sig is None:
-            return PipelineOutcome(False)
-
         try:
             outputs = self.build_centerlines(frame, config)
         except Exception as exc:
@@ -781,10 +711,6 @@ class PipelineController:
         frame.segmentation_centerlines_overlay_img = outputs["segmentation_centerlines_overlay_img"]
         frame.measurement_centerlines_overlay_img = outputs["measurement_centerlines_overlay_img"]
         frame.centerlines_comparison_overlay_img = outputs["centerlines_comparison_overlay_img"]
-        frame.segmentation_centerline_sig = segmentation_sig
-        frame.measurement_centerline_sig = measurement_sig
-        frame.segmentation_sig = None
-        frame.measurement_sig = None
         return PipelineOutcome(True)
 
     def ensure_segmentation(self, frame: Frame, config: AppConfig, *, invert_input: bool) -> PipelineOutcome:
@@ -805,11 +731,10 @@ class PipelineController:
         ):
             return PipelineOutcome(True)
 
+        self.invalidate_segmentation(frame)
         centerline_state = self.ensure_segmentation_centerlines(frame, config, invert_input=invert_input)
         if not centerline_state.ok:
             return centerline_state
-
-        self.invalidate_segmentation(frame, invalidate_centerlines=False)
 
         try:
             outputs = self.segment_stage(
@@ -834,7 +759,6 @@ class PipelineController:
             sampling_overlay=frame.sampling_overlay,
             labels_rgb_cache=outputs["labels_rgb_cache"],
             segmentation_outline_cache=outputs["segmentation_outline_cache"],
-            invalidate_measurements=True,
         )
         frame.segmentation_sig = target_sig
         return PipelineOutcome(True)
@@ -847,17 +771,22 @@ class PipelineController:
         *,
         invert_input: bool,
     ) -> PipelineOutcome:
+        target_sig = self.measurement_signature(frame, config, sample_props, invert_input=invert_input)
+        if (
+            target_sig is not None
+            and frame.has_measurements
+            and frame.fiber_summary is not None
+            and frame.measurement_sig == target_sig
+        ):
+            return PipelineOutcome(True)
+
         segmentation_ready = self.ensure_segmentation(frame, config, invert_input=invert_input)
         if not segmentation_ready.ok:
             return segmentation_ready
         if self.analyzer is None:
             return PipelineOutcome(False, info_title="No analyzer", info_message="Measurement data unavailable.")
-
-        target_sig = self.measurement_signature(frame, config, sample_props, invert_input=invert_input)
         if target_sig is None:
             return PipelineOutcome(False)
-        if frame.has_measurements and frame.fiber_summary is not None and frame.measurement_sig == target_sig:
-            return PipelineOutcome(True)
 
         self.invalidate_measurements(frame)
         if not self.analyzer.get_measurement_centerline_segments():

@@ -87,7 +87,6 @@ class ExportService:
             return None
 
         frame_result = current_frame.snapshot(
-            include_measurements=True,
             frame_id=str(current_frame.frame_id),
             z_index=int(current_frame.z_index),
         )

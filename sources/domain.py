@@ -449,8 +449,6 @@ class Frame:
     has_segmentation: bool = False
     has_measurements: bool = False
     prediction_sig: Optional[str] = None
-    segmentation_centerline_sig: Optional[str] = None
-    measurement_centerline_sig: Optional[str] = None
     segmentation_sig: Optional[str] = None
     measurement_sig: Optional[str] = None
     error_message: Optional[str] = None
@@ -523,11 +521,8 @@ class Frame:
         self.orig_img_scaled = None
         self.scale_factor = 1.0
         self.prediction_sig = None
-        self.segmentation_centerline_sig = None
-        self.measurement_centerline_sig = None
-        self.segmentation_sig = None
-        self.measurement_sig = None
         self.error_message = None
+        self.clear_segmentation()
 
     def clear_segmentation(self) -> None:
         self.has_segmentation = False
@@ -542,10 +537,8 @@ class Frame:
         self.pores_overlay = None
         self.labels_rgb_cache = (None, None)
         self.segmentation_outline_cache = (None, None)
-        self.segmentation_centerline_sig = None
-        self.measurement_centerline_sig = None
         self.segmentation_sig = None
-        self.measurement_sig = None
+        self.clear_measurements()
 
     def clear_measurements(self) -> None:
         self.has_measurements = False
@@ -577,7 +570,6 @@ class Frame:
         lapl_img: Optional[np.ndarray],
         orig_img_scaled: Optional[np.ndarray],
         scale_factor: float,
-        invalidate_downstream: bool = True,
     ) -> None:
         self.dt = dt
         self.gx = gx
@@ -590,9 +582,7 @@ class Frame:
         self.scale_factor = float(scale_factor)
         self.has_prediction = self.dt is not None
         self.error_message = None
-        if invalidate_downstream:
-            self.clear_segmentation()
-            self.clear_measurements()
+        self.clear_segmentation()
 
     def set_segmentation_outputs(
         self,
@@ -605,7 +595,6 @@ class Frame:
         sampling_overlay: Optional[np.ndarray] = None,
         labels_rgb_cache: Optional[tuple[Optional[int], Optional[np.ndarray]]] = None,
         segmentation_outline_cache: Optional[tuple[Optional[int], Optional[np.ndarray]]] = None,
-        invalidate_measurements: bool = True,
     ) -> None:
         self.labels_2d = labels_2d
         self.segmentation_centerlines_overlay_img = segmentation_centerlines_overlay_img
@@ -623,8 +612,7 @@ class Frame:
             self.segmentation_outline_cache = (None, None)
         self.has_segmentation = self.labels_2d is not None
         self.error_message = None
-        if invalidate_measurements:
-            self.clear_measurements()
+        self.clear_measurements()
 
     def set_measurement_outputs(
         self,
@@ -662,7 +650,6 @@ class Frame:
     def snapshot(
         self,
         *,
-        include_measurements: bool = True,
         frame_id: Optional[str] = None,
         z_index: Optional[int] = None,
     ) -> "Frame":
@@ -707,8 +694,6 @@ class Frame:
             clone.frame_id = str(frame_id)
         if z_index is not None:
             clone.z_index = int(z_index)
-        if not include_measurements:
-            clone.clear_measurements()
         return clone
 
 

@@ -207,7 +207,6 @@ class CliRunner:
 
             frame_results.append(
                 frame.snapshot(
-                    include_measurements=True,
                     frame_id=frame_id,
                     z_index=z_index,
                 )

@@ -315,7 +315,8 @@ If you use Fiberpose in scientific work, please cite the associated manuscript/p
 
 ## License
 
-This project is released under the Apache License 2.0. See `LICENSE` for details.
+Fiberpose is free software licensed under the GNU General Public License,
+version 3 only (`GPL-3.0-only`). See `LICENSE` for details.
 
 ---
 

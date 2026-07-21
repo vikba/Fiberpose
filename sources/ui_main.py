@@ -2,7 +2,6 @@
 
 import os
 import math
-import json
 from datetime import datetime
 from typing import Any, Dict
 import numpy as np
@@ -134,8 +133,6 @@ class MainWindow(QMainWindow):
         self._is_batch_processing: bool = False
         self._image_batch: ImageBatch | None = None
         self._batch_result: BatchResult | None = None
-        self._batch_results_have_measurements: bool = False
-        self._last_batch_measurements_signature: str | None = None
         self._batch_total_samples: int = 0
         self._batch_processed_samples: int = 0
         self._batch_collects_measurements: bool = False
@@ -412,8 +409,8 @@ class MainWindow(QMainWindow):
         self._pipeline_service.invalidate_prediction(self.current_frame, analyzer=self.analyzer)
         self._invalidate_measurements()
 
-    def _invalidate_segmentation(self, invalidate_centerlines: bool = False) -> None:
-        self._pipeline_service.invalidate_segmentation(self.current_frame, invalidate_centerlines=invalidate_centerlines)
+    def _invalidate_segmentation(self) -> None:
+        self._pipeline_service.invalidate_segmentation(self.current_frame)
         self._invalidate_measurements()
 
     def _invalidate_measurements(self) -> None:
@@ -668,64 +665,28 @@ class MainWindow(QMainWindow):
     def _urls_are_loadable(self, urls) -> bool:
         return any(u.isLocalFile() and self._is_loadable_path(u.toLocalFile()) for u in urls)
 
-    def _current_batch_measurement_signature(self) -> str | None:
-        if self._image_batch is None:
-            return None
-
-        metadata = self._image_batch.metadata or {}
-        filenames = [str(v) for v in metadata.get("filenames", [])]
-        z_indices = [int(v) for v in metadata.get("z_indices", [])]
-        spacing_zyx = tuple(float(v) for v in self.sample_props.spacing_zyx())
-        payload = {
-            "batch": {
-                "source_type": str(metadata.get("source_type", "")),
-                "source_path": str(metadata.get("source_path", "")),
-                "frame_count": int(len(self._image_batch)),
-                "filenames_head": filenames[:5],
-                "filenames_tail": filenames[-5:] if len(filenames) > 5 else [],
-                "z_head": z_indices[:5],
-                "z_tail": z_indices[-5:] if len(z_indices) > 5 else [],
-            },
-            "config": {
-                "model_path": str(self.config.model_path),
-                "scale_label": str(self.config.scale_label),
-                "max_angle_deg": float(self.config.max_angle_deg),
-                "strict_centerlines": bool(self.config.strict_centerlines),
-                "keep_segments_without_measurement_centerlines": bool(
-                    self.config.keep_segments_without_measurement_centerlines
-                ),
-                "segmentation_mode": str(self.config.segmentation_mode),
-                "merge_expansion_factor": float(self.config.merge_expansion_factor),
-                "segmentation_expansion_factor": float(self.config.segmentation_expansion_factor),
-                "seg_threshold": int(self.config.seg_threshold),
-                "sample_spacing": float(self.config.sample_spacing),
-            },
-            "runtime": {
-                "invert_input": bool(self.chb_invert.isChecked()),
-            },
-            "sample_properties": {
-                "spacing_zyx": spacing_zyx,
-                "unit": str(self.sample_props.unit),
-            },
-        }
-        return json.dumps(payload, sort_keys=True, default=str)
-
     def _batch_measurements_match_current_settings(self) -> bool:
         if self._batch_result is None or self._image_batch is None:
             return False
-        if not self._batch_results_have_measurements:
-            return False
         if len(self._batch_result.frame_results) != len(self._image_batch):
             return False
-        if self._last_batch_measurements_signature != self._current_batch_measurement_signature():
-            return False
-        return True
+        invert_input = bool(self.chb_invert.isChecked())
+        return all(
+            frame.has_measurements
+            and frame.fiber_summary is not None
+            and frame.measurement_sig
+            == self._pipeline_service.measurement_signature(
+                frame,
+                self.config,
+                self.sample_props,
+                invert_input=invert_input,
+            )
+            for frame in self._batch_result.frame_results
+        )
 
     def _set_image_batch(self, image_batch: ImageBatch):
         self._image_batch = image_batch
         self._batch_result = None
-        self._batch_results_have_measurements = False
-        self._last_batch_measurements_signature = None
         self._current_z_index = 0
         self._configure_z_scroll(len(image_batch))
         self._set_current_slice(0, update_view=True)
@@ -1259,7 +1220,6 @@ class MainWindow(QMainWindow):
                     )
                 else:
                     seeded_frame = cached_frame.snapshot(
-                        include_measurements=True,
                         frame_id=str(frame_id),
                         z_index=int(z_index),
                     )
@@ -1270,7 +1230,6 @@ class MainWindow(QMainWindow):
                 if not ok and not self.current_frame.error_message:
                     self.current_frame.fail("Processing failed.")
                 return self.current_frame.snapshot(
-                    include_measurements=True,
                     frame_id=str(frame_id),
                     z_index=int(z_index),
                 )
@@ -1297,12 +1256,6 @@ class MainWindow(QMainWindow):
 
         # Publish batch outputs back into the GUI and refresh the active slice.
         self._batch_result = batch_result
-        measurement_sig = self._current_batch_measurement_signature()
-        measurements_valid = measurement_sig is not None and all(
-            fr.has_measurements for fr in batch_result.frame_results
-        )
-        self._batch_results_have_measurements = measurements_valid
-        self._last_batch_measurements_signature = measurement_sig if measurements_valid else None
         self._set_current_slice(self._current_z_index, update_view=True)
         self._refresh_save_actions()
         logger.info(
@@ -2072,7 +2025,7 @@ class MainWindow(QMainWindow):
         if flags.prediction_changed:
             self._invalidate_prediction()
         elif flags.segmentation_changed:
-            self._invalidate_segmentation(invalidate_centerlines=bool(flags.invalidate_centerlines))
+            self._invalidate_segmentation()
         elif flags.measurements_changed:
             self._invalidate_measurements()
 

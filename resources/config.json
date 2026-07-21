@@ -1,7 +1,7 @@
 {
-    "model_path": "checkpoints/R88_fpwnet.onnx",
+    "model_path": "checkpoints/R92_best.onnx",
     "use_gpu": true,
-    "scale_label": "4x",
+    "scale_label": "1x",
     "max_angle_deg": 30.0,
     "ridge_sigma": 1.0,
     "ridge_low": 0.15,
@@ -12,7 +12,7 @@
     "strict_centerlines": false,
     "keep_segments_without_measurement_centerlines": false,
     "segmentation_mode": "radial_expansion",
-    "merge_expansion_factor": 0.5,
+    "merge_expansion_factor": 0.3,
     "segmentation_expansion_factor": 1.0,
     "seg_threshold": 1,
     "min_segment_foreground_mean": 0.6,
@@ -24,10 +24,10 @@
         0.35
     ],
     "save_options": {
-        "dt": false,
+        "dt": true,
         "foreground": false,
         "labels": false,
-        "overlay": true,
+        "overlay": false,
         "diameters": false,
         "orientations": false,
         "outline": false,

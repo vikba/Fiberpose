@@ -521,7 +521,6 @@ class InvalidationFlags:
     prediction_changed: bool = False
     segmentation_changed: bool = False
     measurements_changed: bool = False
-    invalidate_centerlines: bool = False
     sample_properties_changed: bool = False
 
 
@@ -652,20 +651,10 @@ class UiConfigBinder:
             )
             or prev_threshold != int(config.seg_threshold)
         )
-        invalidate_centerlines = (
-            ridge_sigma_changed
-            or ridge_low_changed
-            or ridge_high_changed
-            or min_fragment_centerline_length_changed
-            or prev_strict != bool(config.strict_centerlines)
-            or not math.isclose(prev_merge_expansion_factor, float(config.merge_expansion_factor), rel_tol=1e-9, abs_tol=1e-9)
-        )
-
         flags = InvalidationFlags(
             prediction_changed=prediction_changed,
             segmentation_changed=segmentation_changed,
             measurements_changed=False,
-            invalidate_centerlines=invalidate_centerlines,
         )
         return config, flags
 
