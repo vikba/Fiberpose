@@ -1137,10 +1137,6 @@ class FiberAnalyzer_2D:
             )
 
             for i, (y, x) in enumerate(samples_yx):
-                r0 = float(_bilinear(dt, float(y), float(x)))
-                if r0 <= 0:
-                    continue
-
                 ny, nx = float(normals_yx[i, 0]), float(normals_yx[i, 1])
                 norm = float(np.hypot(ny, nx))
                 if norm == 0.0 or not np.isfinite(norm):
@@ -1150,13 +1146,9 @@ class FiberAnalyzer_2D:
 
                 angle_deg = _canon_angle(nx, -ny)
 
-                x1 = x - nx * (r0 / 2.0)
-                y1 = y - ny * (r0 / 2.0)
-                x2 = x + nx * (r0 / 2.0)
-                y2 = y + ny * (r0 / 2.0)
-                v1 = float(_bilinear(dt, float(y1), float(x1)))
-                v2 = float(_bilinear(dt, float(y2), float(x2)))
-                r = float((v1 + v2 + r0) / 2.0)
+                v1 = float(_bilinear(dt, y - ny, x - nx))
+                v2 = float(_bilinear(dt, y + ny, x + nx))
+                r = 0.5 * (v1 + v2) + 1.0
                 if r <= 0 or not np.isfinite(r):
                     continue
 

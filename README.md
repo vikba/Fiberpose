@@ -28,7 +28,7 @@ Fiberpose follows a simple geometric pipeline:
 2. Centerlines are extracted as ridges of this field.
 3. Fiber instances are separated using centerline markers and distance-transform geometry.
 4. Measurements are sampled along centerlines:
-   - local diameter is estimated from the distance-transform value,
+   - local radius is one pixel plus the mean distance-transform value sampled one pixel away on each side,
    - local orientation is estimated from the distance field gradients,
    - pore sizes are estimated from the distance transform of the void space.
 
