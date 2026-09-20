@@ -107,7 +107,7 @@ python run.py --gui
 The GUI supports:
 
 - single image, folder, and stack loading;
-- raw image, distance-transform, Laplacian, centerline, segmentation, overlay, pore, diameter, and orientation views;
+- raw image, distance-transform, gradient-magnitude, Laplacian, centerline, segmentation, overlay, pore, diameter, and orientation views;
 - model selection and CPU/GPU toggle;
 - scalebar calibration;
 - DT profile plotting;

@@ -152,7 +152,7 @@ class MainWindow(QMainWindow):
         self._profile_dialog: PlotProfileDialog | None = None
 
         # Menu & actions: updated UI element names (rb_mask1_cent -> rb_centerlines; rb_mask2_segm -> rb_segmentation;
-        # sp_threshold1 -> sp_max_cent_angle; sp_threshold2 -> sp_segm_threshold)
+        # sp_threshold1 -> sp_max_cent_angle; sp_threshold2 -> sp_grad_magnitude_threshold)
         self.action_load_image.triggered.connect(self.load_original)
         self.action_save_masks_predictions.triggered.connect(self.save_predictions)
         self.action_save_measurements.triggered.connect(self.save_measurements)
@@ -244,7 +244,7 @@ class MainWindow(QMainWindow):
         self.rb_ridge.toggled.connect(self.sync_ui_to_config)
 
         # Spinboxes
-        self.sp_segm_threshold.valueChanged.connect(self.sync_ui_to_config)
+        self.sp_grad_magnitude_threshold.valueChanged.connect(self.sync_ui_to_config)
 
         # Line Edits (Text boxes)
         # Note: We use `editingFinished` instead of `textChanged`.

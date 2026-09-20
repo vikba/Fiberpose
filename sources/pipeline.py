@@ -313,12 +313,11 @@ class PipelineController:
     @staticmethod
     def _segmentation_params(config: AppConfig) -> tuple[str, dict[str, Any]]:
         mode = str(config.segmentation_mode or "watershed")
-        thr_u8 = int(config.seg_threshold)
         if mode not in ("watershed", "radial_expansion"):
             mode = "watershed"
         params = (
             {
-                "threshold_u8": thr_u8,
+                "gradient_threshold": float(config.watershed_grad_threshold),
                 "min_segment_foreground_mean": float(config.min_segment_foreground_mean),
             }
             if mode == "watershed"

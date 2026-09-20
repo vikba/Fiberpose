@@ -36,6 +36,8 @@ class AppConfig:
     segmentation_mode: str = "watershed"
     merge_expansion_factor: float = 0.7
     segmentation_expansion_factor: float = 1.0
+    watershed_grad_threshold: float = 0.8
+    # Retained for DT-based void/pore analysis; watershed uses the gradient threshold above.
     seg_threshold: int = 1
     min_segment_foreground_mean: float = 0.5
     

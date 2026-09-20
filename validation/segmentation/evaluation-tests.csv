@@ -1,0 +1,11 @@
+reference,comparison,metric,n_pairs,n_excluded,mean_difference,ci95_low,ci95_high,test,statistic,df,p_value,p_holm,significant_0_05
+Fiberpose,Cellpose-SAM,recall,6,0,0.174,0.047,0.301,paired_t_two_sided,3.536,5,0.0166,0.15,False
+Fiberpose,Cellpose-SAM,precision,6,0,0.087,-0.122,0.297,paired_t_two_sided,1.072,5,0.333,1,False
+Fiberpose,Cellpose-SAM,iou,6,0,-0.013,-0.060,0.035,paired_t_two_sided,-0.677,5,0.529,1,False
+Fiberpose,Cellpose-SAM,nsd,6,0,-0.033,-0.152,0.087,paired_t_two_sided,-0.702,5,0.514,1,False
+Fiberpose,Cellpose-SAM,hd95,6,0,2.466,-10.324,15.255,paired_t_two_sided,0.496,5,0.641,1,False
+Fiberpose,SAM2,recall,6,0,0.061,-0.117,0.240,paired_t_two_sided,0.888,5,0.415,1,False
+Fiberpose,SAM2,precision,6,0,0.619,0.552,0.687,paired_t_two_sided,23.551,5,2.57e-06,2.57e-05,True
+Fiberpose,SAM2,iou,6,0,0.013,-0.085,0.110,paired_t_two_sided,0.329,5,0.756,1,False
+Fiberpose,SAM2,nsd,6,0,0.012,-0.143,0.167,paired_t_two_sided,0.194,5,0.854,1,False
+Fiberpose,SAM2,hd95,6,0,-7.089,-21.011,6.833,paired_t_two_sided,-1.309,5,0.247,1,False

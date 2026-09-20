@@ -215,7 +215,14 @@ class ConfigEditorDialog(QtWidgets.QDialog):
             "max": 5.0,
             "step": 0.05,
         },
-        "seg_threshold": {"label": "Segmentation threshold", "kind": "int", "min": 0, "max": 255, "step": 1},
+        "watershed_grad_threshold": {
+            "label": "Watershed gradient threshold",
+            "kind": "float",
+            "min": 0.0,
+            "max": 5.0,
+            "step": 0.05,
+        },
+        "seg_threshold": {"label": "Pore DT threshold", "kind": "int", "min": 0, "max": 255, "step": 1},
         "sample_spacing": {"label": "Sample spacing (px)", "kind": "float", "min": 0.1, "max": 1e9, "step": 1.0},
         "grad_quality_points": {
             "label": "Grad quality points (JSON list)",
@@ -599,7 +606,7 @@ class UiConfigBinder:
         prev_mode = str(config.segmentation_mode)
         prev_merge_expansion_factor = float(config.merge_expansion_factor)
         prev_segmentation_expansion_factor = float(config.segmentation_expansion_factor)
-        prev_threshold = int(config.seg_threshold)
+        prev_gradient_threshold = float(config.watershed_grad_threshold)
 
         config.model_path = window.cb_model.currentText().strip()
         config.use_gpu = window.chb_usegpu.isChecked()
@@ -618,7 +625,7 @@ class UiConfigBinder:
         else:
             config.segmentation_mode = "watershed"
 
-        config.seg_threshold = int(window.sp_segm_threshold.value())
+        config.watershed_grad_threshold = float(window.sp_grad_magnitude_threshold.value())
         config.merge_expansion_factor = float(config.merge_expansion_factor)
         config.segmentation_expansion_factor = float(config.segmentation_expansion_factor)
 
@@ -649,7 +656,12 @@ class UiConfigBinder:
                 rel_tol=1e-9,
                 abs_tol=1e-9,
             )
-            or prev_threshold != int(config.seg_threshold)
+            or not math.isclose(
+                prev_gradient_threshold,
+                float(config.watershed_grad_threshold),
+                rel_tol=1e-9,
+                abs_tol=1e-9,
+            )
         )
         flags = InvalidationFlags(
             prediction_changed=prediction_changed,
@@ -690,9 +702,9 @@ class UiConfigBinder:
         window.rb_watershed.blockSignals(False)
         window.rb_ridge.blockSignals(False)
 
-        window.sp_segm_threshold.blockSignals(True)
-        window.sp_segm_threshold.setValue(int(config.seg_threshold))
-        window.sp_segm_threshold.blockSignals(False)
+        window.sp_grad_magnitude_threshold.blockSignals(True)
+        window.sp_grad_magnitude_threshold.setValue(float(config.watershed_grad_threshold))
+        window.sp_grad_magnitude_threshold.blockSignals(False)
 
         window._update_strict_checkbox_state()
 
@@ -718,6 +730,7 @@ class ViewMode(str, Enum):
     MEASUREMENTS_OVERLAY = "Measurements overlay"
     GX = "gx"
     GY = "gy"
+    GRADIENT_MAGNITUDE = "Gradient magnitude"
     DT_GRAD_ERROR = "DT grad error"
 
 
@@ -796,6 +809,16 @@ class ViewRenderer:
             frame.labels_rgb_cache = (current_id, cache_img)
         return cache_img
 
+    @staticmethod
+    def _gradient_magnitude_view(frame: Frame) -> np.ndarray | None:
+        if frame.gx is None or frame.gy is None:
+            return None
+        gx = np.asarray(frame.gx, dtype=np.float32)
+        gy = np.asarray(frame.gy, dtype=np.float32)
+        if gx.shape != gy.shape:
+            return None
+        return to_uint8_for_view(np.hypot(gx, gy))
+
     def _segmentation_outline_view(self, frame: Frame) -> np.ndarray | None:
         labels = frame.labels_2d
         if labels is None:
@@ -825,6 +848,7 @@ class ViewRenderer:
             ViewMode.SAMPLING.value: lambda: frame.sampling_overlay if frame.sampling_overlay is not None else ensure_rgb_u8(frame.dt_u8),
             ViewMode.GX.value: lambda: to_uint8_for_view(frame.gx),
             ViewMode.GY.value: lambda: to_uint8_for_view(frame.gy),
+            ViewMode.GRADIENT_MAGNITUDE.value: lambda: self._gradient_magnitude_view(frame),
             ViewMode.DT_GRAD_ERROR.value: lambda: self._grad_error_builder(frame),
         }
 

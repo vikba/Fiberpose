@@ -1,0 +1,7 @@
+sample,reference,prediction,gt_total_count,gt_count,gt_excluded_count,prediction_count,tp,fp,fn,recall,precision,iou,nsd,hd95
+03G_m05-1,GT/03G_m05-1.png,SAM2/03G_m05-1_raw_proposals.tiff,49,21,28,2239,20,2219,1,0.952,0.009,0.949,0.892,15.226
+100x_004_2-1,GT/100x_004_2-1.png,SAM2/100x_004_2-1_raw_proposals.tiff,20,20,0,384,12,372,8,0.600,0.031,0.750,0.496,72.586
+15__gelatin_fibers-1,GT/15__gelatin_fibers-1.png,SAM2/15__gelatin_fibers-1_raw_proposals.tiff,61,34,27,2121,34,2087,0,1.000,0.016,0.956,0.924,12.269
+53g_m07-1,GT/53g_m07-1.png,SAM2/53g_m07-1_raw_proposals.tiff,26,18,8,1486,18,1468,0,1.000,0.012,0.948,0.970,3.647
+Mono_m10-1,GT/Mono_m10-1.png,SAM2/Mono_m10-1_raw_proposals.tiff,145,82,63,2289,81,2208,1,0.988,0.035,0.896,0.813,13.944
+sn_50_2-1,GT/sn_50_2-1.png,SAM2/sn_50_2-1_raw_proposals.tiff,58,56,2,2539,51,2488,5,0.911,0.020,0.876,0.836,26.472

@@ -697,7 +697,7 @@ class FiberAnalyzer_2D:
         Run segmentation from cached prediction/centerline state.
 
         Supported modes:
-            - watershed: params include {"threshold_u8": int}
+            - watershed: params include {"gradient_threshold": float}
             - radial_expansion: params include {"expansion_factor": float}
         """
         if self._dt_u8 is None:
@@ -707,11 +707,11 @@ class FiberAnalyzer_2D:
         mode_name = str(mode or "watershed").strip().lower()
 
         if mode_name == "watershed":
-            thr_u8 = int(opts.get("threshold_u8", 128))
+            gradient_threshold = float(opts.get("gradient_threshold", 0.8))
             if self._segmentation_markers is None:
                 raise ValueError("Centerlines not available. Call process_centerlines first.")
             labels = self.segment_watershed(
-                thr_u8=thr_u8,
+                gradient_threshold=gradient_threshold,
                 min_segment_foreground_mean=float(opts.get("min_segment_foreground_mean", 0.5)),
             )
         elif mode_name == "radial_expansion":
@@ -738,21 +738,29 @@ class FiberAnalyzer_2D:
 
     def segment_watershed(
         self,
-        thr_u8: int,
+        gradient_threshold: float,
         min_segment_foreground_mean: float = 0.5,
     ) -> np.ndarray:
         """
-        Run watershed segmentation using cached DT and markers.
+        Run watershed using a gradient-magnitude mask plus dilated centerlines.
         """
 
         if self._dt_u8 is None:
             raise ValueError("Distance transform not available. Call predict_dt first.")
+        if self._gx is None or self._gy is None:
+            raise ValueError("Gradient fields are not available. Call predict_dt first.")
         if self._segmentation_markers is None or self._segmentation_markers.max() == 0:
             return np.zeros_like(self._dt_u8, dtype=np.uint16)
 
         logger.info("Running watershed segmentation")
 
-        labels = self.watershed_dt_segmentation(self._dt_u8, self._segmentation_markers, thr_u8=thr_u8)
+        labels = self.watershed_gradient_mask_segmentation(
+            self._dt_u8,
+            self._gx,
+            self._gy,
+            self._segmentation_markers,
+            gradient_threshold=gradient_threshold,
+        )
         labels = self._prune_labels_by_foreground(
             labels,
             foreground_prob=self._foreground_prob,
@@ -763,17 +771,68 @@ class FiberAnalyzer_2D:
         return labels
     
     @staticmethod
-    def watershed_dt_segmentation(dt_u8: np.ndarray, markers: np.ndarray, thr_u8: int) -> np.ndarray:
+    def watershed_gradient_mask_segmentation(
+        dt_u8: np.ndarray,
+        gx: np.ndarray,
+        gy: np.ndarray,
+        markers: np.ndarray,
+        gradient_threshold: float,
+    ) -> np.ndarray:
         """
-        Watershed segmentation on dt implementation
+        Watershed on inverted DT, constrained by thresholded gradient magnitude.
+
+        Two dilations of the detected centerline markers are added to the
+        threshold mask. The combined mask is then eroded and dilated before
+        watershed.
         """
 
-        t = float(thr_u8) / 255.0
+        dt_u8 = np.asarray(dt_u8)
+        gx = np.asarray(gx, dtype=np.float32)
+        gy = np.asarray(gy, dtype=np.float32)
+        markers = np.asarray(markers)
+        if gx.shape != dt_u8.shape or gy.shape != dt_u8.shape or markers.shape != dt_u8.shape:
+            raise ValueError("DT, gradients, and markers must have matching shapes.")
+
+        threshold = float(gradient_threshold)
+        if not np.isfinite(threshold) or threshold < 0.0:
+            raise ValueError("Gradient magnitude threshold must be finite and non-negative.")
+
         dt_norm = dt_u8.astype(np.float32) / 255.0
-        fiber_region_mask = dt_norm >= t
+        grad_magnitude = np.hypot(gx, gy)
+        fiber_region_mask = np.isfinite(grad_magnitude) & (grad_magnitude >= threshold)
+
+        morphology_kernel = np.ones((3, 3), dtype=np.uint8)
+        centerline_mask = (markers > 0).astype(np.uint8)
+        dilated_centerlines = cv2.dilate(
+            centerline_mask,
+            morphology_kernel,
+            iterations=2,
+        ).astype(bool)
+        fiber_region_mask |= dilated_centerlines
+        fiber_region_mask_u8 = fiber_region_mask.astype(np.uint8)
+        fiber_region_mask_u8 = cv2.erode(
+            fiber_region_mask_u8,
+            morphology_kernel,
+            iterations=1,
+        )
+        fiber_region_mask = cv2.dilate(
+            fiber_region_mask_u8,
+            morphology_kernel,
+            iterations=1,
+        ).astype(bool)
+
         elev = 1.0 - dt_norm
         if not fiber_region_mask.any():
             return np.zeros_like(dt_u8, dtype=np.uint16)
+        marker_pixels = markers > 0
+        logger.info(
+            "Watershed gradient mask: threshold=%.4f mask=%d/%d marker_pixels=%d/%d",
+            threshold,
+            int(np.count_nonzero(fiber_region_mask)),
+            int(fiber_region_mask.size),
+            int(np.count_nonzero(fiber_region_mask & marker_pixels)),
+            int(np.count_nonzero(marker_pixels)),
+        )
         conn8 = np.ones((3, 3), dtype=bool)
         labels = watershed(
             elev,

@@ -5,7 +5,7 @@
 - Covers GUI and CLI startup, segmentation, measurement, and batch execution/export.
 
 ## Runtime Modes and Flags
-- `segmentation.mode=watershed` calls `FiberAnalyzer_2D.segment(mode="watershed", params={"threshold_u8": ...})`.
+- `segmentation.mode=watershed` calls `FiberAnalyzer_2D.segment(mode="watershed", params={"gradient_threshold": ...})`.
 - `segmentation.mode=radial_expansion` calls `FiberAnalyzer_2D.segment(mode="radial_expansion", params={"expansion_factor": ...})`.
 - `merge_expansion_factor` controls overlap-based ridge-fragment merging (default `0.7`).
 - `segmentation_expansion_factor` controls radial label expansion (default `1.0`).
@@ -72,7 +72,7 @@
 7. Copy analyzer prediction caches into `Frame` via `set_prediction_outputs(...)`.
 8. Segment by mode through unified dispatch:
 - `FiberAnalyzer_2D.segment(mode=..., params=...)`
-- watershed uses threshold_u8
+- watershed thresholds the cached DT gradient magnitude, unions two 3x3 dilations of detected centerline markers, then applies erode -> dilate to the combined mask
 - radial_expansion uses the precomputed expanded ridge labels
 - foreground, when available, prunes labels after pure-DT segmentation
 9. Build label colors + overlay and store via `set_segmentation_outputs(...)`.
