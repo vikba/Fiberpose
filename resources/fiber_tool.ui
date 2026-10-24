@@ -15,6 +15,9 @@
   </property>
   <widget class="QWidget" name="centralwidget">
    <layout class="QHBoxLayout" name="horizontalLayout">
+    <property name="topMargin">
+     <number>18</number>
+    </property>
     <item>
      <widget class="QFrame" name="frame">
       <property name="minimumSize">
@@ -33,6 +36,18 @@
        <enum>QFrame::NoFrame</enum>
       </property>
       <layout class="QVBoxLayout" name="leftLayout">
+       <property name="leftMargin">
+        <number>0</number>
+       </property>
+       <property name="topMargin">
+        <number>0</number>
+       </property>
+       <property name="rightMargin">
+        <number>0</number>
+       </property>
+       <property name="bottomMargin">
+        <number>0</number>
+       </property>
        <item>
         <layout class="QHBoxLayout" name="loadRow">
          <item>

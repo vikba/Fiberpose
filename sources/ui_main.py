@@ -174,6 +174,13 @@ class MainWindow(QMainWindow):
 
         # Remove connection of radiobutton signals and instead hook up the combobox change
         self.cb_view.currentIndexChanged.connect(self.refresh_view)
+        self.cb_view.setMinimumHeight(self.btn_load_image.sizeHint().height())
+        # Units belong to the plots: hidden with them, but keep the row's space so plots don't shift.
+        for widget in (self.label_units, self.cb_units):
+            policy = widget.sizePolicy()
+            policy.setRetainSizeWhenHidden(True)
+            widget.setSizePolicy(policy)
+        self._clear_results()
 
         # Set default model
         self._init_model_selector()
@@ -421,9 +428,7 @@ class MainWindow(QMainWindow):
 
     def _invalidate_measurements(self) -> None:
         self._pipeline_service.invalidate_measurements(self.current_frame)
-        self.text_edit2.clear()
-        self.graph_diameters.clear()
-        self.graph_angles.clear()
+        self._clear_results()
         self._refresh_save_actions()
 
     def _ensure_prediction_ready(self) -> bool:
@@ -1664,6 +1669,8 @@ class MainWindow(QMainWindow):
 
     def _style_plotwidget(self, pw: pg.PlotWidget, title: str, xlab: str, ylab: str):
         pw.setBackground("w")
+        pw.showAxis("bottom")
+        pw.showAxis("left")
         pw.clear()
         pw.setTitle(title, color="k", size="12pt")
         pw.showGrid(x=True, y=True, alpha=0.25)
@@ -1672,6 +1679,9 @@ class MainWindow(QMainWindow):
         pw.setAntialiasing(True)
 
     def _update_distributions_pyqtgraph(self, units_label: str):
+        self.text_edit2.setVisible(True)
+        self.label_units.setVisible(True)
+        self.cb_units.setVisible(True)
         # Thickness
         diameters = (
             self.current_frame.thickness_units
@@ -1785,9 +1795,7 @@ class MainWindow(QMainWindow):
                 z_index=current_z_index,
                 orig_img=current_orig,
             )
-            self.text_edit2.clear()
-            self.graph_diameters.clear()
-            self.graph_angles.clear()
+            self._clear_results()
             return
 
         applied_frame = frame_result.snapshot()
@@ -1810,9 +1818,7 @@ class MainWindow(QMainWindow):
             self.text_edit2.setPlainText(info_text)
             self._update_distributions_pyqtgraph(units_label)
         else:
-            self.text_edit2.clear()
-            self.graph_diameters.clear()
-            self.graph_angles.clear()
+            self._clear_results()
 
         if self.current_frame.labels_2d is not None:
             labels_rgb = labels_to_color(self.current_frame.labels_2d)
@@ -1888,13 +1894,8 @@ class MainWindow(QMainWindow):
         self._remove_profile_items()
         self.btn_reset_view.hide()
 
-        # ---- charts (pyqtgraph) ----
-        self.graph_diameters.clear()
-        self.graph_diameters.setTitle("")
-        self.graph_diameters.showGrid(x=False, y=False)
-        self.graph_angles.clear()
-        self.graph_angles.setTitle("")
-        self.graph_angles.showGrid(x=False, y=False)
+        # ---- results (stats + pyqtgraph charts) ----
+        self._clear_results()
 
         # ---- UI actions / state ----
         self._pixitem.setPixmap(QtGui.QPixmap())
@@ -2005,6 +2006,19 @@ class MainWindow(QMainWindow):
         self._ui_binder.sync_config_to_ui(self, self.config)
 
     # ------------------- Panel helpers -------------------
+
+    def _clear_results(self) -> None:
+        """Keep the results strip reserved but visually empty until measurements exist."""
+        self.text_edit2.clear()
+        self.text_edit2.setVisible(False)
+        self.label_units.setVisible(False)
+        self.cb_units.setVisible(False)
+        for pw in (self.graph_diameters, self.graph_angles):
+            pw.clear()
+            pw.setTitle(None)
+            pw.hideAxis("bottom")
+            pw.hideAxis("left")
+            pw.setBackground(self.palette().color(QtGui.QPalette.ColorRole.Window))
 
     @staticmethod
     def _toggle_advanced(button: QToolButton, panel: QtWidgets.QWidget, checked: bool) -> None:
