@@ -160,6 +160,8 @@ class MainWindow(QMainWindow):
         self.btn_measure.clicked.connect(self.analyze_fibers)
         self.btn_set_scalebar.clicked.connect(self._on_set_scalebar_clicked)
         self.btn_plot_profile.clicked.connect(self._on_plot_profile_clicked)
+        self.btn_export_masks.clicked.connect(self._on_export_masks_clicked)
+        self.btn_save_png.clicked.connect(self._on_save_png_clicked)
         self.action_batch_processing.triggered.connect(self._on_batch_processing)
 
         # Collapsible "Advanced" sections start folded.
@@ -626,6 +628,16 @@ class MainWindow(QMainWindow):
         selected = menu.exec(global_pos)
         if selected is action_save:
             self._save_active_image_png()
+
+    def _on_export_masks_clicked(self) -> None:
+        if self.current_frame.orig_img is None:
+            return
+        self.save_predictions()
+
+    def _on_save_png_clicked(self) -> None:
+        if self.current_frame.orig_img is None:
+            return
+        self._save_active_image_png()
 
     def _save_active_image_png(self) -> None:
         """Save the full active image for the selected view mode as PNG."""
