@@ -860,7 +860,7 @@ class FiberAnalyzer_2D:
         )
         if missing_or_stale:
             raise ValueError("Centerlines not available. Call process_centerlines first.")
-        labels_i32 = np.asarray(self._radial_expansion_labels, dtype=np.int32, copy=False)
+        labels_i32 = np.asarray(self._radial_expansion_labels, dtype=np.int32)
         labels = np.clip(labels_i32, 0, np.iinfo(np.uint16).max).astype(np.uint16, copy=False)
         labels = self._prune_labels_by_foreground(
             labels,

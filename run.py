@@ -75,6 +75,9 @@ def _launch_gui() -> int:
 
     app = QApplication(sys.argv)
     apply_dark_palette(app)
+    font = app.font()
+    font.setPointSize(12)
+    app.setFont(font)
     win = MainWindow()
     win.show()
     return int(app.exec())
