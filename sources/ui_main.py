@@ -133,12 +133,7 @@ class MainWindow(QMainWindow):
         self._is_batch_processing: bool = False
         self._image_batch: ImageBatch | None = None
         self._batch_result: BatchResult | None = None
-        self._batch_total_samples: int = 0
-        self._batch_processed_samples: int = 0
-        self._batch_collects_measurements: bool = False
         self._current_z_index: int = 0
-        self._slice_label = QtWidgets.QLabel("")
-        self.statusbar.addPermanentWidget(self._slice_label)
         self.z_scroll.setEnabled(False)
         self.z_scroll.valueChanged.connect(self._on_z_scroll_changed)
         self._update_slice_label()
@@ -160,14 +155,34 @@ class MainWindow(QMainWindow):
         self.action_edit_config.triggered.connect(self._on_edit_config)
         self.action_load_config.triggered.connect(self._on_load_config)
 
+        self.btn_load_image.clicked.connect(self.load_original)
         self.btn_segment.clicked.connect(self.segment)
-        self.btn_analyze_2D.clicked.connect(self.analyze_fibers)
+        self.btn_measure.clicked.connect(self.analyze_fibers)
         self.btn_set_scalebar.clicked.connect(self._on_set_scalebar_clicked)
         self.btn_plot_profile.clicked.connect(self._on_plot_profile_clicked)
+        self.btn_export_masks.clicked.connect(self._on_export_masks_clicked)
+        self.btn_save_png.clicked.connect(self._on_save_png_clicked)
         self.action_batch_processing.triggered.connect(self._on_batch_processing)
+
+        # Collapsible "Advanced" sections start folded.
+        for button, panel in (
+            (self.btn_segmentation_advanced, self.widget_segmentation_advanced),
+            (self.btn_measurement_advanced, self.widget_measurement_advanced),
+        ):
+            panel.setVisible(False)
+            button.toggled.connect(
+                lambda checked, button=button, panel=panel: self._toggle_advanced(button, panel, checked)
+            )
 
         # Remove connection of radiobutton signals and instead hook up the combobox change
         self.cb_view.currentIndexChanged.connect(self.refresh_view)
+        self.cb_view.setMinimumHeight(self.btn_load_image.sizeHint().height())
+        # Units belong to the plots: hidden with them, but keep the row's space so plots don't shift.
+        for widget in (self.label_units, self.cb_units):
+            policy = widget.sizePolicy()
+            policy.setRetainSizeWhenHidden(True)
+            widget.setSizePolicy(policy)
+        self._clear_results()
 
         # Set default model
         self._init_model_selector()
@@ -234,7 +249,7 @@ class MainWindow(QMainWindow):
         # Combo boxes (Dropdowns)
         self.cb_model.currentIndexChanged.connect(self.sync_ui_to_config)
         self.cb_scale.currentIndexChanged.connect(self.sync_ui_to_config)
-        self.cb_units.currentTextChanged.connect(self.sync_ui_to_sample_properties)
+        self.cb_units.currentTextChanged.connect(self._on_units_changed)
 
         # Checkboxes and Radio Buttons
         self.chb_usegpu.toggled.connect(self.sync_ui_to_config)
@@ -415,9 +430,7 @@ class MainWindow(QMainWindow):
 
     def _invalidate_measurements(self) -> None:
         self._pipeline_service.invalidate_measurements(self.current_frame)
-        self.text_edit2.clear()
-        self.graph_diameters.clear()
-        self.graph_angles.clear()
+        self._clear_results()
         self._refresh_save_actions()
 
     def _ensure_prediction_ready(self) -> bool:
@@ -615,6 +628,16 @@ class MainWindow(QMainWindow):
         selected = menu.exec(global_pos)
         if selected is action_save:
             self._save_active_image_png()
+
+    def _on_export_masks_clicked(self) -> None:
+        if self.current_frame.orig_img is None:
+            return
+        self.save_predictions()
+
+    def _on_save_png_clicked(self) -> None:
+        if self.current_frame.orig_img is None:
+            return
+        self._save_active_image_png()
 
     def _save_active_image_png(self) -> None:
         """Save the full active image for the selected view mode as PNG."""
@@ -1127,19 +1150,6 @@ class MainWindow(QMainWindow):
     def _supported_image_extensions() -> set[str]:
         return {".tif", ".tiff", ".png", ".jpg", ".jpeg", ".bmp", ".webp"}
 
-    def _set_progress_bar(self, sample_progress_percent: float) -> None:
-        progress = float(max(0.0, min(100.0, sample_progress_percent)))
-        if self._is_batch_processing and self._batch_total_samples > 0:
-            current_sample_progress = progress / 100.0
-            processed = min(max(int(self._batch_processed_samples), 0), self._batch_total_samples)
-            total = float(self._batch_total_samples)
-            # Global batch progress: (processed samples + current sample progress) / total samples.
-            overall = ((processed + current_sample_progress) * 100.0) / total
-            overall = max(0.0, min(100.0, overall))
-            self.progress_bar.setValue(int(round(overall)))
-            return
-        self.progress_bar.setValue(int(round(progress)))
-
     def _run_batch_analysis(
         self,
         compute_measurements: bool,
@@ -1182,19 +1192,12 @@ class MainWindow(QMainWindow):
 
             def _on_started(total: int) -> None:
                 self.statusbar.showMessage(f"Processing 0/{total} images")
-                self._batch_total_samples = int(total)
-                self._batch_processed_samples = 0
-                self._batch_collects_measurements = bool(compute_measurements)
-                self._set_progress_bar(0.0)
 
             def _on_frame_started(index: int, total: int) -> None:
                 self.statusbar.showMessage(f"Processing {index + 1}/{total} images")
-                self._set_progress_bar(0.0)
                 QtWidgets.QApplication.processEvents()
 
-            def _on_frame_finished(processed: int, _total: int, _result: Frame) -> None:
-                self._batch_processed_samples = int(processed)
-                self._set_progress_bar(0.0)
+            def _on_frame_finished(_processed: int, _total: int, _result: Frame) -> None:
                 self.refresh_view()
                 QtWidgets.QApplication.processEvents()
 
@@ -1250,9 +1253,6 @@ class MainWindow(QMainWindow):
             self._is_batch_processing = previous_processing_state
             QtWidgets.QApplication.restoreOverrideCursor()
             self.statusbar.clearMessage()
-            self._batch_total_samples = 0
-            self._batch_processed_samples = 0
-            self._batch_collects_measurements = False
 
         # Publish batch outputs back into the GUI and refresh the active slice.
         self._batch_result = batch_result
@@ -1500,7 +1500,6 @@ class MainWindow(QMainWindow):
         if self._image_batch is not None and not self._is_batch_processing:
             self._run_batch_analysis(compute_measurements=False)
             return
-        self._set_progress_bar(0.0)
         if not self._run_current_frame_pipeline(compute_measurements=False):
             return
 
@@ -1509,10 +1508,6 @@ class MainWindow(QMainWindow):
 
         self._refresh_save_actions()
         self.refresh_view()
-        if self._is_batch_processing and not self._batch_collects_measurements:
-            self._set_progress_bar(100.0)
-        else:
-            self._set_progress_bar(70.0)
         logger.info("Segmentation completed successfully.")
 
     def analyze_fibers(self):
@@ -1523,17 +1518,13 @@ class MainWindow(QMainWindow):
             if self.cb_view.currentText() != "Measurements overlay":
                 self.cb_view.setCurrentText("Measurements overlay")
             if self._batch_measurements_match_current_settings():
-                self._set_progress_bar(100.0)
                 self._set_current_slice(self._current_z_index, update_view=True)
                 return
             self._run_batch_analysis(compute_measurements=True)
             return
 
-        self._set_progress_bar(0.0)
         if not self._run_current_frame_pipeline(compute_measurements=True):
-            self._set_progress_bar(0.0)
             return
-        self._set_progress_bar(100.0)
         self._render_vector_overlay()
 
         fr = self.current_frame
@@ -1690,6 +1681,8 @@ class MainWindow(QMainWindow):
 
     def _style_plotwidget(self, pw: pg.PlotWidget, title: str, xlab: str, ylab: str):
         pw.setBackground("w")
+        pw.showAxis("bottom")
+        pw.showAxis("left")
         pw.clear()
         pw.setTitle(title, color="k", size="12pt")
         pw.showGrid(x=True, y=True, alpha=0.25)
@@ -1698,6 +1691,9 @@ class MainWindow(QMainWindow):
         pw.setAntialiasing(True)
 
     def _update_distributions_pyqtgraph(self, units_label: str):
+        self.text_edit2.setVisible(True)
+        self.label_units.setVisible(True)
+        self.cb_units.setVisible(True)
         # Thickness
         diameters = (
             self.current_frame.thickness_units
@@ -1775,26 +1771,22 @@ class MainWindow(QMainWindow):
         self._update_slice_label()
 
     def _update_slice_label(self):
-        if self._image_batch is not None:
-            total = len(self._image_batch)
-            current = self._current_z_index + 1 if total > 0 else 0
-            kind = self._image_batch.kind
-            name = self._image_batch.name
-            if kind == "Folder":
-                filename = self._image_batch.metadata["filenames"][self._current_z_index]
-                self._slice_label.setText(f"Folder: {name}  |  Image: {filename} ({current}/{total})")
-                return
+        if self._image_batch is None:
+            self.label_image_name.setText("Image: none")
+            self.label_image_name.setToolTip("")
+            return
+        total = len(self._image_batch)
+        current = self._current_z_index + 1 if total > 0 else 0
+        kind = self._image_batch.kind
+        if kind == "Folder":
+            filename = self._image_batch.metadata["filenames"][self._current_z_index]
+            text = f"Image: {filename} ({current}/{total})"
+        elif kind == "Stack":
+            text = f"Stack: {self._image_batch.name} (slice {current}/{total})"
         else:
-            total = 1
-            current = 0
-            kind = "Image"
-            name = "Unsaved"
-            
-        # Determine the correct terminology for the counter
-        unit_label = "Slice" if kind == "Stack" else "Image"
-        
-        # Combine the name info (from before) with the dynamic unit label
-        self._slice_label.setText(f"{kind}: {name}  |  {unit_label}: {current}/{total}")
+            text = f"Image: {self._image_batch.name}"
+        self.label_image_name.setText(text)
+        self.label_image_name.setToolTip(text)
 
     def _frame_base_name(self, frame_id: str, z_index: int) -> str:
         base = os.path.splitext(str(frame_id))[0]
@@ -1815,9 +1807,7 @@ class MainWindow(QMainWindow):
                 z_index=current_z_index,
                 orig_img=current_orig,
             )
-            self.text_edit2.clear()
-            self.graph_diameters.clear()
-            self.graph_angles.clear()
+            self._clear_results()
             return
 
         applied_frame = frame_result.snapshot()
@@ -1840,9 +1830,7 @@ class MainWindow(QMainWindow):
             self.text_edit2.setPlainText(info_text)
             self._update_distributions_pyqtgraph(units_label)
         else:
-            self.text_edit2.clear()
-            self.graph_diameters.clear()
-            self.graph_angles.clear()
+            self._clear_results()
 
         if self.current_frame.labels_2d is not None:
             labels_rgb = labels_to_color(self.current_frame.labels_2d)
@@ -1918,13 +1906,8 @@ class MainWindow(QMainWindow):
         self._remove_profile_items()
         self.btn_reset_view.hide()
 
-        # ---- charts (pyqtgraph) ----
-        self.graph_diameters.clear()
-        self.graph_diameters.setTitle("")
-        self.graph_diameters.showGrid(x=False, y=False)
-        self.graph_angles.clear()
-        self.graph_angles.setTitle("")
-        self.graph_angles.showGrid(x=False, y=False)
+        # ---- results (stats + pyqtgraph charts) ----
+        self._clear_results()
 
         # ---- UI actions / state ----
         self._pixitem.setPixmap(QtGui.QPixmap())
@@ -2018,6 +2001,7 @@ class MainWindow(QMainWindow):
     def sync_sample_properties_to_ui(self):
         """Updates sample-specific calibration widgets from self.sample_props."""
         self._ui_binder.sync_sample_properties_to_ui(self, self.sample_props)
+        self._update_pixel_size_unit_label()
 
     def sync_ui_to_config(self):
         """Reads the current state of the UI and stores it in self.config."""
@@ -2032,3 +2016,38 @@ class MainWindow(QMainWindow):
     def sync_config_to_ui(self):
         """Updates the UI widgets to reflect the values in self.config."""
         self._ui_binder.sync_config_to_ui(self, self.config)
+
+    # ------------------- Panel helpers -------------------
+
+    def _clear_results(self) -> None:
+        """Keep the results strip reserved but visually empty until measurements exist."""
+        self.text_edit2.clear()
+        self.text_edit2.setVisible(False)
+        self.label_units.setVisible(False)
+        self.cb_units.setVisible(False)
+        for pw in (self.graph_diameters, self.graph_angles):
+            pw.clear()
+            pw.setTitle(None)
+            pw.hideAxis("bottom")
+            pw.hideAxis("left")
+            pw.setBackground(self.palette().color(QtGui.QPalette.ColorRole.Window))
+
+    @staticmethod
+    def _toggle_advanced(button: QToolButton, panel: QtWidgets.QWidget, checked: bool) -> None:
+        panel.setVisible(checked)
+        button.setArrowType(Qt.ArrowType.DownArrow if checked else Qt.ArrowType.RightArrow)
+
+    def _update_pixel_size_unit_label(self) -> None:
+        self.label_pixel_unit.setText(self.cb_units.currentText().strip() or "px")
+
+    def _on_units_changed(self, _text: str) -> None:
+        """Units are picked next to the plots: re-measure so plots and stats follow the new unit."""
+        had_measurements = self._batch_result is not None and any(
+            frame.has_measurements for frame in self._batch_result.frame_results
+        )
+        self.sync_ui_to_sample_properties()
+        self._update_pixel_size_unit_label()
+        if had_measurements:
+            view = self.cb_view.currentText()
+            self._run_batch_analysis(compute_measurements=True)
+            self.cb_view.setCurrentText(view)

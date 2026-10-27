@@ -271,17 +271,17 @@ class PipelineController:
         if dt is None or gx is None or gy is None:
             raise RuntimeError("Distance transform or gradients unavailable.")
         return {
-            "dt": np.asarray(dt, dtype=np.float32, copy=False),
-            "gx": np.asarray(gx, dtype=np.float32, copy=False),
-            "gy": np.asarray(gy, dtype=np.float32, copy=False),
-            "dt_u8": np.asarray(self.analyzer.get_dt_u8(), dtype=np.uint8, copy=False),
-            "dt_normalized": np.asarray(self.analyzer.get_dt_norm(), dtype=np.float32, copy=False),
+            "dt": np.asarray(dt, dtype=np.float32),
+            "gx": np.asarray(gx, dtype=np.float32),
+            "gy": np.asarray(gy, dtype=np.float32),
+            "dt_u8": np.asarray(self.analyzer.get_dt_u8(), dtype=np.uint8),
+            "dt_normalized": np.asarray(self.analyzer.get_dt_norm(), dtype=np.float32),
             "foreground_prob": (
-                np.asarray(self.analyzer.get_foreground_prob(), dtype=np.float32, copy=False)
+                np.asarray(self.analyzer.get_foreground_prob(), dtype=np.float32)
                 if self.analyzer.get_foreground_prob() is not None
                 else None
             ),
-            "lapl_img": np.asarray(self.analyzer.get_laplacian(), dtype=np.float32, copy=False),
+            "lapl_img": np.asarray(self.analyzer.get_laplacian(), dtype=np.float32),
         }
 
     def build_centerlines(self, frame: Frame, config: AppConfig) -> dict[str, Any]:

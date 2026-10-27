@@ -955,7 +955,7 @@ class ProfileTool:
         if profile_vals is None or profile_vals.size == 0:
             return None
 
-        profile_vals = np.asarray(profile_vals, dtype=np.float32, copy=False)
+        profile_vals = np.asarray(profile_vals, dtype=np.float32)
         scale = float(scale_factor)
         if not np.isfinite(scale) or scale <= 0:
             scale = 1.0

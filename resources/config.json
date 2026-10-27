@@ -1,6 +1,6 @@
 {
-    "model_path": "checkpoints/R108_best3_dt_fg.onnx",
-    "use_gpu": true,
+    "model_path": "checkpoints/model_fiber_2_no_bg.onnx",
+    "use_gpu": false,
     "scale_label": "1x",
     "max_angle_deg": 30.0,
     "ridge_sigma": 1.0,
