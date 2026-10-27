@@ -7,5 +7,4 @@ manuscript/
 .DS_Store
 resources/.DS_Store
 checkpoints/
-app.py
 resources/config.json
