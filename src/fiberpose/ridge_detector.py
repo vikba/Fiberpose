@@ -4,8 +4,8 @@ Steger ridge/line detection (exact math) with Numba speedups.
 
 - RidgeDetector class with public detect_ridges()
 - Public API returns detected polylines as plain NumPy arrays
-- Heavy pixel loops are JIT-compiled with numba (if available), no fastmath to preserve quality
-- Linking stays in Python (topology-sensitive, list-heavy); still benefits from faster inputs
+- Convolution and candidate kernels are JIT-compiled with numba without fastmath to preserve quality
+- Contour linking is traced in numba; Python only assembles the output polylines
 
 Usage:
     det = RidgeDetector()
@@ -17,14 +17,14 @@ from __future__ import annotations
 from typing import List, Tuple
 import math
 import numpy as np
-from numba import njit
+import numba as nb
 
 
 # -------------------------
 # Numba kernels
 # -------------------------
 
-@njit(cache=True)
+@nb.njit(cache=True)
 def _mirror_r_jit(r: int, h: int) -> int:
     if r < 0:
         return -r
@@ -32,7 +32,7 @@ def _mirror_r_jit(r: int, h: int) -> int:
         return h - r + h - 2
     return r
 
-@njit(cache=True)
+@nb.njit(cache=True)
 def _mirror_c_jit(c: int, w: int) -> int:
     if c < 0:
         return -c
@@ -40,7 +40,7 @@ def _mirror_c_jit(c: int, w: int) -> int:
         return w - c + w - 2
     return c
 
-@njit(cache=True)
+@nb.njit(cache=True)
 def _convolve_rows_flat(image: np.ndarray, mask: np.ndarray, n: int, w: int, h: int) -> np.ndarray:
     out = np.empty((w * h,), dtype=np.float32)
 
@@ -78,7 +78,7 @@ def _convolve_rows_flat(image: np.ndarray, mask: np.ndarray, n: int, w: int, h: 
 
     return out
 
-@njit(cache=True)
+@nb.njit(cache=True)
 def _convolve_cols_flat(tmp: np.ndarray, mask: np.ndarray, n: int, w: int, h: int) -> np.ndarray:
     out = np.empty((w * h,), dtype=np.float32)
 
@@ -113,13 +113,13 @@ def _convolve_cols_flat(tmp: np.ndarray, mask: np.ndarray, n: int, w: int, h: in
 
     return out
 
-@njit(cache=True)
+@nb.njit(cache=True)
 def _solve_linear_jit(a: float, b: float) -> Tuple[int, float]:
     if a == 0.0:
         return 0, 0.0
     return 1, -b / a
 
-@njit(cache=True)
+@nb.njit(cache=True)
 def _eigen_2x2_jit(drr: float, drc: float, dcc: float) -> Tuple[float, float, float, float]:
     """
     Returns (e1, e2, v0x, v0y) where (v0x, v0y) is eigenvector for the principal eigenvalue
@@ -155,7 +155,7 @@ def _eigen_2x2_jit(drr: float, drc: float, dcc: float) -> Tuple[float, float, fl
         else:
             return e2, e1, -n2, n1
 
-@njit(cache=True)
+@nb.njit(cache=True)
 def _ridge_candidates_jit(dr, dc, drr, drc, dcc, w: int, h: int,
                          low: float, high: float, mode: int,
                          pixel_boundary: float) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
@@ -206,14 +206,10 @@ def _ridge_candidates_jit(dr, dc, drr, drc, dcc, w: int, h: int,
 # Numba kernels for link_contours
 # -------------------------
 
-import numba as nb
-
-
-
 @nb.njit(cache=True, fastmath=True, boundscheck=True)
 def _trace_one_direction(
     x0, y0,
-    dir_flag,                  # 1 or 2 (same semantics as your it loop)
+    dir_flag,                  # 1 = forward, 2 = backward
     ismax, px, py,
     alpha_arr, oct4_arr,
     label, indx, cross_done,
@@ -248,7 +244,7 @@ def _trace_one_direction(
         alpha_p = alpha_arr[p]
         octant = int(oct4_arr[p])  # 0..3
 
-        # unwrap octant to 0..7 as in your code
+        # unwrap octant to 0..7
         if octant == 0 and 3 <= last_oct <= 5:
             octant = 4
         elif octant == 1 and 4 <= last_oct <= 6:
@@ -290,7 +286,7 @@ def _trace_one_direction(
                 nexti = i
             nextismax = 1
 
-        # clear double responses (same as you do)
+        # clear double responses
         for i in range(2):
             xx = x + int(CLEARTAB[octant, i, 0])
             yy = y + int(CLEARTAB[octant, i, 1])
@@ -409,7 +405,7 @@ def _link_contours_trace_numba(
                         if idxp != 0:
                             cross_done[idxp - 1] = True
 
-        # Trace direction 2 (backward) into temp, then direction 1 (forward) into main, so order matches your reverse+append behavior.
+        # Trace backward first and reverse it in place, then trace forward, so points run end to end.
         tmp_start = out_i
         tmp_end = _trace_one_direction(
             x0, y0, 2,
@@ -639,15 +635,14 @@ class RidgeDetector:
         return _ridge_candidates_jit(dr, dc, drr, drc, dcc, w, h, low, high, mode, cls.PIXEL_BOUNDARY)
 
     # -------------------------
-    # Linking (Python; unchanged)
+    # Linking
     # -------------------------
 
 
     @staticmethod
     def _threshold_runs(ismax: np.ndarray, minv: int, w: int, h: int) -> List[Tuple[int, int, int]]:
         """
-        Vectorized replacement for _threshold_runs.
-        ismax is flattened (w*h,) as in your code.
+        ismax is flattened (w*h,).
         Returns list of (r, cb, ce) with ismax[r, cb:ce+1] >= minv.
         """
         m = (ismax.reshape(h, w) >= minv)  # bool (h,w)
@@ -673,7 +668,7 @@ class RidgeDetector:
 
     @staticmethod
     def _precompute_angles(nx, ny):
-        # Flatten to 1D to match your indexing (p = x*w + y)
+        # Flatten to 1D to match the kernel indexing (p = x*w + y)
         nx1 = np.asarray(nx, np.float32).reshape(-1)
         ny1 = np.asarray(ny, np.float32).reshape(-1)
 
@@ -682,7 +677,7 @@ class RidgeDetector:
         alpha = np.where(alpha < 0.0, alpha + 2.0*np.pi, alpha)
         alpha = np.where(alpha >= np.pi, alpha - np.pi, alpha)  # now [0,π)
 
-        # oct4 = round(4/pi*alpha) mod 4  (matches your floor(...+0.5))
+        # oct4 = round(4/pi*alpha) mod 4
         oct4 = (np.floor((4.0/np.pi) * alpha + 0.5).astype(np.int32) & 3).astype(np.uint8)
 
         return alpha, oct4

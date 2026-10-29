@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-# ---- merged from gui_dialogs.py ----
-
 import json
+import math
 import os
-from dataclasses import fields
-from typing import Any, Dict
+from dataclasses import dataclass, field, fields
+from enum import Enum
+from typing import Any, Callable, Dict
 import numpy as np
 
 from PyQt6 import QtGui, QtWidgets
@@ -15,8 +15,11 @@ from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtWidgets import QDialogButtonBox
 
 import pyqtgraph as pg
+from skimage.measure import profile_line
+from skimage.segmentation import find_boundaries
 
-from .domain import AppConfig
+from .domain import AppConfig, Frame, SampleProperties
+from .utils import ensure_rgb_u8, labels_to_color, to_uint8_for_view
 
 
 class PlotProfileDialog(QtWidgets.QDialog):
@@ -510,17 +513,6 @@ class ConfigEditorDialog(QtWidgets.QDialog):
         self.accept()
 
 
-# ---- merged from ui_config_binder.py ----
-
-
-import math
-from dataclasses import dataclass
-
-import numpy as np
-
-from .domain import AppConfig, SampleProperties
-
-
 @dataclass
 class InvalidationFlags:
     """Computed invalidation deltas after applying UI state to config."""
@@ -708,12 +700,6 @@ class UiConfigBinder:
 
         window._update_strict_checkbox_state()
 
-# ---- merged from view_state.py ----
-
-
-from dataclasses import dataclass
-from enum import Enum
-
 
 class ViewMode(str, Enum):
     """Canonical view mode labels matching the UI combobox text."""
@@ -741,18 +727,6 @@ class ViewState:
     mode: str = ViewMode.ORIGINAL.value
     show_pores: bool = False
     show_orientation: bool = False
-
-# ---- merged from view_renderer.py ----
-
-
-from typing import Callable
-
-import numpy as np
-from skimage.segmentation import find_boundaries
-
-from .domain import Frame
-from .utils import ensure_rgb_u8, labels_to_color, to_uint8_for_view
-
 
 
 class ViewRenderer:
@@ -864,14 +838,6 @@ class ViewRenderer:
         if handler is None:
             handler = handlers[ViewMode.ORIGINAL.value]
         return handler()
-
-# ---- merged from interaction_tools.py ----
-
-
-from dataclasses import dataclass, field
-
-import numpy as np
-from skimage.measure import profile_line
 
 
 @dataclass

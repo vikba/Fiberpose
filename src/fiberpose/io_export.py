@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
-# ---- merged from export_service.py ----
-
-
+import csv
+import json
 import os
 from typing import Any
 
+import imageio.v3 as iio
+import numpy as np
+
 from .domain import AppConfig, BatchResult, Frame, ImageBatch
+from .utils import labels_to_color
 
 
 class ExportService:
@@ -153,18 +156,6 @@ class ExportService:
             )
         return False
 
-# ---- merged from exporter.py ----
-
-
-import csv
-import json
-import os
-from typing import Any
-
-import imageio.v3 as iio
-import numpy as np
-
-from .utils import labels_to_color
 
 class BatchResultExporter:
     """Persist batch/frame outputs using a small dict-based export config."""

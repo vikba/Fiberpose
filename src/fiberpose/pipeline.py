@@ -2,19 +2,16 @@
 
 from __future__ import annotations
 
-# ---- merged from frame_pipeline_service.py ----
-
-
 import json
 import math
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Callable
 
 import cv2
 import numpy as np
 from scipy.spatial import cKDTree
 
-from .domain import AppConfig, Frame, SampleProperties
+from .domain import AppConfig, BatchResult, Frame, ImageBatch, SampleProperties
 from .fiber_analyzer_2D import FiberAnalyzer_2D
 from .utils import ensure_rgb_u8, labels_to_color
 
@@ -814,16 +811,6 @@ class PipelineController:
         self.build_measurement_overlays(frame)
         frame.measurement_sig = target_sig
         return PipelineOutcome(True)
-
-# ---- merged from batch_service.py ----
-
-
-from dataclasses import dataclass
-from typing import Callable
-
-import numpy as np
-
-from .domain import BatchResult, Frame, ImageBatch
 
 
 @dataclass

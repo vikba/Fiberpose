@@ -43,10 +43,9 @@
 1. `_run_batch_analysis(...)` configures `BatchCallbacks` and calls `BatchService.run_batch(...)`.
 2. `BatchService.run_batch(...)` loops frames and invokes the provided per-frame callback.
 3. Per-frame callback in `_run_batch_analysis(...)`:
-- `_reset_internal_state(preserve_original=False)`
-- create or hydrate `current_frame` with `Frame.empty(...)` or `Frame.snapshot(...)`
-- call `segment()` or `analyze_fibers()` (with `_is_batch_processing=True`, so no recursive batch dispatch)
-- capture result with `current_frame.snapshot(include_measurements=...)`
+- create or hydrate `current_frame` with `Frame.empty(...)` or a `snapshot()` of the cached frame result
+- run `_run_current_frame_pipeline(...)`, which calls `ensure_segmentation` or `ensure_measurements` (`_is_batch_processing=True` keeps `segment()` / `analyze_fibers()` from re-dispatching a batch)
+- capture result with `current_frame.snapshot(frame_id=..., z_index=...)`
 4. Collected outputs become `BatchResult(frame_results=[...])`.
 5. GUI stores `_batch_result` and rehydrates selected slice with `_apply_frame_result(...)`.
 6. CLI uses the same controller stages (`ensure_segmentation` / `ensure_measurements`) and writes exports via `BatchResult.save_all(...)`.
@@ -90,19 +89,12 @@
 - thickness histogram always
 - angles histogram or pore size histogram depending on pores view
 
-## Stack / 3D Visualization
-1. Stack input normalization in `ImageBatch._normalize_stack(...)`:
+## Stack Input
+Stack input normalization in `ImageBatch._normalize_stack(...)`:
 - `HxW` -> single frame
 - `HxWxC` -> single frame
 - `ZxHxW` -> grayscale stack
 - `ZxHxWxC` -> color stack
-2. `Stack3DWindow` reads `BatchResult.frame_results`.
-3. Chooses imaging stack from `Original | DT | Semantic segmentation`.
-4. Shows 2D projection (`Max | Mean | Sum`).
-5. Shows 3D view:
-- semantic segmentation as volume render
-- optional semantic centerline overlay
-- optional semantic junction overlay
 
 ## Class Roles
 - `run.py`: top-level GUI/CLI dispatch and argument parsing (`fiberpose` command).

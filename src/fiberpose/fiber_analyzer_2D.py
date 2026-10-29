@@ -210,7 +210,7 @@ class FiberAnalyzer_2D:
         grad_sigma: float = 1.0,
     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         """
-        Predict DT for the input image, compute gradients, laplacian, and centerlines.
+        Predict DT for the input image and compute its gradients and laplacian.
 
         Returns:
             dt (float32), gx (float32), gy (float32)
@@ -1010,11 +1010,11 @@ class FiberAnalyzer_2D:
             except Exception:
                 boundaries = None
             if boundaries is not None and boundaries.any():
-                base[boundaries] = (0, 0, 255)  # blue in BGR
+                base[boundaries] = (0, 0, 255)  # blue (displayed as RGB)
         if markers is not None:
             marker_mask = markers.astype(np.int32) > 0
             if marker_mask.any():
-                base[marker_mask] = (255, 0, 0)  # red in BGR
+                base[marker_mask] = (255, 0, 0)  # red (displayed as RGB)
         self._segmentation_centerlines_rgb = base
 
     # --- Pore sampling via DT local maxima -----------------------------------

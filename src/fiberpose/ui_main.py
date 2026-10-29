@@ -49,13 +49,7 @@ from .models import DEFAULT_MODEL, discover_models, models_dir, normalize_model_
 
 
 class MainWindow(QMainWindow):
-    """
-    Single-file refactor notes:
-    - One overlay renderer (removed duplicate).
-    - One analysis pass driven by current thresholds/params.
-    - Clear state when loading a new image.
-    - Tightened UI updates/enabling.
-    """
+    """Main Fiberpose window: loads sources, runs the pipeline, and shows views, plots, and exports."""
     def __init__(self, ui_path: str = str(DEFAULT_UI_PATH), config_path: str | None = None):
         super().__init__()
         loadUi(ui_path, self)
@@ -140,8 +134,7 @@ class MainWindow(QMainWindow):
         self._profile_point_items: list[QGraphicsItem] = []
         self._profile_dialog: PlotProfileDialog | None = None
 
-        # Menu & actions: updated UI element names (rb_mask1_cent -> rb_centerlines; rb_mask2_segm -> rb_segmentation;
-        # sp_threshold1 -> sp_max_cent_angle; sp_threshold2 -> sp_grad_magnitude_threshold)
+        # Menu & actions
         self.action_load_image.triggered.connect(self.load_original)
         self.action_save_masks_predictions.triggered.connect(self.save_predictions)
         self.action_save_measurements.triggered.connect(self.save_measurements)
@@ -169,7 +162,6 @@ class MainWindow(QMainWindow):
                 lambda checked, button=button, panel=panel: self._toggle_advanced(button, panel, checked)
             )
 
-        # Remove connection of radiobutton signals and instead hook up the combobox change
         self.cb_view.currentIndexChanged.connect(self.refresh_view)
         self.cb_view.setMinimumHeight(self.btn_load_image.sizeHint().height())
         # Units belong to the plots: hidden with them, but keep the row's space so plots don't shift.
