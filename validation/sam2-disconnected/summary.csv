@@ -1,8 +1,0 @@
-sample,source_instance_count,retained_instance_count,discarded_component_count_lt_10px,discarded_pixel_count,source_labels_split_into_multiple_retained_instances,source_labels_with_multiple_components_ge_1000px
-03G_m05-1,86,138,53,162,33,11
-100x_004_2-1,33,45,52,125,8,0
-15__gelatin_fibers-1,108,173,60,143,36,14
-53g_m07-1,69,135,92,286,21,12
-Mono_m10-1,240,301,122,255,50,3
-bad-1,93,115,38,114,16,7
-sn_50_2-1,118,165,173,452,25,2

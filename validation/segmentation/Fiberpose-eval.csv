@@ -1,7 +1,0 @@
-sample,reference,prediction,gt_total_count,gt_count,gt_excluded_count,prediction_count,tp,fp,fn,recall,precision,iou,nsd,hd95
-03G_m05-1,GT/03G_m05-1.png,Fiberpose/03G_m05-1_labels.png,49,21,28,34,21,13,0,1.000,0.618,0.941,0.899,13.775
-100x_004_2-1,GT/100x_004_2-1.png,Fiberpose/100x_004_2-1_labels.png,20,20,0,27,20,7,0,1.000,0.741,0.941,0.773,39.150
-15__gelatin_fibers-1,GT/15__gelatin_fibers-1.png,Fiberpose/15__gelatin_fibers-1_labels.png,61,34,27,58,33,25,1,0.971,0.569,0.919,0.872,11.743
-53g_m07-1,GT/53g_m07-1.png,Fiberpose/53g_m07-1_labels.png,26,18,8,25,17,8,1,0.944,0.680,0.936,0.977,2.050
-Mono_m10-1,GT/Mono_m10-1.png,Fiberpose/Mono_m10-1_labels.png,145,82,63,138,80,58,2,0.976,0.580,0.819,0.639,15.835
-sn_50_2-1,GT/sn_50_2-1.png,Fiberpose/sn_50_2-1_labels.png,58,56,2,80,52,28,4,0.929,0.650,0.894,0.841,19.058
