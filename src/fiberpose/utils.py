@@ -24,17 +24,12 @@ def labels_to_color(labels: np.ndarray | None) -> np.ndarray | None:
     labels_i64 = np.asarray(labels, dtype=np.int64)
     if labels_i64.ndim != 2:
         return None
-    h, w = labels_i64.shape
-    out = np.zeros((h, w, 3), dtype=np.uint8)
     if labels_i64.size == 0:
-        return out
-    for value in np.unique(labels_i64):
-        ivalue = int(value)
-        if ivalue <= 0:
-            continue
-        mask = labels_i64 == ivalue
-        out[mask] = label_to_rgb(ivalue)
-    return out
+        return np.zeros(labels_i64.shape + (3,), dtype=np.uint8)
+    # One color per distinct id (label_to_rgb maps ids <= 0 to black), then a single gather.
+    ids, inverse = np.unique(labels_i64, return_inverse=True)
+    palette = np.array([label_to_rgb(int(v)) for v in ids], dtype=np.uint8).reshape(-1, 3)
+    return palette[inverse.reshape(labels_i64.shape)]
 
 # ------------- image helpers -------------
 def to_uint8_for_view(img: np.ndarray | None) -> np.ndarray | None:
