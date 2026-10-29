@@ -8,10 +8,13 @@ from typing import Any, Dict, List, Optional, Tuple
 import cv2
 import numpy as np
 from scipy.ndimage import gaussian_filter, laplace, value_indices
+from scipy.sparse import coo_matrix
+from scipy.sparse.csgraph import connected_components
 from skimage.segmentation import watershed, find_boundaries
 
 from .domain import FiberFragment
 from .ml import OnnxFiberposeModel
+from .raster import disk_mask, disk_radii, stamp_disks
 from .ridge_detector import RidgeDetector
 from .utils import (
     _bilinear,
@@ -275,18 +278,22 @@ class FiberAnalyzer_2D:
             raise ValueError("Gradient fields are required for grad-quality filtering.")
         grad_mag = np.sqrt(self._gx * self._gx + self._gy * self._gy)
         grad_err = np.abs(grad_mag - 1.0)
-        active_fragments = self._filter_fragments_by_grad_quality(
+        # Pixels each fragment covers at the segmentation expansion, shared by both steps below.
+        fragment_pixels = self._fragment_pixels(
+            active_fragments, float(segmentation_expansion_factor), self._dt_u8.shape
+        )
+        active_fragments, fragment_pixels = self._filter_fragments_by_grad_quality(
             fragments=active_fragments,
+            fragment_pixels=fragment_pixels,
             grad_err=grad_err,
-            segmentation_expansion_factor=float(segmentation_expansion_factor),
             trim_fraction=grad_quality_fraction,
             min_valid_pixels=8,
         )
 
         expanded_labels = self._rasterize_segmentation_fragments(
             fragments=active_fragments,
+            fragment_pixels=fragment_pixels,
             shape=self._dt_u8.shape,
-            segmentation_expansion_factor=float(segmentation_expansion_factor),
         )
 
         markers = (
@@ -342,36 +349,10 @@ class FiberAnalyzer_2D:
         Group detected polylines into segmentation fragments using overlap under merge expansion.
         """
         h, w = dt.shape[:2]
-        expansion = max(0.0, float(merge_expansion_factor))
         trim_n = max(0, int(trim))
 
-        owner = np.zeros((h, w), dtype=np.int32)
-        uf_parent: Dict[int, int] = {}
-
-        def uf_find(x: int) -> int:
-            p = uf_parent.get(x, x)
-            while p != uf_parent.get(p, p):
-                p = uf_parent.get(p, p)
-            root = p
-            p = x
-            while p != uf_parent.get(p, p):
-                nxt = uf_parent.get(p, p)
-                uf_parent[p] = root
-                p = nxt
-            return root
-
-        def uf_union(a: int, b: int) -> None:
-            ra = uf_find(a)
-            rb = uf_find(b)
-            if ra == rb:
-                return
-            if ra < rb:
-                uf_parent[rb] = ra
-            else:
-                uf_parent[ra] = rb
-
-        polyline_records: List[tuple[int, np.ndarray, np.ndarray]] = []
-        local_label = 0
+        polylines: List[np.ndarray] = []
+        polyline_radii: List[np.ndarray] = []
         for pts_xy_raw in detected_polylines:
             pts_xy = np.asarray(pts_xy_raw, dtype=np.float32)
             if pts_xy.ndim != 2 or pts_xy.shape[1] != 2:
@@ -380,48 +361,20 @@ class FiberAnalyzer_2D:
                 pts_xy = pts_xy[trim_n:-trim_n]
             if pts_xy.shape[0] < 2:
                 continue
-
             x_idx = np.clip(np.rint(pts_xy[:, 0]).astype(np.int32), 0, w - 1)
             y_idx = np.clip(np.rint(pts_xy[:, 1]).astype(np.int32), 0, h - 1)
-            radii = np.asarray(dt[y_idx, x_idx], dtype=np.float32)
+            polylines.append(pts_xy)
+            polyline_radii.append(np.asarray(dt[y_idx, x_idx], dtype=np.float32))
 
-            local_label += 1
-            uf_parent.setdefault(local_label, local_label)
-            pts_xy = pts_xy.astype(np.float32, copy=False)
-            polyline_records.append((local_label, pts_xy, radii))
-
-            line_mask = np.zeros((h, w), dtype=np.uint8)
-            for pt_xy, radius in zip(pts_xy, radii):
-                rr = max(1, int(round(float(radius) * expansion)))
-                x = int(round(float(pt_xy[0])))
-                y = int(round(float(pt_xy[1])))
-                if x < 0 or y < 0 or x >= w or y >= h:
-                    continue
-                cv2.circle(line_mask, (x, y), rr, 1, thickness=-1)
-
-            mask_bool = line_mask.astype(bool, copy=False)
-            if not mask_bool.any():
-                continue
-            overlap_ids = np.unique(owner[mask_bool])
-            overlap_ids = overlap_ids[overlap_ids > 0]
-            for other_id in overlap_ids:
-                uf_union(local_label, int(other_id))
-            owner[mask_bool & (owner == 0)] = local_label
-
-        if not polyline_records:
+        if not polylines:
             return []
 
-        root_to_label: Dict[int, int] = {}
-        next_label = 1
+        group_ids = cls._overlap_groups(
+            polylines, polyline_radii, max(0.0, float(merge_expansion_factor)), (h, w)
+        )
         grouped_polylines: Dict[int, list[np.ndarray]] = {}
         grouped_radii: Dict[int, list[np.ndarray]] = {}
-        for local_label, pts_xy, radii in polyline_records:
-            root = uf_find(int(local_label))
-            label_id = root_to_label.get(root)
-            if label_id is None:
-                label_id = next_label
-                root_to_label[root] = label_id
-                next_label += 1
+        for label_id, pts_xy, radii in zip(group_ids.tolist(), polylines, polyline_radii):
             grouped_polylines.setdefault(label_id, []).append(pts_xy)
             grouped_radii.setdefault(label_id, []).append(radii)
 
@@ -445,102 +398,107 @@ class FiberAnalyzer_2D:
         return fragments
 
     @staticmethod
+    def _overlap_groups(
+        polylines: List[np.ndarray],
+        radii: List[np.ndarray],
+        expansion: float,
+        shape: Tuple[int, int],
+    ) -> np.ndarray:
+        """Group ids (1-based) for polylines whose expanded disks share at least one pixel.
+
+        Groups are the connected components of the "shares a pixel" graph, numbered in
+        order of their first polyline.
+        """
+        n = len(polylines)
+        owners = np.repeat(np.arange(n), [len(p) for p in polylines])
+        pixel, owner = stamp_disks(
+            np.concatenate(polylines), disk_radii(np.concatenate(radii), expansion), owners, shape
+        )
+        # Sort by pixel; consecutive entries on the same pixel link two polylines.
+        order = np.lexsort((owner, pixel))
+        pixel, owner = pixel[order], owner[order]
+        shared = pixel[1:] == pixel[:-1]
+        edges = np.unique(owner[:-1][shared] * n + owner[1:][shared])
+        graph = coo_matrix((np.ones(edges.size, dtype=np.int32), (edges // n, edges % n)), shape=(n, n))
+        _, component = connected_components(graph, directed=False)
+
+        _, first_polyline = np.unique(component, return_index=True)
+        rank = np.empty_like(first_polyline)
+        rank[np.argsort(first_polyline)] = np.arange(first_polyline.size)
+        return rank[component] + 1
+
+    @staticmethod
+    def _fragment_pixels(
+        fragments: List[FiberFragment],
+        segmentation_expansion_factor: float,
+        shape: Tuple[int, int],
+    ) -> List[np.ndarray]:
+        """Flat pixel indices each fragment covers: disks of its local radius along its centerlines."""
+        if not fragments:
+            return []
+        points, radii, owners = [], [], []
+        for index, frag in enumerate(fragments):
+            for pts_xy, frag_radii in zip(frag.segment_centerlines_xy, frag.segment_radii):
+                points.append(pts_xy)
+                radii.append(frag_radii)
+                owners.append(np.full(len(pts_xy), index))
+        expansion = max(0.0, float(segmentation_expansion_factor))
+        pixel, owner = stamp_disks(
+            np.concatenate(points), disk_radii(np.concatenate(radii), expansion), np.concatenate(owners), shape
+        )
+        # stamp_disks sorts by owner, so each fragment's pixels are one contiguous run.
+        return np.split(pixel, np.cumsum(np.bincount(owner, minlength=len(fragments)))[:-1])
+
+    @staticmethod
     def _rasterize_segmentation_fragments(
         *,
         fragments: List[FiberFragment],
+        fragment_pixels: List[np.ndarray],
         shape: Tuple[int, int],
-        segmentation_expansion_factor: float = 1.0,
     ) -> np.ndarray:
-        """Render radial-expansion labels from merged segmentation fragments."""
-        h, w = shape
-        expansion = max(0.0, float(segmentation_expansion_factor))
-        expanded_labels = np.zeros((h, w), dtype=np.int32)
-        for frag in fragments:
-            label_id = int(frag.parent_fiber_id)
-            for pts_xy, radii in zip(frag.segment_centerlines_xy, frag.segment_radii):
-                for pt_xy, radius in zip(pts_xy, radii):
-                    rr = max(1, int(round(float(radius) * expansion)))
-                    x = int(round(float(pt_xy[0])))
-                    y = int(round(float(pt_xy[1])))
-                    if x < 0 or y < 0 or x >= w or y >= h:
-                        continue
-                    cv2.circle(expanded_labels, (x, y), rr, label_id, thickness=-1)
+        """Render radial-expansion labels; where fragments overlap, the later one wins."""
+        expanded_labels = np.zeros(shape, dtype=np.int32)
+        flat = expanded_labels.reshape(-1)
+        for frag, pixels in zip(fragments, fragment_pixels):
+            flat[pixels] = int(frag.parent_fiber_id)
         return expanded_labels
-
-    @staticmethod
-    def _fragment_grad_quality_score(
-        fragment: FiberFragment,
-        grad_err: np.ndarray,
-        segmentation_expansion_factor: float,
-    ) -> tuple[float, int]:
-        """Compute per-fragment grad-quality score excluding centerline pixels."""
-        h, w = grad_err.shape[:2]
-        expansion = max(0.0, float(segmentation_expansion_factor))
-
-        fragment_mask = np.zeros((h, w), dtype=np.uint8)
-        for pts_xy, radii in zip(fragment.segment_centerlines_xy, fragment.segment_radii):
-            for pt_xy, radius in zip(pts_xy, radii):
-                rr = max(1, int(round(float(radius) * expansion)))
-                x = int(round(float(pt_xy[0])))
-                y = int(round(float(pt_xy[1])))
-                if x < 0 or y < 0 or x >= w or y >= h:
-                    continue
-                cv2.circle(fragment_mask, (x, y), rr, 1, thickness=-1)
-
-        centerline_mask = np.zeros((h, w), dtype=np.uint8)
-        for pts_xy in fragment.segment_centerlines_xy:
-            if pts_xy.size == 0:
-                continue
-            x_idx = np.clip(np.rint(pts_xy[:, 0]).astype(np.int32), 0, w - 1)
-            y_idx = np.clip(np.rint(pts_xy[:, 1]).astype(np.int32), 0, h - 1)
-            centerline_mask[y_idx, x_idx] = 1
-
-        valid_mask = (
-            fragment_mask.astype(bool, copy=False)
-            & (~centerline_mask.astype(bool, copy=False))
-            & np.isfinite(grad_err)
-        )
-        if not np.any(valid_mask):
-            return float("nan"), 0
-
-        values = np.asarray(grad_err[valid_mask], dtype=np.float32)
-        return float(np.median(values)), int(values.size)
 
     @classmethod
     def _filter_fragments_by_grad_quality(
         cls,
         *,
         fragments: List[FiberFragment],
+        fragment_pixels: List[np.ndarray],
         grad_err: np.ndarray,
-        segmentation_expansion_factor: float,
         trim_fraction: float,
         min_valid_pixels: int = 8,
-    ) -> List[FiberFragment]:
-        """Drop unreliable fragments and trim worst grad-quality scores."""
-        reliable_fragments: List[FiberFragment] = []
-        for fragment in fragments:
-            score, valid_pixels = cls._fragment_grad_quality_score(
-                fragment=fragment,
-                grad_err=grad_err,
-                segmentation_expansion_factor=segmentation_expansion_factor,
-            )
-            fragment.grad_quality_score = float(score)
-            if valid_pixels < int(min_valid_pixels):
-                continue
-            if not np.isfinite(score):
-                continue
-            reliable_fragments.append(fragment)
+    ) -> Tuple[List[FiberFragment], List[np.ndarray]]:
+        """Score fragments by median |grad(dt)| error off their centerlines; drop unreliable/worst ones.
 
-        drop_count = int(np.floor(len(reliable_fragments) * float(trim_fraction)))
-        if drop_count <= 0:
-            return reliable_fragments
+        Returns the kept fragments and their pixel lists, in input order.
+        """
+        h, w = grad_err.shape[:2]
+        grad_err_flat = grad_err.reshape(-1)
+        reliable: List[tuple[FiberFragment, np.ndarray]] = []
+        for fragment, pixels in zip(fragments, fragment_pixels):
+            centerline_pixels = [
+                np.clip(np.rint(pts_xy[:, 1]).astype(np.int64), 0, h - 1) * w
+                + np.clip(np.rint(pts_xy[:, 0]).astype(np.int64), 0, w - 1)
+                for pts_xy in fragment.segment_centerlines_xy
+            ]
+            values = grad_err_flat[pixels[~np.isin(pixels, np.concatenate(centerline_pixels))]]
+            values = np.asarray(values[np.isfinite(values)], dtype=np.float32)
+            score = float(np.median(values)) if values.size else float("nan")
+            fragment.grad_quality_score = score
+            if values.size >= int(min_valid_pixels) and np.isfinite(score):
+                reliable.append((fragment, pixels))
 
-        ordered = sorted(
-            reliable_fragments,
-            key=lambda seg: (-float(seg.grad_quality_score), int(seg.fragment_id)),
-        )
-        drop_ids = {int(seg.fragment_id) for seg in ordered[:drop_count]}
-        return [seg for seg in reliable_fragments if int(seg.fragment_id) not in drop_ids]
+        drop_count = int(np.floor(len(reliable) * float(trim_fraction)))
+        if drop_count > 0:
+            ordered = sorted(reliable, key=lambda item: (-float(item[0].grad_quality_score), int(item[0].fragment_id)))
+            drop_ids = {int(frag.fragment_id) for frag, _ in ordered[:drop_count]}
+            reliable = [item for item in reliable if int(item[0].fragment_id) not in drop_ids]
+        return [frag for frag, _ in reliable], [pixels for _, pixels in reliable]
 
     @classmethod
     def _filter_measurement_centerlines(
@@ -1065,12 +1023,13 @@ class FiberAnalyzer_2D:
             if x - r_int < 0 or x + r_int >= W or y - r_int < 0 or y + r_int >= H:
                 continue
 
-            cmask = np.zeros_like(current_void, dtype=np.uint8)
-            cv2.circle(cmask, (int(x), int(y)), r_int, 1, thickness=-1)
-            if np.all(cmask <= current_void):
+            # The disk lies fully inside the image: test and carve only its window.
+            window = current_void[y - r_int:y + r_int + 1, x - r_int:x + r_int + 1]
+            disk = disk_mask(r_int)
+            if window[disk].all():
                 true_radius = float(r) / scale
                 circles.append({'x': int(x), 'y': int(y), 'r_px': float(r), 'r_px_orig': true_radius})
-                current_void[cmask == 1] = 0
+                window[disk] = 0
         return circles
 
     # ------------------------------------------------------------------ #
