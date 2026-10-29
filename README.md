@@ -240,41 +240,26 @@ Fiberpose/
 ├── README.md
 ├── PIPELINE.md                # Runtime pipeline details
 ├── LICENSE
-├── src/fiberpose/
-│   ├── run.py                 # GUI/CLI launcher (`fiberpose` command)
-│   ├── api.py                 # Public Python API: analyze()
-│   ├── models.py              # Model lookup, download, and cache
-│   ├── paths.py               # Bundled resources and user config locations
-│   ├── ui_main.py             # Main PyQt GUI
-│   ├── ui_support.py          # GUI helpers
-│   ├── cli_runner.py          # Batch CLI processing
-│   ├── pipeline.py            # Pipeline orchestration
-│   ├── fiber_analyzer_2D.py   # 2D prediction, segmentation, and measurement logic
-│   ├── ridge_detector.py      # Ridge/centerline detector
-│   ├── ml.py                  # ONNX Runtime inference wrapper
-│   ├── domain.py              # Data models and configuration
-│   ├── io_export.py           # Export services
-│   ├── utils.py               # Numeric and image helper functions
-│   └── resources/
-│       ├── config.json        # Default configuration
-│       ├── fiber_tool.ui      # Qt GUI layout
-│       └── test.png           # Example image
-└── train/                     # Training and ONNX export scripts (not installed)
+└── src/fiberpose/
+    ├── run.py                 # GUI/CLI launcher (`fiberpose` command)
+    ├── api.py                 # Public Python API: analyze()
+    ├── models.py              # Model lookup, download, and cache
+    ├── paths.py               # Bundled resources and user config locations
+    ├── ui_main.py             # Main PyQt GUI
+    ├── ui_support.py          # GUI helpers
+    ├── cli_runner.py          # Batch CLI processing
+    ├── pipeline.py            # Pipeline orchestration
+    ├── fiber_analyzer_2D.py   # 2D prediction, segmentation, and measurement logic
+    ├── ridge_detector.py      # Ridge/centerline detector
+    ├── ml.py                  # ONNX Runtime inference wrapper
+    ├── domain.py              # Data models and configuration
+    ├── io_export.py           # Export services
+    ├── utils.py               # Numeric and image helper functions
+    └── resources/
+        ├── config.json        # Default configuration
+        ├── fiber_tool.ui      # Qt GUI layout
+        └── test.png           # Example image
 ```
-
----
-
-## Training
-
-Training is currently intended for developers and advanced users. Install the training dependencies in the same environment:
-
-```bash
-pip install -e ".[train]"
-```
-
-A typical training dataset should contain paired microscopy images and corresponding distance-transform targets. The current Fiberpose model family is based on a residual U-Net-style architecture trained to predict distance-transform geometry rather than binary masks.
-
-Training scripts and dataset-preparation utilities may change while the project is under active development.
 
 ---
 

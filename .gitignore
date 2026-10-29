@@ -21,6 +21,7 @@ manuscript/
 profiling_results/
 out/
 tests/
+train/
 
 # Local tooling and notes
 .agents/
