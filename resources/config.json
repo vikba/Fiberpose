@@ -1,7 +1,7 @@
 {
-    "model_path": "checkpoints/model_fiber_2_no_bg.onnx",
+    "model_path": "checkpoints/R108_dt_fg.onnx",
     "use_gpu": false,
-    "scale_label": "1x",
+    "scale_label": "2x",
     "max_angle_deg": 30.0,
     "ridge_sigma": 1.0,
     "ridge_low": 0.15,
@@ -25,16 +25,16 @@
         0.35
     ],
     "save_options": {
-        "collision": "suffix",
-        "diameters": false,
-        "dt": false,
+        "dt": true,
         "foreground": false,
-        "image_format": "png",
-        "labels": true,
+        "labels": false,
+        "overlay": false,
+        "diameters": false,
         "orientations": false,
         "outline": false,
-        "overlay": false,
         "tables": false,
+        "image_format": "png",
+        "collision": "suffix",
         "write_manifest": false
     }
 }

@@ -20,20 +20,26 @@
     </property>
     <item>
      <widget class="QFrame" name="frame">
+      <property name="sizePolicy">
+       <sizepolicy hsizetype="Fixed" vsizetype="Preferred">
+        <horstretch>0</horstretch>
+        <verstretch>0</verstretch>
+       </sizepolicy>
+      </property>
       <property name="minimumSize">
        <size>
-        <width>300</width>
+        <width>320</width>
         <height>0</height>
        </size>
       </property>
       <property name="maximumSize">
        <size>
-        <width>340</width>
+        <width>320</width>
         <height>16777215</height>
        </size>
       </property>
       <property name="frameShape">
-       <enum>QFrame::NoFrame</enum>
+       <enum>QFrame::Shape::NoFrame</enum>
       </property>
       <layout class="QVBoxLayout" name="leftLayout">
        <property name="leftMargin">
@@ -124,7 +130,7 @@
             <item>
              <spacer name="segmentationBasicSpacer">
               <property name="orientation">
-               <enum>Qt::Horizontal</enum>
+               <enum>Qt::Orientation::Horizontal</enum>
               </property>
               <property name="sizeHint" stdset="0">
                <size>
@@ -151,14 +157,14 @@
             <property name="checkable">
              <bool>true</bool>
             </property>
+            <property name="toolButtonStyle">
+             <enum>Qt::ToolButtonStyle::ToolButtonTextBesideIcon</enum>
+            </property>
             <property name="autoRaise">
              <bool>true</bool>
             </property>
-            <property name="toolButtonStyle">
-             <enum>Qt::ToolButtonTextBesideIcon</enum>
-            </property>
             <property name="arrowType">
-             <enum>Qt::RightArrow</enum>
+             <enum>Qt::ArrowType::RightArrow</enum>
             </property>
            </widget>
           </item>
@@ -210,7 +216,7 @@
                <item>
                 <spacer name="gradientSpacer">
                  <property name="orientation">
-                  <enum>Qt::Horizontal</enum>
+                  <enum>Qt::Orientation::Horizontal</enum>
                  </property>
                  <property name="sizeHint" stdset="0">
                   <size>
@@ -335,7 +341,7 @@
             <item>
              <spacer name="pixelSizeSpacer">
               <property name="orientation">
-               <enum>Qt::Horizontal</enum>
+               <enum>Qt::Orientation::Horizontal</enum>
               </property>
               <property name="sizeHint" stdset="0">
                <size>
@@ -362,14 +368,14 @@
             <property name="checkable">
              <bool>true</bool>
             </property>
+            <property name="toolButtonStyle">
+             <enum>Qt::ToolButtonStyle::ToolButtonTextBesideIcon</enum>
+            </property>
             <property name="autoRaise">
              <bool>true</bool>
             </property>
-            <property name="toolButtonStyle">
-             <enum>Qt::ToolButtonTextBesideIcon</enum>
-            </property>
             <property name="arrowType">
-             <enum>Qt::RightArrow</enum>
+             <enum>Qt::ArrowType::RightArrow</enum>
             </property>
            </widget>
           </item>
@@ -413,7 +419,7 @@
                <item>
                 <spacer name="voxelDepthSpacer">
                  <property name="orientation">
-                  <enum>Qt::Horizontal</enum>
+                  <enum>Qt::Orientation::Horizontal</enum>
                  </property>
                  <property name="sizeHint" stdset="0">
                   <size>
@@ -463,13 +469,16 @@
             </layout>
            </widget>
           </item>
+          <item>
+           <widget class="QPlainTextEdit" name="text_edit2"/>
+          </item>
          </layout>
         </widget>
        </item>
        <item>
         <spacer name="leftSpacer">
          <property name="orientation">
-          <enum>Qt::Vertical</enum>
+          <enum>Qt::Orientation::Vertical</enum>
          </property>
          <property name="sizeHint" stdset="0">
           <size>
@@ -483,7 +492,7 @@
      </widget>
     </item>
     <item>
-     <layout class="QVBoxLayout" name="verticalLayout_2">
+     <layout class="QVBoxLayout" name="verticalLayout_2" stretch="0,1,0">
       <item>
        <layout class="QHBoxLayout" name="viewRow">
         <item>
@@ -570,7 +579,7 @@
         <item>
          <spacer name="viewSpacer">
           <property name="orientation">
-           <enum>Qt::Horizontal</enum>
+           <enum>Qt::Orientation::Horizontal</enum>
           </property>
           <property name="sizeHint" stdset="0">
            <size>
@@ -581,16 +590,23 @@
          </spacer>
         </item>
         <item>
-         <widget class="QPushButton" name="btn_export_masks">
+         <widget class="QPushButton" name="btn_save_screenshot">
           <property name="text">
-           <string>Export masks</string>
+           <string>Save Screenshot</string>
           </property>
          </widget>
         </item>
         <item>
-         <widget class="QPushButton" name="btn_save_png">
+         <widget class="QPushButton" name="btn_export_results">
           <property name="text">
-           <string>Save as PNG</string>
+           <string>Export Results ...</string>
+          </property>
+         </widget>
+        </item>
+        <item>
+         <widget class="QPushButton" name="btn_export_csv">
+          <property name="text">
+           <string>Export CSV</string>
           </property>
          </widget>
         </item>
@@ -607,112 +623,111 @@
        </widget>
       </item>
       <item>
-       <layout class="QHBoxLayout" name="unitsRow">
-        <item>
-         <widget class="QLabel" name="label_units">
-          <property name="text">
-           <string>Units:</string>
-          </property>
-         </widget>
-        </item>
-        <item>
-         <widget class="QComboBox" name="cb_units">
-          <item>
-           <property name="text">
-            <string>px</string>
-           </property>
-          </item>
-          <item>
-           <property name="text">
-            <string>um</string>
-           </property>
-          </item>
-          <item>
-           <property name="text">
-            <string>nm</string>
-           </property>
-          </item>
-          <item>
-           <property name="text">
-            <string>mm</string>
-           </property>
-          </item>
-          <item>
-           <property name="text">
-            <string>m</string>
-           </property>
-          </item>
-         </widget>
-        </item>
-        <item>
-         <spacer name="unitsSpacer">
-          <property name="orientation">
-           <enum>Qt::Horizontal</enum>
-          </property>
-          <property name="sizeHint" stdset="0">
-           <size>
-            <width>0</width>
-            <height>0</height>
-           </size>
-          </property>
-         </spacer>
-        </item>
-       </layout>
-      </item>
-      <item>
-       <layout class="QHBoxLayout" name="plotsRow">
-        <item>
-         <widget class="PlotWidget" name="graph_diameters" native="true">
-          <property name="minimumSize">
-           <size>
-            <width>0</width>
-            <height>200</height>
-           </size>
-          </property>
-          <property name="maximumSize">
-           <size>
-            <width>16777215</width>
-            <height>300</height>
-           </size>
-          </property>
-         </widget>
-        </item>
-        <item>
-         <widget class="PlotWidget" name="graph_angles" native="true">
-          <property name="minimumSize">
-           <size>
-            <width>0</width>
-            <height>200</height>
-           </size>
-          </property>
-          <property name="maximumSize">
-           <size>
-            <width>16777215</width>
-            <height>300</height>
-           </size>
-          </property>
-         </widget>
-        </item>
-        <item>
-         <widget class="QPlainTextEdit" name="text_edit2">
-          <property name="minimumSize">
-           <size>
-            <width>0</width>
-            <height>200</height>
-           </size>
-          </property>
-          <property name="maximumSize">
-           <size>
-            <width>240</width>
-            <height>300</height>
-           </size>
-          </property>
-          <property name="readOnly">
-           <bool>true</bool>
-          </property>
-         </widget>
-        </item>
-       </layout>
+       <widget class="QWidget" name="widget_plots" native="true">
+        <layout class="QVBoxLayout" name="plotsAreaLayout">
+         <property name="leftMargin">
+          <number>0</number>
+         </property>
+         <property name="topMargin">
+          <number>0</number>
+         </property>
+         <property name="rightMargin">
+          <number>0</number>
+         </property>
+         <property name="bottomMargin">
+          <number>0</number>
+         </property>
+         <item>
+          <layout class="QHBoxLayout" name="unitsRow">
+           <item>
+            <widget class="QLabel" name="label_units">
+             <property name="text">
+              <string>Units:</string>
+             </property>
+            </widget>
+           </item>
+           <item>
+            <widget class="QComboBox" name="cb_units">
+             <item>
+              <property name="text">
+               <string>px</string>
+              </property>
+             </item>
+             <item>
+              <property name="text">
+               <string>um</string>
+              </property>
+             </item>
+             <item>
+              <property name="text">
+               <string>nm</string>
+              </property>
+             </item>
+             <item>
+              <property name="text">
+               <string>mm</string>
+              </property>
+             </item>
+             <item>
+              <property name="text">
+               <string>m</string>
+              </property>
+             </item>
+            </widget>
+           </item>
+           <item>
+            <spacer name="unitsSpacer">
+             <property name="orientation">
+              <enum>Qt::Orientation::Horizontal</enum>
+             </property>
+             <property name="sizeHint" stdset="0">
+              <size>
+               <width>0</width>
+               <height>0</height>
+              </size>
+             </property>
+            </spacer>
+           </item>
+          </layout>
+         </item>
+         <item>
+          <layout class="QHBoxLayout" name="plotsRow">
+           <item>
+            <widget class="PlotWidget" name="graph_diameters" native="true">
+             <property name="minimumSize">
+              <size>
+               <width>0</width>
+               <height>200</height>
+              </size>
+             </property>
+             <property name="maximumSize">
+              <size>
+               <width>16777215</width>
+               <height>300</height>
+              </size>
+             </property>
+            </widget>
+           </item>
+           <item>
+            <widget class="PlotWidget" name="graph_angles" native="true">
+             <property name="minimumSize">
+              <size>
+               <width>0</width>
+               <height>200</height>
+              </size>
+             </property>
+             <property name="maximumSize">
+              <size>
+               <width>16777215</width>
+               <height>300</height>
+              </size>
+             </property>
+            </widget>
+           </item>
+          </layout>
+         </item>
+        </layout>
+       </widget>
       </item>
      </layout>
     </item>
@@ -727,7 +742,7 @@
      <x>0</x>
      <y>0</y>
      <width>1100</width>
-     <height>24</height>
+     <height>33</height>
     </rect>
    </property>
    <widget class="QMenu" name="menuFile">

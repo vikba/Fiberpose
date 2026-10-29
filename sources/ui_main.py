@@ -160,8 +160,9 @@ class MainWindow(QMainWindow):
         self.btn_measure.clicked.connect(self.analyze_fibers)
         self.btn_set_scalebar.clicked.connect(self._on_set_scalebar_clicked)
         self.btn_plot_profile.clicked.connect(self._on_plot_profile_clicked)
-        self.btn_export_masks.clicked.connect(self._on_export_masks_clicked)
-        self.btn_save_png.clicked.connect(self._on_save_png_clicked)
+        self.btn_export_results.clicked.connect(self._on_export_results_clicked)
+        self.btn_save_screenshot.clicked.connect(self._on_save_screenshot_clicked)
+        self.btn_export_csv.clicked.connect(self.save_measurements)
         self.action_batch_processing.triggered.connect(self._on_batch_processing)
 
         # Collapsible "Advanced" sections start folded.
@@ -557,14 +558,15 @@ class MainWindow(QMainWindow):
         self._apply_runtime_after_config_change()
         self.statusbar.showMessage(f"Config updated: {self.config_filepath}", 5000)
 
-    def _on_edit_save_options(self):
+    def _on_edit_save_options(self) -> bool:
         current_options = self._normalize_save_options(self.config.save_options)
         dialog = SaveOptionsDialog(self, current_options)
         if dialog.exec() != QtWidgets.QDialog.DialogCode.Accepted:
-            return
+            return False
 
         self.config.save_options = self._normalize_save_options(dialog.options())
         self.statusbar.showMessage("Save options updated.", 4000)
+        return True
 
 
     # ------------------- Drag & drop -------------------
@@ -629,15 +631,13 @@ class MainWindow(QMainWindow):
         if selected is action_save:
             self._save_active_image_png()
 
-    def _on_export_masks_clicked(self) -> None:
-        if self.current_frame.orig_img is None:
-            return
-        self.save_predictions()
+    def _on_export_results_clicked(self) -> None:
+        if self.current_frame.orig_img is not None and self._on_edit_save_options():
+            self.save_predictions()
 
-    def _on_save_png_clicked(self) -> None:
-        if self.current_frame.orig_img is None:
-            return
-        self._save_active_image_png()
+    def _on_save_screenshot_clicked(self) -> None:
+        if self.current_frame.orig_img is not None:
+            self._save_active_image_png()
 
     def _save_active_image_png(self) -> None:
         """Save the full active image for the selected view mode as PNG."""
