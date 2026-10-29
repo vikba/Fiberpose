@@ -42,15 +42,8 @@ from .ui_support import UiConfigBinder
 from .pipeline import BatchService, BatchCallbacks
 from .io_export import ExportService
 from .ui_support import ScalebarTool, ProfileTool
-
-# ------------------- Paths -------------------
-
-HERE = os.path.dirname(os.path.abspath(__file__))
-PROJECT_ROOT = os.path.dirname(HERE)
-DEFAULT_UI_PATH = os.path.join(PROJECT_ROOT, "resources", "fiber_tool.ui")
-DEFAULT_CONFIG_PATH = os.path.join(PROJECT_ROOT, "resources", "config.json")
-DEFAULT_MODEL_PATH = os.path.join(PROJECT_ROOT, "checkpoints", "model_fiber_2_no_bg.onnx")
-MODELS_DIR = os.path.join(PROJECT_ROOT, "checkpoints")
+from .paths import DEFAULT_UI_PATH, EXAMPLE_IMAGE_PATH, default_config_path
+from .models import DEFAULT_MODEL, discover_models, models_dir, normalize_model_entry, resolve_model_path
 
 # ------------------- MainWindow -------------------
 
@@ -63,14 +56,15 @@ class MainWindow(QMainWindow):
     - Clear state when loading a new image.
     - Tightened UI updates/enabling.
     """
-    def __init__(self, ui_path: str = DEFAULT_UI_PATH, config_path: str = DEFAULT_CONFIG_PATH):
+    def __init__(self, ui_path: str = str(DEFAULT_UI_PATH), config_path: str | None = None):
         super().__init__()
         loadUi(ui_path, self)
         self.setWindowTitle("Fiberpose — fiber segmentation and analysis tool")
-        self.config_filepath = os.path.abspath(config_path)
+        self.config_filepath = os.path.abspath(config_path or default_config_path())
 
         # Load config and sync to UI
         self.config = AppConfig.load_from_json(self.config_filepath)
+        self.config.model_path = normalize_model_entry(self.config.model_path)
         self.sample_props = SampleProperties.defaults()
         self._ui_binder = UiConfigBinder()
         self._scalebar_tool = ScalebarTool()
@@ -197,7 +191,7 @@ class MainWindow(QMainWindow):
         # Delay loading default image until the UI is fully shown.
         QTimer.singleShot(0, self.load_default_image)
 
-        self.model_path = self._current_model_path() or DEFAULT_MODEL_PATH
+        self.model_path = self._current_model_path() or str(models_dir() / DEFAULT_MODEL)
 
         # ---- device / CUDA handling ----
         self.device = "cpu"   # default
@@ -269,8 +263,8 @@ class MainWindow(QMainWindow):
 
     def _init_model_selector(self) -> None:
         models = self._discover_model_files()
-        configured_entry = str(self.config.model_path or "").strip()
-        rel_default = os.path.relpath(DEFAULT_MODEL_PATH, PROJECT_ROOT)
+        configured_entry = normalize_model_entry(self.config.model_path)
+        rel_default = DEFAULT_MODEL
         self.cb_model.blockSignals(True)
         self.cb_model.clear()
         if models:
@@ -325,24 +319,17 @@ class MainWindow(QMainWindow):
         self._invalidate_prediction()
 
     def _discover_model_files(self) -> list[str]:
-        if not os.path.isdir(MODELS_DIR):
-            return []
-        candidates = []
-        for name in sorted(os.listdir(MODELS_DIR)):
-            if not name.lower().endswith(".onnx"):
-                continue
-            abs_path = os.path.join(MODELS_DIR, name)
-            rel_path = os.path.relpath(abs_path, PROJECT_ROOT)
-            candidates.append(rel_path)
-        return candidates
+        return discover_models()
 
     def _current_model_path(self) -> str | None:
         entry = self.cb_model.currentText().strip()
         if not entry:
             return None
-        if os.path.isabs(entry):
-            return entry
-        return os.path.join(PROJECT_ROOT, entry)
+        try:
+            return resolve_model_path(entry)
+        except Exception as exc:
+            logger.warning("Could not download model %s: %s", entry, exc)
+            return str(models_dir() / normalize_model_entry(entry))
 
 
     # ------------------- Display helpers -------------------
@@ -508,7 +495,8 @@ class MainWindow(QMainWindow):
             QtWidgets.QMessageBox.critical(self, title, message)
 
     def _apply_runtime_after_config_change(self) -> None:
-        model_entry = str(self.config.model_path or "").strip()
+        model_entry = normalize_model_entry(self.config.model_path)
+        self.config.model_path = model_entry
         if model_entry and self.cb_model.findText(model_entry) < 0:
             self.cb_model.addItem(model_entry)
 
@@ -536,7 +524,7 @@ class MainWindow(QMainWindow):
         return True
 
     def _on_load_config(self):
-        start_dir = os.path.dirname(self.config_filepath) if self.config_filepath else PROJECT_ROOT
+        start_dir = os.path.dirname(self.config_filepath) if self.config_filepath else os.path.expanduser("~")
         selected_path, _ = QFileDialog.getOpenFileName(
             self,
             "Select config file",
@@ -1970,11 +1958,11 @@ class MainWindow(QMainWindow):
 
     def load_default_image(self):
         """Load default image from persisted storage and normalize it for use."""
-        default_img_path = os.path.join(PROJECT_ROOT, "resources", "test.png")
+        default_img_path = str(EXAMPLE_IMAGE_PATH)
         if os.path.exists(default_img_path):
             self.open_source(path=default_img_path, source_kind="file")
         else:
-            logger.info("Default image not found: resources/test.png")
+            logger.info("Default image not found: %s", default_img_path)
 
     # ------------------- Processing configuration -------------------
     def _set_strict_mode(self, enabled: bool) -> None:

@@ -38,70 +38,61 @@ This makes the distance-transform field the central representation connecting ne
 
 ## Installation
 
-### 1. Clone the repository
+Fiberpose requires Python 3.10 or newer. A fresh conda or virtual environment is recommended.
 
 ```bash
 git clone https://github.com/vikba/Fiberpose.git
 cd Fiberpose
-```
 
-### 2. Create a Python environment
-
-Conda is recommended.
-
-```bash
 conda create -n fiberpose python=3.11 -y
 conda activate fiberpose
+
+pip install -e ".[gui]"
 ```
 
-### 3. Install runtime dependencies
-
-For normal GUI/CLI use:
-
-```bash
-pip install -r requirements.txt
-```
-
-For training or development workflows:
-
-```bash
-pip install -r requirements-train.txt
-```
+This installs Fiberpose in editable mode: changes to the code in `src/fiberpose/` take effect without reinstalling. Use `pip install -e .` (without `[gui]`) for the CLI and Python API only, without Qt dependencies.
 
 ### GPU note
 
 Fiberpose runtime inference uses ONNX Runtime. GPU acceleration is available only if your installed ONNX Runtime build exposes `CUDAExecutionProvider`. If CUDA is unavailable, Fiberpose automatically falls back to CPU execution.
 
-For training, install the PyTorch build that matches your CUDA version using the official PyTorch installation instructions, then install the remaining training dependencies.
+GPU inference needs an NVIDIA GPU with CUDA on Linux or Windows; it is not available on macOS. After installing Fiberpose, replace the CPU build of ONNX Runtime with the GPU build (the two cannot be installed side by side):
+
+```bash
+pip uninstall -y onnxruntime
+pip install onnxruntime-gpu
+```
+
+Running `pip install -e .` again reinstalls the CPU build, so repeat these two commands afterwards.
 
 ---
 
 ## Pretrained model
 
-By default, Fiberpose expects an ONNX checkpoint at:
+The default model, `R108_dt_fg.onnx`, is downloaded automatically on first use and cached locally. Fiberpose looks for models, by file name, in this order:
 
-```text
-checkpoints/model_fiber_2_no_bg.onnx
-```
+1. the folder set in the `FIBERPOSE_MODELS_DIR` environment variable;
+2. `checkpoints/` in the repository, when running from a source checkout;
+3. the per-user cache (for example `~/Library/Caches/fiberpose/models` on macOS).
 
-If the model file is not included in the repository, download it from the project release page or place your own compatible ONNX model in the `checkpoints/` directory. You can also select a model in the GUI or specify it through `resources/config.json`.
+To use your own ONNX model, place it in one of these folders and select it in the GUI, or set `model_path` in the configuration to its file name or absolute path.
 
 ---
 
 ## Running Fiberpose
 
-`run.py` is the main launcher for both GUI and CLI modes.
+The `fiberpose` command launches both GUI and CLI modes. `python -m fiberpose` is equivalent.
 
 ### GUI mode
 
 ```bash
-python run.py
+fiberpose
 ```
 
 or explicitly:
 
 ```bash
-python run.py --gui
+fiberpose --gui
 ```
 
 The GUI supports:
@@ -119,31 +110,31 @@ The GUI supports:
 Run segmentation on an image, folder, or stack:
 
 ```bash
-python run.py --cli --input /path/to/image_or_folder_or_stack
+fiberpose --cli --input /path/to/image_or_folder_or_stack
 ```
 
 Run the full measurement pipeline:
 
 ```bash
-python run.py --cli --input /path/to/image_or_folder_or_stack --measurements
+fiberpose --cli --input /path/to/image_or_folder_or_stack --measurements
 ```
 
 Write outputs to a selected directory:
 
 ```bash
-python run.py --cli --input /path/to/image_or_folder_or_stack --output /path/to/output
+fiberpose --cli --input /path/to/image_or_folder_or_stack --output /path/to/output
 ```
 
 Use a custom config:
 
 ```bash
-python run.py --cli --input /path/to/image_or_folder_or_stack --config resources/config.json
+fiberpose --cli --input /path/to/image_or_folder_or_stack --config /path/to/config.json
 ```
 
 Export only measurement CSV files:
 
 ```bash
-python run.py --cli --input /path/to/image_or_folder_or_stack --measurements --save-kind csv
+fiberpose --cli --input /path/to/image_or_folder_or_stack --measurements --save-kind csv
 ```
 
 ### CLI arguments
@@ -153,11 +144,12 @@ python run.py --cli --input /path/to/image_or_folder_or_stack --measurements --s
 | `--gui` | Force GUI mode. |
 | `--cli` | Run command-line processing mode. |
 | `--input <path>` | Input image, folder, or stack. Required in CLI mode. |
-| `--config <path>` | Path to a JSON configuration file. Default: `resources/config.json`. |
+| `--config <path>` | Path to a JSON configuration file. Default: the user configuration file (see Configuration below). |
 | `--output <dir>` | Output directory for exported files. |
 | `--measurements` | Run full measurement pipeline. Without this flag, CLI runs segmentation-only. |
 | `--invert` | Invert image intensities before inference. Useful when fibers are dark on a bright background. |
 | `--save-kind results\|csv` | Export full result artifacts or only CSV measurement tables. Default: `results`. |
+| `--version` | Print the Fiberpose version and exit. |
 
 ### CLI exit codes
 
@@ -166,6 +158,23 @@ python run.py --cli --input /path/to/image_or_folder_or_stack --measurements --s
 | `0` | Processing finished without failures. |
 | `1` | Processing finished, but one or more frames failed during processing or export. |
 | `2` | Invalid arguments, missing input/config/model, or startup/runtime error. |
+
+### Python API
+
+```python
+import imageio.v3 as iio
+import fiberpose
+
+image = iio.imread("fibers.tif")
+result = fiberpose.analyze(image, pixel_size=0.1, unit="um")
+
+print(result.summary["diam_mean"], result.summary["orientation_index"])
+result.labels               # instance labels (0 = background)
+result.distance_transform   # predicted distance-transform field
+result.diameters            # per-sample diameters in `unit`
+```
+
+Pass a `fiberpose.AppConfig` as the second argument to change model or analysis parameters.
 
 ---
 
@@ -203,56 +212,64 @@ CSV exports include fiber diameter statistics, orientation metrics, porosity, an
 
 ## Configuration
 
-Default parameters are stored in:
+Your settings are stored in a per-user configuration file, created from the bundled defaults on first run:
 
-```text
-resources/config.json
-```
+| OS | Location |
+|---|---|
+| macOS | `~/Library/Application Support/fiberpose/config.json` |
+| Linux | `~/.config/fiberpose/config.json` |
+| Windows | `%LOCALAPPDATA%\fiberpose\config.json` |
+
+The GUI saves its settings there when it closes. Delete the file to restore the defaults.
 
 The configuration controls model path, device preference, image scaling, ridge detection parameters, segmentation mode, centerline filtering, measurement spacing, and export options.
 
 You can edit configuration values in the GUI through the configuration editor or pass a config file directly to the CLI:
 
 ```bash
-python run.py --cli --input /path/to/data --config /path/to/config.json
+fiberpose --cli --input /path/to/data --config /path/to/config.json
 ```
 
 ---
 
 ## Project structure
 
-Typical repository layout:
-
 ```text
 Fiberpose/
-├── run.py                     # Main GUI/CLI launcher
-├── requirements.txt           # Runtime dependencies
-├── requirements-train.txt     # Training/development dependencies
-├── resources/
-│   ├── config.json            # Default configuration
-│   └── fiber_tool.ui          # Qt GUI layout
-├── checkpoints/
-│   └── model_fiber_2_no_bg.onnx  # Default ONNX model checkpoint
-└── sources/
-    ├── ui_main.py             # Main PyQt GUI
-    ├── pipeline.py            # Pipeline orchestration
-    ├── fiber_analyzer_2D.py   # 2D prediction, segmentation, and measurement logic
-    ├── ridge_detector.py      # Ridge/centerline detector
-    ├── ml.py                  # ONNX Runtime inference wrapper
-    ├── domain.py              # Data models and configuration
-    ├── io_export.py           # Export services
-    ├── ui_support.py          # GUI helpers
-    └── utils.py               # Numeric and image helper functions
+├── pyproject.toml             # Package metadata, dependencies, `fiberpose` command
+├── README.md
+├── PIPELINE.md                # Runtime pipeline details
+├── LICENSE
+├── src/fiberpose/
+│   ├── run.py                 # GUI/CLI launcher (`fiberpose` command)
+│   ├── api.py                 # Public Python API: analyze()
+│   ├── models.py              # Model lookup, download, and cache
+│   ├── paths.py               # Bundled resources and user config locations
+│   ├── ui_main.py             # Main PyQt GUI
+│   ├── ui_support.py          # GUI helpers
+│   ├── cli_runner.py          # Batch CLI processing
+│   ├── pipeline.py            # Pipeline orchestration
+│   ├── fiber_analyzer_2D.py   # 2D prediction, segmentation, and measurement logic
+│   ├── ridge_detector.py      # Ridge/centerline detector
+│   ├── ml.py                  # ONNX Runtime inference wrapper
+│   ├── domain.py              # Data models and configuration
+│   ├── io_export.py           # Export services
+│   ├── utils.py               # Numeric and image helper functions
+│   └── resources/
+│       ├── config.json        # Default configuration
+│       ├── fiber_tool.ui      # Qt GUI layout
+│       └── test.png           # Example image
+└── train/                     # Training and ONNX export scripts (not installed)
 ```
 
 ---
 
 ## Training
 
-Training is currently intended for developers and advanced users. Install the training requirements first:
+Training is currently intended for developers and advanced users. Install the training dependencies in the same environment:
 
 ```bash
-pip install -r requirements-train.txt
+pip install -e ".[train]"
 ```
 
 A typical training dataset should contain paired microscopy images and corresponding distance-transform targets. The current Fiberpose model family is based on a residual U-Net-style architecture trained to predict distance-transform geometry rather than binary masks.
@@ -265,13 +282,7 @@ Training scripts and dataset-preparation utilities may change while the project 
 
 ### Model file not found
 
-Check that the default model exists:
-
-```text
-checkpoints/model_fiber_2_no_bg.onnx
-```
-
-or update the model path in `resources/config.json`.
+The default model is downloaded on first use, which needs an internet connection. On an offline machine, copy `R108_dt_fg.onnx` into a folder and point `FIBERPOSE_MODELS_DIR` at it. For a custom model, check that `model_path` in your configuration is a file name in the models folder or an absolute path.
 
 ### GPU is not used
 
@@ -293,7 +304,7 @@ Try the `--invert` CLI flag or the invert option in the GUI if your fibers are d
 Run the full analysis pipeline, not segmentation-only:
 
 ```bash
-python run.py --cli --input /path/to/data --measurements
+fiberpose --cli --input /path/to/data --measurements
 ```
 
 ---

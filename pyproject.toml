@@ -1,0 +1,54 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "fiberpose"
+dynamic = ["version"]
+description = "Segmentation and morphometry of fibrous microstructures from a predicted distance-transform field"
+readme = "README.md"
+license = "GPL-3.0-only"
+license-files = ["LICENSE"]
+requires-python = ">=3.10"
+authors = [{ name = "Viktor Balashov" }]
+keywords = ["microscopy", "segmentation", "fibers", "morphometry", "distance transform", "image analysis"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Image Processing",
+]
+dependencies = [
+    "numpy>=1.26",
+    "scipy>=1.11",
+    "scikit-image>=0.22",
+    "numba>=0.59",
+    "onnxruntime>=1.17",
+    "opencv-python-headless>=4.8",
+    "imageio>=2.31",
+    "tifffile>=2023.7.10",
+    "tqdm>=4.64",
+    "platformdirs>=3",
+    "pooch>=1.8",
+]
+
+[project.optional-dependencies]
+gui = ["PyQt6>=6.5", "pyqtgraph>=0.13"]
+train = ["torch>=2.2", "torchvision>=0.17", "tensorboard"]
+
+[project.scripts]
+fiberpose = "fiberpose.run:main"
+
+[project.urls]
+Homepage = "https://github.com/vikba/Fiberpose"
+Issues = "https://github.com/vikba/Fiberpose/issues"
+
+[tool.hatch.version]
+path = "src/fiberpose/__init__.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/fiberpose"]

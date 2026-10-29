@@ -9,14 +9,10 @@ from typing import Any, Iterable
 
 import imageio.v3 as iio
 from .domain import AppConfig, BatchResult, Frame, ImageBatch, SampleProperties
+from .models import resolve_model_path
+from .paths import default_config_path
 
 from tqdm import tqdm
-
-
-HERE = os.path.dirname(os.path.abspath(__file__))
-PROJECT_ROOT = os.path.dirname(HERE)
-DEFAULT_CONFIG_PATH = os.path.join(PROJECT_ROOT, "resources", "config.json")
-DEFAULT_MODEL_PATH = os.path.join(PROJECT_ROOT, "checkpoints", "model_fiber_2_no_bg.onnx")
 
 
 class CliRunner:
@@ -26,14 +22,14 @@ class CliRunner:
         self,
         *,
         input_path: str,
-        config_path: str = DEFAULT_CONFIG_PATH,
+        config_path: str | None = None,
         output_dir: str | None = None,
         compute_measurements: bool = False,
         invert_input: bool | None = None,
         save_kind: str = "results",
     ) -> None:
         self.input_path = str(input_path)
-        self.config_path = os.path.abspath(config_path)
+        self.config_path = os.path.abspath(config_path or default_config_path())
         self.output_dir = output_dir
         self.compute_measurements = bool(compute_measurements)
         self.invert_input = invert_input
@@ -41,12 +37,7 @@ class CliRunner:
 
     @staticmethod
     def _resolve_model_path(config: AppConfig) -> str:
-        model_entry = str(config.model_path or "").strip()
-        if not model_entry:
-            return DEFAULT_MODEL_PATH
-        if os.path.isabs(model_entry):
-            return model_entry
-        return os.path.join(PROJECT_ROOT, model_entry)
+        return resolve_model_path(config.model_path)
 
     @staticmethod
     def _resolve_device(config: AppConfig) -> str:
@@ -359,7 +350,11 @@ class CliRunner:
             return 2
 
         invert_input = bool(self.invert_input) if self.invert_input is not None else False
-        model_path = self._resolve_model_path(config)
+        try:
+            model_path = self._resolve_model_path(config)
+        except Exception as exc:
+            print(f"Error: failed to locate or download the model: {exc}")
+            return 2
         try:
             device = self._resolve_device(config)
         except Exception as exc:

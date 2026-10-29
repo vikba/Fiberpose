@@ -1,10 +1,29 @@
+# Python
 __pycache__/
-tests/
-manuscript/
-*.pyc
-*.pyo
-*.pyd
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+.pytest_cache/
+
+# OS and editors
 .DS_Store
-resources/.DS_Store
+.vscode/
+.idea/
+
+# Local models, data and tests (not part of the public repository)
 checkpoints/
-resources/config.json
+*.onnx
+*.onnx.data
+validation/
+manuscript/
+profiling_results/
+out/
+tests/
+
+# Local tooling and notes
+.agents/
+.codex
+webapp/
+TODO.md

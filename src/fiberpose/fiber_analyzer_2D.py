@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-import os
 from typing import Any, Dict, List, Optional, Tuple
 
 import cv2
@@ -22,10 +21,6 @@ from .utils import (
     to_uint8_for_view,
 )
 
-
-# ---------- Paths ----------
-HERE = os.path.dirname(os.path.abspath(__file__))
-PROJECT_ROOT = os.path.dirname(HERE)
 
 logger = logging.getLogger(__name__)
 
