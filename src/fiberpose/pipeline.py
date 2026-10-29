@@ -9,6 +9,7 @@ from typing import Any, Callable
 
 import cv2
 import numpy as np
+from scipy.ndimage import value_indices
 from scipy.spatial import cKDTree
 
 from .domain import AppConfig, BatchResult, Frame, ImageBatch, SampleProperties
@@ -535,15 +536,23 @@ class PipelineController:
         base_rgb[~vm] = (0, 0, 0)
         return base_rgb
 
-    @staticmethod
-    def _angle_to_bgr(angle_deg: float) -> tuple[int, int, int]:
-        if not np.isfinite(angle_deg):
-            return (200, 200, 200)
-        ang = ((-angle_deg + 30.) % 180.0) - 90.0
+    # Fully saturated color for every OpenCV hue (0..179). Converted one pixel at a time:
+    # cvtColor's vectorized path for longer rows rounds some channels differently.
+    _HUE_TO_BGR = np.array(
+        [cv2.cvtColor(np.uint8([[[h, 255, 255]]]), cv2.COLOR_HSV2BGR)[0, 0] for h in range(180)],
+        dtype=np.uint8,
+    )
+
+    @classmethod
+    def _angles_to_bgr(cls, angles_deg: np.ndarray) -> np.ndarray:
+        """Map axial angles (deg) to (N, 3) colors; the hue is offset by 30 deg. Non-finite -> gray."""
+        angles = np.asarray(angles_deg, dtype=np.float64)
+        ang = np.mod(-angles + 30.0, 180.0) - 90.0
         hue = (ang + 90.0) / 180.0 * 179.0
-        hsv = np.uint8([[[hue, 255, 255]]])
-        bgr = cv2.cvtColor(hsv, cv2.COLOR_HSV2BGR)[0, 0]
-        return int(bgr[0]), int(bgr[1]), int(bgr[2])
+        finite = np.isfinite(hue)
+        colors = cls._HUE_TO_BGR[np.where(finite, hue, 0.0).astype(np.uint8)]
+        colors[~finite] = (200, 200, 200)
+        return colors
 
     @staticmethod
     def _weighted_axial_average_angles(
@@ -586,11 +595,9 @@ class PipelineController:
                 continue
             sample_map.setdefault(label_id, []).append((float(y), float(x), float(angle_deg)))
 
+        label_pixels = value_indices(labels)
         for label_id, label_samples in sample_map.items():
-            mask = labels == label_id
-            ys, xs = np.nonzero(mask)
-            if ys.size == 0:
-                continue
+            ys, xs = label_pixels[label_id]
 
             sample_arr = np.asarray(label_samples, dtype=np.float32)
             tree = cKDTree(sample_arr[:, :2])
@@ -601,11 +608,7 @@ class PipelineController:
 
             angles = sample_arr[:, 2]
             pixel_angles = self._weighted_axial_average_angles(angles, distances, indices)
-            pixel_colors = np.asarray(
-                [self._angle_to_bgr(float(angle)) for angle in pixel_angles],
-                dtype=np.uint8,
-            )
-            img[ys, xs] = pixel_colors
+            img[ys, xs] = self._angles_to_bgr(pixel_angles)
 
     def build_measurement_overlays(self, frame: Frame) -> None:
         sampling_base = ensure_rgb_u8(frame.dt_u8 if frame.dt_u8 is not None else frame.dt_normalized)
