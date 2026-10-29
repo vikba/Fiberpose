@@ -362,14 +362,6 @@ class CliRunner:
             analyzer = FiberAnalyzer_2D(
                 model_path=model_path,
                 device=device,
-                strict=config.strict_centerlines,
-                keep_segments_without_measurement_centerlines=bool(
-                    config.keep_segments_without_measurement_centerlines
-                ),
-            )
-            analyzer.set_strict_centerline_filter(bool(config.strict_centerlines))
-            analyzer.set_keep_segments_without_measurement_centerlines(
-                bool(config.keep_segments_without_measurement_centerlines)
             )
             controller = PipelineController(analyzer)
         except Exception as exc:

@@ -38,8 +38,6 @@ class FiberAnalyzer_2D:
         self,
         model_path: str,
         device: Any,
-        strict: bool | None = None,
-        keep_segments_without_measurement_centerlines: bool | None = None,
     ):
         self.model_path = model_path
         self.device = device
@@ -50,12 +48,9 @@ class FiberAnalyzer_2D:
         }
 
         self._predictor: Optional[OnnxFiberposeModel] = None
-        self._strict_centerlines = bool(strict) if strict is not None else False
-        self._keep_segments_without_measurement_centerlines = (
-            bool(keep_segments_without_measurement_centerlines)
-            if keep_segments_without_measurement_centerlines is not None
-            else False
-        )
+        # Set from config by PipelineController.build_centerlines before each run.
+        self._strict_centerlines = False
+        self._keep_segments_without_measurement_centerlines = False
 
         self._segment_counter: int = 0
 

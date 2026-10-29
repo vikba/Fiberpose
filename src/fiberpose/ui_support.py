@@ -519,8 +519,6 @@ class InvalidationFlags:
 
     prediction_changed: bool = False
     segmentation_changed: bool = False
-    measurements_changed: bool = False
-    sample_properties_changed: bool = False
 
 
 class UiConfigBinder:
@@ -588,28 +586,13 @@ class UiConfigBinder:
     def sync_ui_to_config(window, config: AppConfig) -> tuple[AppConfig, InvalidationFlags]:
         prev_model_path = str(config.model_path)
         prev_scale_label = str(config.scale_label)
-        prev_ridge_sigma = float(config.ridge_sigma)
-        prev_ridge_low = float(config.ridge_low)
-        prev_ridge_high = float(config.ridge_high)
-        prev_min_fragment_centerline_length_px = float(
-            config.min_fragment_centerline_length_px
-        )
         prev_strict = bool(config.strict_centerlines)
         prev_mode = str(config.segmentation_mode)
-        prev_merge_expansion_factor = float(config.merge_expansion_factor)
-        prev_segmentation_expansion_factor = float(config.segmentation_expansion_factor)
         prev_gradient_threshold = float(config.watershed_grad_threshold)
 
         config.model_path = window.cb_model.currentText().strip()
         config.use_gpu = window.chb_usegpu.isChecked()
         config.scale_label = window.cb_scale.currentText().strip()
-
-        config.ridge_sigma = float(config.ridge_sigma)
-        config.ridge_low = float(config.ridge_low)
-        config.ridge_high = float(config.ridge_high)
-        config.min_fragment_centerline_length_px = float(
-            config.min_fragment_centerline_length_px
-        )
         config.strict_centerlines = window.chb_strict.isChecked()
 
         if window.rb_ridge.isChecked():
@@ -618,36 +601,14 @@ class UiConfigBinder:
             config.segmentation_mode = "watershed"
 
         config.watershed_grad_threshold = float(window.sp_grad_magnitude_threshold.value())
-        config.merge_expansion_factor = float(config.merge_expansion_factor)
-        config.segmentation_expansion_factor = float(config.segmentation_expansion_factor)
 
         prediction_changed = (
             prev_model_path != str(config.model_path)
             or prev_scale_label != str(config.scale_label)
         )
-        ridge_sigma_changed = not math.isclose(prev_ridge_sigma, float(config.ridge_sigma), rel_tol=1e-9, abs_tol=1e-9)
-        ridge_low_changed = not math.isclose(prev_ridge_low, float(config.ridge_low), rel_tol=1e-9, abs_tol=1e-9)
-        ridge_high_changed = not math.isclose(prev_ridge_high, float(config.ridge_high), rel_tol=1e-9, abs_tol=1e-9)
-        min_fragment_centerline_length_changed = not math.isclose(
-            prev_min_fragment_centerline_length_px,
-            float(config.min_fragment_centerline_length_px),
-            rel_tol=1e-9,
-            abs_tol=1e-9,
-        )
         segmentation_changed = (
-            ridge_sigma_changed
-            or ridge_low_changed
-            or ridge_high_changed
-            or min_fragment_centerline_length_changed
-            or prev_strict != bool(config.strict_centerlines)
+            prev_strict != bool(config.strict_centerlines)
             or prev_mode != str(config.segmentation_mode)
-            or not math.isclose(prev_merge_expansion_factor, float(config.merge_expansion_factor), rel_tol=1e-9, abs_tol=1e-9)
-            or not math.isclose(
-                prev_segmentation_expansion_factor,
-                float(config.segmentation_expansion_factor),
-                rel_tol=1e-9,
-                abs_tol=1e-9,
-            )
             or not math.isclose(
                 prev_gradient_threshold,
                 float(config.watershed_grad_threshold),
@@ -658,7 +619,6 @@ class UiConfigBinder:
         flags = InvalidationFlags(
             prediction_changed=prediction_changed,
             segmentation_changed=segmentation_changed,
-            measurements_changed=False,
         )
         return config, flags
 
@@ -697,8 +657,6 @@ class UiConfigBinder:
         window.sp_grad_magnitude_threshold.blockSignals(True)
         window.sp_grad_magnitude_threshold.setValue(float(config.watershed_grad_threshold))
         window.sp_grad_magnitude_threshold.blockSignals(False)
-
-        window._update_strict_checkbox_state()
 
 
 class ViewMode(str, Enum):

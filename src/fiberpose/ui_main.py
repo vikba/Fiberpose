@@ -1,7 +1,6 @@
 """Main Qt window coordinating image IO, analysis workflows, and visualization state."""
 
 import os
-import math
 from datetime import datetime
 from typing import Any, Dict
 import numpy as np
@@ -93,7 +92,6 @@ class MainWindow(QMainWindow):
         self.analyzer: FiberAnalyzer_2D | None = None
         self.current_image_name: str | None = None
         self._scalebar_pending: bool = False
-        self._scalebar_points: list[tuple[float, float]] = []
         self._scalebar_length_value: float = 100.0
         self._scalebar_unit: str = "um"
         self._pixmap_source_shape: tuple[int, int] | None = None
@@ -101,7 +99,6 @@ class MainWindow(QMainWindow):
         # View/zoom state
         self._zoom_mode_active: bool = False
         self._base_scale: float = 1.0
-        self._current_zoom: float = 1.0
         self._min_zoom_factor: float = 0.2
         self._max_zoom_factor: float = 5.0
 
@@ -193,23 +190,11 @@ class MainWindow(QMainWindow):
         self.analyzer = FiberAnalyzer_2D(
             model_path=self.model_path,
             device=self.device,
-            strict=self.config.strict_centerlines, 
-            keep_segments_without_measurement_centerlines=bool(
-                self.config.keep_segments_without_measurement_centerlines
-            ),
-        )
-        self.analyzer.set_strict_centerline_filter(self.config.strict_centerlines)
-        self.analyzer.set_keep_segments_without_measurement_centerlines(
-            bool(self.config.keep_segments_without_measurement_centerlines)
         )
 
         # react to checkbox changes at runtime
         self.chb_usegpu.toggled.connect(self._on_usegpu_toggled)
         self.chb_invert.toggled.connect(self._on_invert_toggled)
-        self.rb_watershed.toggled.connect(self._on_segmentation_mode_changed)
-        self.rb_ridge.toggled.connect(self._on_segmentation_mode_changed)
-        self.chb_strict.toggled.connect(self._on_strict_checkbox_toggled)
-        self._update_strict_checkbox_state()
 
         self._pipeline_service.set_analyzer(self.analyzer)
 
@@ -281,9 +266,7 @@ class MainWindow(QMainWindow):
             else:
                 self.cb_model.setCurrentIndex(0)
         self.cb_model.blockSignals(False)
-        if not getattr(self, "_model_selector_connected", False):
-            self.cb_model.currentIndexChanged.connect(self._on_model_selection_changed)
-            self._model_selector_connected = True
+        self.cb_model.currentIndexChanged.connect(self._on_model_selection_changed)
 
     def _on_model_selection_changed(self, index: int):
         """Handle model selection changed and propagate UI state updates.
@@ -332,7 +315,6 @@ class MainWindow(QMainWindow):
             self._pixitem.setPixmap(QtGui.QPixmap())
             self._pixmap_source_shape = None
             self._zoom_mode_active = False
-            self._current_zoom = 1.0
             self._base_scale = 1.0
             self.btn_reset_view.hide()
             self._remove_profile_items()
@@ -386,7 +368,6 @@ class MainWindow(QMainWindow):
             self.graphicsView.centerOn(self._pixitem)
             scale = self.graphicsView.transform().m11()
             self._base_scale = scale if scale not in (0.0, None) else 1.0
-            self._current_zoom = 1.0
             self._zoom_mode_active = False
             self._update_reset_button_visibility()
 
@@ -498,10 +479,6 @@ class MainWindow(QMainWindow):
         if self.analyzer is not None:
             self._on_model_selection_changed(self.cb_model.currentIndex())
             self._on_usegpu_toggled(self.chb_usegpu.isChecked())
-            self.analyzer.set_strict_centerline_filter(self.config.strict_centerlines)
-            self.analyzer.set_keep_segments_without_measurement_centerlines(
-                bool(self.config.keep_segments_without_measurement_centerlines)
-            )
 
     def _load_config_from_path(self, path: str) -> bool:
         selected_path = os.path.abspath(path)
@@ -1017,7 +994,6 @@ class MainWindow(QMainWindow):
         self._scalebar_length_value = length_value
         self._scalebar_unit = combo.currentText()
         self._scalebar_tool.start(self._scalebar_length_value, self._scalebar_unit)
-        self._scalebar_points = []
         self._scalebar_pending = True
         self.graphicsView.viewport().setCursor(Qt.CursorShape.CrossCursor)
         self._show_info(
@@ -1046,21 +1022,10 @@ class MainWindow(QMainWindow):
             return
 
         px_size = self._scalebar_tool.add_point(x, y)
-        self._scalebar_points.append((x, y))
         if px_size is not None:
             self._finalize_scalebar_selection(pixel_size=px_size)
 
-    def _finalize_scalebar_selection(self, pixel_size: float | None = None):
-        if pixel_size is None and len(self._scalebar_points) < 2:
-            return
-        if pixel_size is None:
-            (x0, y0), (x1, y1) = self._scalebar_points[:2]
-            pixel_length = math.hypot(x1 - x0, y1 - y0)
-            if pixel_length <= 0:
-                self._show_warning("Invalid selection", "Select two distinct points for the scalebar.")
-                self._cancel_scalebar_selection()
-                return
-            pixel_size = self._scalebar_length_value / pixel_length
+    def _finalize_scalebar_selection(self, pixel_size: float):
         self.sample_props.pixel_size_x = float(pixel_size)
         self.sample_props.pixel_size_y = float(pixel_size)
         self.sample_props.unit = str(self._scalebar_unit or "px")
@@ -1074,13 +1039,10 @@ class MainWindow(QMainWindow):
         )
         self._cancel_scalebar_selection()
 
-    def _cancel_scalebar_selection(self, reset_cursor: bool = True, clear_points: bool = True):
+    def _cancel_scalebar_selection(self):
         self._scalebar_pending = False
         self._scalebar_tool.cancel()
-        if clear_points:
-            self._scalebar_points = []
-        if reset_cursor:
-            self.graphicsView.viewport().unsetCursor()
+        self.graphicsView.viewport().unsetCursor()
 
     # ------------------- Zoom helpers -------------------
 
@@ -1120,7 +1082,6 @@ class MainWindow(QMainWindow):
         self.graphicsView.scale(zoom_factor, zoom_factor)
         self.graphicsView.setTransformationAnchor(was_anchor)
         self._zoom_mode_active = True
-        self._current_zoom = relative
         self._update_reset_button_visibility()
         return True
 
@@ -1877,7 +1838,6 @@ class MainWindow(QMainWindow):
             self._profile_dialog.close()
 
         self._scalebar_pending = False
-        self._scalebar_points = []
         self.graphicsView.viewport().unsetCursor()
 
         self._profile_mode_active = False
@@ -1908,12 +1868,6 @@ class MainWindow(QMainWindow):
         else:
             self.chb_usegpu.setChecked(False)
             self.device = "cpu"
-            # notify once at init if the UI is asking for GPU (edge case: pre-checked in .ui)
-            if getattr(self.chb_usegpu, "isChecked", lambda: False)():
-                self._show_info(
-                    "CUDA not available",
-                    "ONNX CUDA provider not available. Falling back to CPU."
-                )
 
     def _on_usegpu_toggled(self, checked: bool):
         cuda_ok = onnx_cuda_available()
@@ -1931,21 +1885,6 @@ class MainWindow(QMainWindow):
     def _on_invert_toggled(self, checked: bool):
         self._invalidate_prediction()
 
-    def _on_segmentation_mode_changed(self, checked: bool | None = None):
-        if not checked: return # Ignore signals from the button being unchecked
-        
-        # Sync the radio button state to config
-        self.sync_ui_to_config() 
-        
-        # Update UI states that depend on the mode
-        self._update_strict_checkbox_state()
-        
-        if self.analyzer is not None:
-            self.analyzer.set_strict_centerline_filter(self.config.strict_centerlines)
-
-    def _on_strict_checkbox_toggled(self, checked: bool):
-        self._set_strict_mode(bool(checked))
-
     # ------------------- New default image loading -------------------
 
     def load_default_image(self):
@@ -1955,21 +1894,6 @@ class MainWindow(QMainWindow):
             self.open_source(path=default_img_path, source_kind="file")
         else:
             logger.info("Default image not found: %s", default_img_path)
-
-    # ------------------- Processing configuration -------------------
-    def _set_strict_mode(self, enabled: bool) -> None:
-        """Set strict centerline mode across UI, analyzer, and config."""
-        self.chb_strict.blockSignals(True)
-        self.chb_strict.setChecked(bool(enabled))
-        self.chb_strict.blockSignals(False)
-        
-        self.config.strict_centerlines = bool(enabled)
-        if self.analyzer is not None:
-            self.analyzer.set_strict_centerline_filter(bool(enabled))
-
-    def _update_strict_checkbox_state(self) -> None:
-        """Strict filtering now controls measurement-centerline filtering and is always available."""
-        self.chb_strict.setEnabled(True)
 
 
     def sync_ui_to_sample_properties(self):
@@ -1990,8 +1914,6 @@ class MainWindow(QMainWindow):
             self._invalidate_prediction()
         elif flags.segmentation_changed:
             self._invalidate_segmentation()
-        elif flags.measurements_changed:
-            self._invalidate_measurements()
 
     def sync_config_to_ui(self):
         """Updates the UI widgets to reflect the values in self.config."""
