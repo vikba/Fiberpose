@@ -461,7 +461,6 @@ class PipelineController:
             min_radius_px=1.5 * current_scale,
             min_peak_px=3.0 * current_scale,
             peak_footprint=5,
-            max_pores=None,
         )
 
         outputs = self._build_measurement_outputs(

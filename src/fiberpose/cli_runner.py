@@ -83,8 +83,6 @@ class CliRunner:
 
     @staticmethod
     def _progress(total: int, desc: str):
-        if tqdm is None:
-            return None
         return tqdm(total=int(total), desc=desc, unit="frame")
 
     @classmethod
@@ -202,10 +200,8 @@ class CliRunner:
                     z_index=z_index,
                 )
             )
-            if progress is not None:
-                progress.update(1)
-        if progress is not None:
-            progress.close()
+            progress.update(1)
+        progress.close()
         return BatchResult(frame_results=frame_results)
 
     def _run_streaming_folder(
@@ -272,10 +268,8 @@ class CliRunner:
             del batch
             del frame
             del frame_img
-            if progress is not None:
-                progress.update(1)
-        if progress is not None:
-            progress.close()
+            progress.update(1)
+        progress.close()
 
         manifest = {
             "export_config": export_config,

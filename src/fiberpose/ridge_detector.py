@@ -229,7 +229,6 @@ def _trace_one_direction(
     y = y0
     p = x * w + y
 
-    alpha_p = alpha_arr[p]
     last_oct = int(oct4_arr[p])  # 0..3
     if dir_flag == 2:
         last_oct += 4
@@ -685,7 +684,6 @@ class RidgeDetector:
     @classmethod
     def _link_contours(cls, ismax, ev, px, py, w, h, alpha_arr, oct4_arr) -> List[np.ndarray]:
 
-        label = np.zeros((w * h,), dtype=np.int32)
         indx  = np.zeros((w * h,), dtype=np.int32)
 
         runs = cls._threshold_runs(ismax, 2, w, h)

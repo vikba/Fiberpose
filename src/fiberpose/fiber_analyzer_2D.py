@@ -38,20 +38,16 @@ class FiberAnalyzer_2D:
         self,
         model_path: str,
         device: Any,
-        model_kwargs: Optional[Dict[str, Any]] = None,
         strict: bool | None = None,
         keep_segments_without_measurement_centerlines: bool | None = None,
     ):
         self.model_path = model_path
         self.device = device
 
-        defaults: Dict[str, Any] = {
+        self._model_kwargs: Dict[str, Any] = {
             "nbase": "1,32,64,128,256",
+            "device": device,
         }
-        if model_kwargs:
-            defaults.update(model_kwargs)
-        defaults["device"] = device
-        self._model_kwargs = defaults
 
         self._predictor: Optional[OnnxFiberposeModel] = None
         self._strict_centerlines = bool(strict) if strict is not None else False
@@ -139,26 +135,10 @@ class FiberAnalyzer_2D:
         )
         return self._predictor
 
-    def _infer_model_stride(self) -> int:
-        stride = 16
-        predictor = self._ensure_predictor()
-        try:
-            if hasattr(predictor, "stride"):
-                s = int(predictor.stride)
-                if s > 0:
-                    return s
-            if hasattr(predictor, "nbase"):
-                levels = str(predictor.nbase).split(",")
-                downs = max(0, len(levels) - 1)
-                stride = 2 ** downs
-        except Exception:
-            pass
-        return stride
-
     def _run_model(self, image: np.ndarray) -> tuple[np.ndarray, Optional[np.ndarray]]:
 
         predictor = self._ensure_predictor()
-        stride = self._infer_model_stride()
+        stride = int(predictor.stride)
         H, W = image.shape[:2]
         pad_h = (stride - (H % stride)) % stride
         pad_w = (stride - (W % stride)) % stride
@@ -171,11 +151,10 @@ class FiberAnalyzer_2D:
         else:
             image_pad = image
         dt_pad, fg_pad = predictor.predict(image_pad)
-        dt = dt_pad[:H, :W] if dt_pad.ndim == 2 else dt_pad[:H, :W, 0]
+        dt = dt_pad[:H, :W]
         foreground_prob = None
         if fg_pad is not None:
-            foreground_prob = fg_pad[:H, :W] if fg_pad.ndim == 2 else fg_pad[:H, :W, 0]
-            foreground_prob = np.asarray(foreground_prob, dtype=np.float32)
+            foreground_prob = np.asarray(fg_pad[:H, :W], dtype=np.float32)
         return np.asarray(dt, dtype=np.float32), foreground_prob
 
     def _set_dt_and_gradients(
@@ -530,8 +509,6 @@ class FiberAnalyzer_2D:
             return float("nan"), 0
 
         values = np.asarray(grad_err[valid_mask], dtype=np.float32)
-        if values.size == 0:
-            return float("nan"), 0
         return float(np.median(values)), int(values.size)
 
     @classmethod
@@ -639,25 +616,14 @@ class FiberAnalyzer_2D:
             )
             for polyline_xy in polylines:
                 pts = np.asarray(polyline_xy, dtype=np.float32).reshape(-1, 1, 2).astype(np.int32)
-                if len(pts) < 2:
-                    x, y = pts[0, 0]
-                    cv2.circle(
-                        centerlines_rgb,
-                        (x, y),
-                        1,
-                        centerline_color,
-                        thickness=-1,
-                        lineType=cv2.LINE_AA,
-                    )
-                else:
-                    cv2.polylines(
-                        centerlines_rgb,
-                        [pts],
-                        isClosed=False,
-                        color=centerline_color,
-                        thickness=1,
-                        lineType=cv2.LINE_AA,
-                    )
+                cv2.polylines(
+                    centerlines_rgb,
+                    [pts],
+                    isClosed=False,
+                    color=centerline_color,
+                    thickness=1,
+                    lineType=cv2.LINE_AA,
+                )
 
         return centerlines_rgb
 
@@ -899,13 +865,7 @@ class FiberAnalyzer_2D:
         for seg in segments:
             for polyline_xy in seg.segment_centerlines_xy:
                 pts = np.asarray(polyline_xy, dtype=np.float32)
-                if pts.size == 0:
-                    continue
                 pts_int = np.round(pts).astype(np.int32).reshape(-1, 1, 2)
-                if len(pts_int) < 2:
-                    cx, cy = pts_int[0, 0]
-                    cv2.circle(markers, (cx, cy), 1, int(seg.parent_fiber_id), thickness=-1)
-                    continue
                 cv2.polylines(
                     markers,
                     [pts_int],
@@ -1077,12 +1037,11 @@ class FiberAnalyzer_2D:
         min_radius_px: float = 1.0,
         min_peak_px: float = 3.0,
         peak_footprint: int = 3,
-        max_pores: int | None = None,
     ) -> List[dict]:
         if pore_dt is None or void_mask is None:
             return []
 
-        scale = self.scale_factor if getattr(self, "scale_factor", None) else 1.0
+        scale = self.scale_factor or 1.0
         if not np.isfinite(scale) or scale <= 0:
             scale = 1.0
         H, W = pore_dt.shape[:2]
@@ -1118,8 +1077,6 @@ class FiberAnalyzer_2D:
                 true_radius = float(r) / scale
                 circles.append({'x': int(x), 'y': int(y), 'r_px': float(r), 'r_px_orig': true_radius})
                 current_void[cmask == 1] = 0
-                if (max_pores is not None) and (len(circles) >= max_pores):
-                    break
         return circles
 
     # ------------------------------------------------------------------ #
@@ -1285,10 +1242,7 @@ class FiberAnalyzer_2D:
         if total_len <= 0:
             return []
 
-        if image.ndim == 3:
-            gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-        else:
-            gray = image
+        gray = image
         h, w = gray.shape[:2]
 
         def sample_intensity(p_xy: np.ndarray) -> float:

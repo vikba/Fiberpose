@@ -33,8 +33,6 @@ def labels_to_color(labels: np.ndarray | None) -> np.ndarray | None:
         if ivalue <= 0:
             continue
         mask = labels_i64 == ivalue
-        if not np.any(mask):
-            continue
         out[mask] = label_to_rgb(ivalue)
     return out
 
