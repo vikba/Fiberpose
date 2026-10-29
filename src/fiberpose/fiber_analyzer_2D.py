@@ -7,7 +7,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import cv2
 import numpy as np
-from scipy.ndimage import gaussian_filter, laplace
+from scipy.ndimage import gaussian_filter, laplace, value_indices
 from skimage.segmentation import watershed, find_boundaries
 
 from .domain import FiberFragment
@@ -846,12 +846,11 @@ class FiberAnalyzer_2D:
         threshold = float(np.clip(threshold, 0.0, 1.0))
 
         pruned = labels_arr.copy()
-        for label_id in np.unique(labels_arr):
-            if int(label_id) <= 0:
-                continue
-            label_mask = labels_arr == label_id
-            if float(np.mean(foreground_arr[label_mask])) < threshold:
-                pruned[label_mask] = 0
+        # value_indices lists each label's pixels in raster order, so the float32 mean
+        # sums the same values in the same order as a boolean mask would.
+        for label_id, pixels in value_indices(labels_arr).items():
+            if label_id > 0 and float(np.mean(foreground_arr[pixels])) < threshold:
+                pruned[pixels] = 0
         return pruned.astype(labels_arr.dtype, copy=False)
 
     @staticmethod
