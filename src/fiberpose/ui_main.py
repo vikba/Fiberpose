@@ -87,9 +87,6 @@ class MainWindow(QMainWindow):
         self.working_dir = os.path.dirname(ui_path)
         self.current_frame: Frame = Frame.empty()
         self.current_image_name: str | None = None
-        self._scalebar_pending: bool = False
-        self._scalebar_length_value: float = 100.0
-        self._scalebar_unit: str = "um"
         self._pixmap_source_shape: tuple[int, int] | None = None
 
         # View/zoom state
@@ -111,7 +108,6 @@ class MainWindow(QMainWindow):
 
         # Batch mode state
         self._suppress_batch_dialogs: bool = False
-        self._is_batch_processing: bool = False
         self._image_batch: ImageBatch | None = None
         self._batch_result: BatchResult | None = None
         self._current_z_index: int = 0
@@ -120,9 +116,6 @@ class MainWindow(QMainWindow):
         self._update_slice_label()
 
         # Profile plotting tool state
-        self._profile_mode_active: bool = False
-        self._profile_points_scene: list[tuple[float, float]] = []
-        self._profile_points_img: list[tuple[float, float]] = []
         self._profile_line_item: QGraphicsItem | None = None
         self._profile_point_items: list[QGraphicsItem] = []
         self._profile_dialog: PlotProfileDialog | None = None
@@ -516,11 +509,11 @@ class MainWindow(QMainWindow):
                 if isinstance(event, QtGui.QWheelEvent):
                     if self._handle_wheel_zoom(event):
                         return True
-            if getattr(self, "_scalebar_pending", False) and et == QEvent.Type.MouseButtonPress:
+            if self._scalebar_tool.pending and et == QEvent.Type.MouseButtonPress:
                 if isinstance(event, QtGui.QMouseEvent):
                     self._handle_scalebar_mouse(event)
                     return True
-            if getattr(self, "_profile_mode_active", False) and et == QEvent.Type.MouseButtonPress:
+            if self._profile_tool.active and et == QEvent.Type.MouseButtonPress:
                 if isinstance(event, QtGui.QMouseEvent):
                     self._handle_profile_mouse(event)
                     return True
@@ -930,16 +923,13 @@ class MainWindow(QMainWindow):
         spin.setDecimals(2)
         spin.setMinimum(1e-6)
         spin.setMaximum(1e9)
-        spin.setValue(float(self._scalebar_length_value or 100.0))
+        spin.setValue(self._scalebar_tool.length_value)
         form.addRow("Length", spin)
 
         combo = QtWidgets.QComboBox(dialog)
         units = ["nm", "um", "mm", "m"]
         combo.addItems(units)
-        if self._scalebar_unit in units:
-            combo.setCurrentIndex(units.index(self._scalebar_unit))
-        else:
-            combo.setCurrentText(self._scalebar_unit)
+        combo.setCurrentText(self._scalebar_tool.unit)
         form.addRow("Units", combo)
 
         buttons = QtWidgets.QDialogButtonBox(
@@ -959,10 +949,7 @@ class MainWindow(QMainWindow):
             self._show_warning("Invalid length", "Scalebar length must be positive.")
             return
 
-        self._scalebar_length_value = length_value
-        self._scalebar_unit = combo.currentText()
-        self._scalebar_tool.start(self._scalebar_length_value, self._scalebar_unit)
-        self._scalebar_pending = True
+        self._scalebar_tool.start(length_value, combo.currentText())
         self.graphicsView.viewport().setCursor(Qt.CursorShape.CrossCursor)
         self._show_info(
             "Select Scalebar",
@@ -992,23 +979,24 @@ class MainWindow(QMainWindow):
         px_size = self._scalebar_tool.add_point(x, y)
         if px_size is not None:
             self._finalize_scalebar_selection(pixel_size=px_size)
+        elif not self._scalebar_tool.pending:  # two clicks on the same point
+            self._cancel_scalebar_selection()
 
     def _finalize_scalebar_selection(self, pixel_size: float):
         self.sample_props.pixel_size_x = float(pixel_size)
         self.sample_props.pixel_size_y = float(pixel_size)
-        self.sample_props.unit = str(self._scalebar_unit or "px")
+        self.sample_props.unit = str(self._scalebar_tool.unit or "px")
         self.sample_props.source = "manual"
         self.sync_sample_properties_to_ui()
         self._invalidate_measurements()
 
         self._show_info(
             "Scalebar Set",
-            f"Pixel size set to {pixel_size:.6g} {self._scalebar_unit} per pixel.",
+            f"Pixel size set to {pixel_size:.6g} {self._scalebar_tool.unit} per pixel.",
         )
         self._cancel_scalebar_selection()
 
     def _cancel_scalebar_selection(self):
-        self._scalebar_pending = False
         self._scalebar_tool.cancel()
         self.graphicsView.viewport().unsetCursor()
 
@@ -1089,13 +1077,17 @@ class MainWindow(QMainWindow):
             else None
         )
 
+        # Read settings once; the window stays disabled so they cannot change mid-batch.
+        self.sync_ui_to_config()
+        self.sync_ui_to_sample_properties()
+        invert = bool(self.chb_invert.isChecked())
+
         QtWidgets.QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
         previous_batch_state = self._suppress_batch_dialogs
-        previous_processing_state = self._is_batch_processing
-        self._is_batch_processing = True
         if len(active_batch) > 1:
             self._suppress_batch_dialogs = True
         try:
+            self.setEnabled(False)
             def _on_started(total: int) -> None:
                 self.statusbar.showMessage(f"Processing 0/{total} images")
 
@@ -1103,7 +1095,8 @@ class MainWindow(QMainWindow):
                 self.statusbar.showMessage(f"Processing {index + 1}/{total} images")
                 QtWidgets.QApplication.processEvents()
 
-            def _on_frame_finished(_processed: int, _total: int, _result: Frame) -> None:
+            def _on_frame_finished(_processed: int, _total: int, result: Frame) -> None:
+                self.current_frame = result.snapshot()  # a copy: later slice changes mutate current_frame
                 self.refresh_view()
                 QtWidgets.QApplication.processEvents()
 
@@ -1122,26 +1115,19 @@ class MainWindow(QMainWindow):
                 do_measurements: bool,
             ) -> Frame:
                 if cached_frame is None:
-                    self.current_frame = Frame.empty(
-                        frame_id=str(frame_id),
-                        z_index=int(z_index),
-                        orig_img=frame,
+                    result = Frame.empty(frame_id=frame_id, z_index=z_index, orig_img=frame)
+                else:
+                    result = cached_frame.snapshot(frame_id=frame_id, z_index=z_index)
+                    result.orig_img = frame
+                if do_measurements:
+                    outcome = self._pipeline_service.ensure_measurements(
+                        result, self.config, self.sample_props, invert_input=invert
                     )
                 else:
-                    seeded_frame = cached_frame.snapshot(
-                        frame_id=str(frame_id),
-                        z_index=int(z_index),
-                    )
-                    seeded_frame.orig_img = frame
-                    self.current_frame = seeded_frame
-                self.current_image_name = self._frame_base_name(frame_id, z_index)
-                ok = self._run_current_frame_pipeline(do_measurements)
-                if not ok and not self.current_frame.error_message:
-                    self.current_frame.fail("Processing failed.")
-                return self.current_frame.snapshot(
-                    frame_id=str(frame_id),
-                    z_index=int(z_index),
-                )
+                    outcome = self._pipeline_service.ensure_segmentation(result, self.config, invert_input=invert)
+                if not self._handle_pipeline_outcome(outcome) and not result.error_message:
+                    result.fail("Processing failed.")
+                return result
 
             batch_result = self._batch_service.run_batch(
                 active_batch,
@@ -1156,7 +1142,7 @@ class MainWindow(QMainWindow):
             return None
         finally:
             self._suppress_batch_dialogs = previous_batch_state
-            self._is_batch_processing = previous_processing_state
+            self.setEnabled(True)
             QtWidgets.QApplication.restoreOverrideCursor()
             self.statusbar.clearMessage()
 
@@ -1255,27 +1241,23 @@ class MainWindow(QMainWindow):
         dialog.raise_()
         dialog.activateWindow()
         self._profile_tool.start()
-        self._profile_mode_active = True
         self._reset_profile_selection(keep_dialog=True)
 
     def _on_profile_clear_requested(self):
         self._reset_profile_selection(keep_dialog=True)
 
     def _on_profile_dialog_closed(self):
-        self._profile_mode_active = False
         self._profile_tool.stop()
         self._profile_dialog = None
         self._reset_profile_selection()
 
     def _reset_profile_selection(self, keep_dialog: bool = False):
         self._profile_tool.reset()
-        self._profile_points_scene = []
-        self._profile_points_img = []
         self._remove_profile_items()
         dialog = self._profile_dialog
-        if dialog is not None and (keep_dialog or self._profile_mode_active):
+        if dialog is not None and (keep_dialog or self._profile_tool.active):
             dialog.reset_plot()
-        if self._profile_mode_active:
+        if self._profile_tool.active:
             self.graphicsView.viewport().setCursor(Qt.CursorShape.CrossCursor)
         else:
             self.graphicsView.viewport().unsetCursor()
@@ -1309,10 +1291,10 @@ class MainWindow(QMainWindow):
         self._profile_point_items.append(marker)
 
     def _draw_profile_line(self):
-        if len(self._profile_points_scene) < 2 or self._scene is None:
+        if len(self._profile_tool.points_scene) < 2 or self._scene is None:
             return
         self._remove_profile_line()
-        (x0, y0), (x1, y1) = self._profile_points_scene[:2]
+        (x0, y0), (x1, y1) = self._profile_tool.points_scene[:2]
         pen = QtGui.QPen(QtGui.QColor("#FAD000"))
         pen.setWidth(2)
         pen.setCosmetic(True)
@@ -1365,23 +1347,21 @@ class MainWindow(QMainWindow):
             return
 
         complete = self._profile_tool.add_point((sx, sy), (ix, iy))
-        self._profile_points_scene = list(self._profile_tool.points_scene)
-        self._profile_points_img = list(self._profile_tool.points_img)
         self._add_profile_marker(sx, sy)
 
         if complete:
             self._finalize_profile_selection()
 
     def _finalize_profile_selection(self):
-        if len(self._profile_points_scene) < 2 or len(self._profile_points_img) < 2:
+        if len(self._profile_tool.points_scene) < 2 or len(self._profile_tool.points_img) < 2:
             return
         self._draw_profile_line()
         self._update_profile_plot()
 
     def _update_profile_plot(self):
-        if not self.current_frame.has_prediction or len(self._profile_points_img) < 2:
+        if not self.current_frame.has_prediction or len(self._profile_tool.points_img) < 2:
             return
-        (x0, y0), (x1, y1) = self._profile_points_img[:2]
+        (x0, y0), (x1, y1) = self._profile_tool.points_img[:2]
         profile = self._profile_tool.compute_profile(
             self.current_frame.dt,
             (x0, y0),
@@ -1403,7 +1383,7 @@ class MainWindow(QMainWindow):
 
     def segment(self):
         """Run the segmentation workflow for the current frame or active batch."""
-        if self._image_batch is not None and not self._is_batch_processing:
+        if self._image_batch is not None:
             self._run_batch_analysis(compute_measurements=False)
             return
         if not self._run_current_frame_pipeline(compute_measurements=False):
@@ -1420,7 +1400,7 @@ class MainWindow(QMainWindow):
         """
         Computes thickness samples and renders overlays/plots.
         """
-        if self._image_batch is not None and not self._is_batch_processing:
+        if self._image_batch is not None:
             if self.cb_view.currentText() != "Measurements overlay":
                 self.cb_view.setCurrentText("Measurements overlay")
             if self._batch_measurements_match_current_settings():
@@ -1676,12 +1656,10 @@ class MainWindow(QMainWindow):
         if self._profile_dialog is not None:
             self._profile_dialog.close()
 
-        self._scalebar_pending = False
+        self._scalebar_tool.cancel()
         self.graphicsView.viewport().unsetCursor()
 
-        self._profile_mode_active = False
-        self._profile_points_scene = []
-        self._profile_points_img = []
+        self._profile_tool.stop()
         self._remove_profile_items()
         self.btn_reset_view.hide()
 
