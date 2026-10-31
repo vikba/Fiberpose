@@ -6,7 +6,6 @@ External code (the web demo, notebooks, plugins) should use ``analyze`` and
 
 from __future__ import annotations
 
-import threading
 from dataclasses import dataclass, field
 from functools import lru_cache
 from typing import Any, Optional
@@ -14,18 +13,12 @@ from typing import Any, Optional
 import numpy as np
 
 from .domain import AppConfig, Frame, SampleProperties
-from .fiber_analyzer_2D import FiberAnalyzer_2D
 from .ml import onnx_cuda_available
 from .models import resolve_model_path
 from .pipeline import PipelineController
 from .utils import ensure_rgb_u8
 
 __all__ = ["AnalysisResult", "FiberposeError", "analyze"]
-
-# The analyzer caches the last prediction internally, so concurrent calls on a
-# shared instance would overwrite each other's state.
-_LOCK = threading.Lock()
-
 
 class FiberposeError(RuntimeError):
     """Raised when the pipeline fails on an image."""
@@ -55,7 +48,7 @@ class AnalysisResult:
 
 @lru_cache(maxsize=2)
 def _controller(model_path: str, device: str) -> PipelineController:
-    return PipelineController(FiberAnalyzer_2D(model_path=model_path, device=device))
+    return PipelineController(model_path, device)
 
 
 def analyze(
@@ -82,10 +75,9 @@ def analyze(
     )
     frame = Frame.empty(frame_id="image", orig_img=np.asarray(image))
 
-    with _LOCK:
-        outcome = _controller(model_path, device).ensure_measurements(
-            frame, config, sample_props, invert_input=bool(invert)
-        )
+    outcome = _controller(model_path, device).ensure_measurements(
+        frame, config, sample_props, invert_input=bool(invert)
+    )
 
     if outcome.error_message or not frame.has_segmentation:
         raise FiberposeError(outcome.error_message or outcome.info_message or "Processing failed.")

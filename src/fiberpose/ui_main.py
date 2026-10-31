@@ -30,13 +30,11 @@ from .ui_support import (
     SaveOptionsDialog,
     ConfigEditorDialog,
 )
-from .fiber_analyzer_2D import FiberAnalyzer_2D
 from .ml import onnx_cuda_available
 from .domain import BatchResult, Frame, ImageBatch, AppConfig, SampleProperties
-from .utils import labels_to_color, to_uint8_for_view
+from .render import render
+from .utils import to_uint8_for_view
 from .pipeline import PipelineController, PipelineOutcome
-from .ui_support import ViewRenderer
-from .ui_support import ViewState
 from .ui_support import UiConfigBinder
 from .pipeline import BatchService, BatchCallbacks
 from .io_export import ExportService
@@ -62,9 +60,8 @@ class MainWindow(QMainWindow):
         self._ui_binder = UiConfigBinder()
         self._scalebar_tool = ScalebarTool()
         self._profile_tool = ProfileTool()
-        self._pipeline_service = PipelineController(None)
+        self._pipeline_service = PipelineController()
         self._batch_service = BatchService()
-        self._view_renderer = ViewRenderer(grad_error_builder=self._signed_grad_error_rgb_for_frame)
         self.sync_config_to_ui()
         self.sync_sample_properties_to_ui()
 
@@ -89,7 +86,6 @@ class MainWindow(QMainWindow):
         # Working dir & runtime state setup
         self.working_dir = os.path.dirname(ui_path)
         self.current_frame: Frame = Frame.empty()
-        self.analyzer: FiberAnalyzer_2D | None = None
         self.current_image_name: str | None = None
         self._scalebar_pending: bool = False
         self._scalebar_length_value: float = 100.0
@@ -180,23 +176,16 @@ class MainWindow(QMainWindow):
         # Delay loading default image until the UI is fully shown.
         QTimer.singleShot(0, self.load_default_image)
 
-        self.model_path = self._current_model_path() or str(models_dir() / DEFAULT_MODEL)
-
-        # ---- device / CUDA handling ----
-        self.device = "cpu"   # default
-        self._init_device_from_checkbox()   # sets checkbox + self.device accordingly
-
-        # Analyzer instantiated once and reused
-        self.analyzer = FiberAnalyzer_2D(
-            model_path=self.model_path,
-            device=self.device,
+        # Use CUDA by default when available; the model loads on the first prediction.
+        self.chb_usegpu.setChecked(onnx_cuda_available())
+        self._pipeline_service.set_model(
+            self._current_model_path() or str(models_dir() / DEFAULT_MODEL),
+            "cuda" if self.chb_usegpu.isChecked() else "cpu",
         )
 
         # react to checkbox changes at runtime
         self.chb_usegpu.toggled.connect(self._on_usegpu_toggled)
         self.chb_invert.toggled.connect(self._on_invert_toggled)
-
-        self._pipeline_service.set_analyzer(self.analyzer)
 
         # Connect toggled signals of rb_show_diam and rb_show_direct to update overlay
         self.rb_show_diam.toggled.connect(self._render_vector_overlay)
@@ -283,14 +272,9 @@ class MainWindow(QMainWindow):
                 f"Selected model was not found:\n{new_path}",
             )
             return
-        prev_path = getattr(self, "model_path", None)
-        if new_path == prev_path:
+        if new_path == self._pipeline_service.model_path:
             return
-        self.model_path = new_path
-        if self.analyzer is not None:
-            self.analyzer.set_model_path(new_path)
-        else:
-            logger.info("Model selection stored for later init: %s", new_path)
+        self._pipeline_service.set_model(new_path, self._pipeline_service.device)
         self._invalidate_prediction()
 
     def _discover_model_files(self) -> list[str]:
@@ -371,26 +355,16 @@ class MainWindow(QMainWindow):
             self._zoom_mode_active = False
             self._update_reset_button_visibility()
 
-    def _labels_rgb(self) -> np.ndarray | None:
-        if self.current_frame.labels_2d is None:
-            return None
-        cache_id, cache_img = self.current_frame.labels_rgb_cache
-        current_id = id(self.current_frame.labels_2d)
-        if cache_id != current_id:
-            cache_img = labels_to_color(self.current_frame.labels_2d)
-            self.current_frame.labels_rgb_cache = (current_id, cache_img)
-        return cache_img
-
     def _invalidate_prediction(self) -> None:
-        self._pipeline_service.invalidate_prediction(self.current_frame, analyzer=self.analyzer)
+        self.current_frame.clear_prediction()
         self._invalidate_measurements()
 
     def _invalidate_segmentation(self) -> None:
-        self._pipeline_service.invalidate_segmentation(self.current_frame)
+        self.current_frame.clear_segmentation()
         self._invalidate_measurements()
 
     def _invalidate_measurements(self) -> None:
-        self._pipeline_service.invalidate_measurements(self.current_frame)
+        self.current_frame.clear_measurements()
         self._clear_results()
         self._refresh_save_actions()
 
@@ -476,9 +450,8 @@ class MainWindow(QMainWindow):
         self.sync_config_to_ui()
         self.sync_ui_to_config()
 
-        if self.analyzer is not None:
-            self._on_model_selection_changed(self.cb_model.currentIndex())
-            self._on_usegpu_toggled(self.chb_usegpu.isChecked())
+        self._on_model_selection_changed(self.cb_model.currentIndex())
+        self._on_usegpu_toggled(self.chb_usegpu.isChecked())
 
     def _load_config_from_path(self, path: str) -> bool:
         selected_path = os.path.abspath(path)
@@ -598,12 +571,7 @@ class MainWindow(QMainWindow):
 
     def _save_active_image_png(self) -> None:
         """Save the full active image for the selected view mode as PNG."""
-        state = ViewState(
-            mode=self.cb_view.currentText(),
-            show_pores=bool(self.rb_show_pores.isChecked()),
-            show_orientation=bool(self.rb_show_direct.isChecked()),
-        )
-        img = self._view_renderer.render(self.current_frame, state)
+        img = self.refresh_view()
         if img is None:
             self._show_info("No image", "No active image is available to save for this view mode.")
             return
@@ -1128,9 +1096,6 @@ class MainWindow(QMainWindow):
         if len(active_batch) > 1:
             self._suppress_batch_dialogs = True
         try:
-            if self.analyzer is None:
-                raise RuntimeError("Fiber analyzer has not been initialized.")
-
             def _on_started(total: int) -> None:
                 self.statusbar.showMessage(f"Processing 0/{total} images")
 
@@ -1453,7 +1418,7 @@ class MainWindow(QMainWindow):
 
     def analyze_fibers(self):
         """
-        Computes thickness samples via analyzer and renders overlays/plots.
+        Computes thickness samples and renders overlays/plots.
         """
         if self._image_batch is not None and not self._is_batch_processing:
             if self.cb_view.currentText() != "Measurements overlay":
@@ -1495,130 +1460,11 @@ class MainWindow(QMainWindow):
         logger.info("Fiber analysis completed successfully.")
 
     def _render_vector_overlay(self):
-        fr = self.current_frame
-        img = fr.diameters_overlay
-        if self.rb_show_direct.isChecked():
-            img = fr.orientations_overlay
-        if self.rb_show_pores.isChecked():
-            img = fr.pores_overlay
-
-        if img is None:
-            img = fr.overlay_img if fr.overlay_img is not None else self._labels_rgb()
-        if img is None:
+        if self.current_frame.labels_2d is None:
             return
         if self.cb_view.currentText() not in ("Measurements overlay", "Sampling"):
             self.cb_view.setCurrentText("Measurements overlay")
-        self._set_pixmap_from_array(img)
-
-    @staticmethod
-    def _default_grad_quality_points() -> tuple[float, float, float, float]:
-        return (-0.35, -0.08, 0.08, 0.35)
-
-    def _validated_grad_quality_points(self) -> tuple[float, float, float, float]:
-        default = self._default_grad_quality_points()
-        raw = self.config.grad_quality_points
-        try:
-            arr = np.asarray(raw, dtype=np.float32).reshape(-1)
-        except Exception:
-            logger.warning("Invalid grad_quality_points=%r. Using default %s", raw, default)
-            return default
-
-        if arr.size != 4 or not np.all(np.isfinite(arr)):
-            logger.warning("Invalid grad_quality_points=%r. Using default %s", raw, default)
-            return default
-
-        p0, p1, p2, p3 = [float(v) for v in arr]
-        if not (p0 < p1 < p2 < p3):
-            logger.warning(
-                "grad_quality_points must be strictly increasing, got %s. Using default %s",
-                [p0, p1, p2, p3],
-                default,
-            )
-            return default
-        if not (p1 <= 0.0 <= p2):
-            logger.warning(
-                "grad_quality_points must satisfy p1 <= 0 <= p2, got %s. Using default %s",
-                [p0, p1, p2, p3],
-                default,
-            )
-            return default
-        return (p0, p1, p2, p3)
-
-    def _signed_grad_error_rgb_for_frame(self, frame: Frame) -> np.ndarray | None:
-        """
-        Signed DT-gradient error view using s = |grad(dt)| - 1.
-        Colors on valid mask (dt > 0):
-          - s <= p0: blue
-          - p0..p1: blue -> green
-          - p1..p2: green
-          - p2..p3: green -> red
-          - s >= p3: red
-        Outside valid mask is black.
-        """
-        dt = frame.dt
-        gx = frame.gx
-        gy = frame.gy
-        if dt is None or gx is None or gy is None:
-            return None
-
-        dt = np.asarray(dt, dtype=np.float32)
-        gx = np.asarray(gx, dtype=np.float32)
-        gy = np.asarray(gy, dtype=np.float32)
-        if dt.shape != gx.shape or dt.shape != gy.shape:
-            logger.warning(
-                "Cannot render signed grad error: shape mismatch dt=%s gx=%s gy=%s",
-                dt.shape,
-                gx.shape,
-                gy.shape,
-            )
-            return None
-
-        valid = dt > 0.0
-        h, w = dt.shape
-        out = np.zeros((h, w, 3), dtype=np.uint8)
-        if not np.any(valid):
-            return out
-
-        mag = np.sqrt(gx * gx + gy * gy)
-        signed_err = mag - 1.0
-        p0, p1, p2, p3 = self._validated_grad_quality_points()
-
-        mask_blue = valid & (signed_err <= p0)
-        out[mask_blue] = (0, 0, 255)
-
-        mask_red = valid & (signed_err >= p3)
-        out[mask_red] = (255, 0, 0)
-
-        mask_bg = valid & (signed_err > p0) & (signed_err < p1)
-        if np.any(mask_bg):
-            t = np.clip((signed_err[mask_bg] - p0) / (p1 - p0), 0.0, 1.0)
-            rgb = np.stack(
-                [
-                    np.zeros_like(t),
-                    255.0 * t,
-                    255.0 * (1.0 - t),
-                ],
-                axis=-1,
-            )
-            out[mask_bg] = rgb.astype(np.uint8)
-
-        mask_green = valid & (signed_err >= p1) & (signed_err <= p2)
-        out[mask_green] = (0, 255, 0)
-
-        mask_gr = valid & (signed_err > p2) & (signed_err < p3)
-        if np.any(mask_gr):
-            t = np.clip((signed_err[mask_gr] - p2) / (p3 - p2), 0.0, 1.0)
-            rgb = np.stack(
-                [
-                    255.0 * t,
-                    255.0 * (1.0 - t),
-                    np.zeros_like(t),
-                ],
-                axis=-1,
-            )
-            out[mask_gr] = rgb.astype(np.uint8)
-
-        return out
+        self.refresh_view()
 
     def _style_plotwidget(self, pw: pg.PlotWidget, title: str, xlab: str, ylab: str):
         pw.setBackground("w")
@@ -1690,14 +1536,17 @@ class MainWindow(QMainWindow):
 
     # ------------------- View & reset -------------------
 
-    def refresh_view(self):
-        state = ViewState(
-            mode=self.cb_view.currentText(),
-            show_pores=bool(self.rb_show_pores.isChecked()),
-            show_orientation=bool(self.rb_show_direct.isChecked()),
-        )
-        img = self._view_renderer.render(self.current_frame, state)
+    def refresh_view(self) -> np.ndarray | None:
+        """Show the image of the selected view and return it."""
+        view = self.cb_view.currentText()
+        measurement_views = ("Pores", "Orientations", "Diameters")
+        if view == "Measurements overlay":
+            view = measurement_views[0 if self.rb_show_pores.isChecked() else 1 if self.rb_show_direct.isChecked() else 2]
+        img = render(self.current_frame, view, self.config.grad_quality_points)
+        if img is None and view in measurement_views:
+            img = render(self.current_frame, "Overlay")
         self._set_pixmap_from_array(img)
+        return img
 
     def _configure_z_scroll(self, frame_count: int):
         total = max(1, int(frame_count))
@@ -1773,13 +1622,6 @@ class MainWindow(QMainWindow):
         else:
             self._clear_results()
 
-        if self.current_frame.labels_2d is not None:
-            labels_rgb = labels_to_color(self.current_frame.labels_2d)
-            self.current_frame.labels_rgb_cache = (id(self.current_frame.labels_2d), labels_rgb)
-        else:
-            self.current_frame.labels_rgb_cache = (None, None)
-            self.current_frame.segmentation_outline_cache = (None, None)
-
     def _set_current_slice(self, index: int, update_view: bool = True):
         if self._image_batch is None:
             return
@@ -1816,10 +1658,7 @@ class MainWindow(QMainWindow):
         self._set_current_slice(int(value), update_view=True)
 
     def _reset_processing_state(self, preserve_original: bool = False):
-        """Reset analyzer + frame processing state, without touching UI widgets/charts."""
-        if self.analyzer is not None:
-            self.analyzer._reset_prediction_state()
-
+        """Reset frame processing state, without touching UI widgets/charts."""
         preserved_orig = self.current_frame.orig_img if preserve_original else None
         preserved_frame_id = self.current_frame.frame_id if preserve_original else ""
         preserved_z = self.current_frame.z_index if preserve_original else 0
@@ -1857,18 +1696,6 @@ class MainWindow(QMainWindow):
         if reset_view:
             self.cb_view.setCurrentText("Original")
 
-    def _init_device_from_checkbox(self):
-        """On startup: if CUDA is available, check the box and use cuda; else uncheck and use cpu."""
-        cuda_ok = onnx_cuda_available()
-
-        if cuda_ok:
-            # user prefers GPU by default when available
-            self.chb_usegpu.setChecked(True)
-            self.device = "cuda"
-        else:
-            self.chb_usegpu.setChecked(False)
-            self.device = "cpu"
-
     def _on_usegpu_toggled(self, checked: bool):
         cuda_ok = onnx_cuda_available()
         if checked and not cuda_ok:
@@ -1878,9 +1705,7 @@ class MainWindow(QMainWindow):
         else:
             self.config.use_gpu = checked
             
-        if self.analyzer is not None:
-            device = "cuda" if self.config.use_gpu else "cpu"
-            self.analyzer.set_device(device)
+        self._pipeline_service.set_model(self._pipeline_service.model_path, "cuda" if self.config.use_gpu else "cpu")
 
     def _on_invert_toggled(self, checked: bool):
         self._invalidate_prediction()

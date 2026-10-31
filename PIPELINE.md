@@ -1,12 +1,12 @@
 # Fiberpose Pipeline
 
 ## Scope
-- Documents runtime behavior in `src/fiberpose/run.py`, `src/fiberpose/ui_main.py`, `src/fiberpose/pipeline.py`, and `src/fiberpose/fiber_analyzer_2D.py`.
+- Documents runtime behavior in `src/fiberpose/run.py`, `src/fiberpose/ui_main.py`, `src/fiberpose/pipeline.py`, and `src/fiberpose/analysis.py`.
 - Covers GUI and CLI startup, segmentation, measurement, and batch execution/export.
 
 ## Runtime Modes and Flags
-- `segmentation.mode=watershed` calls `FiberAnalyzer_2D.segment(mode="watershed", params={"gradient_threshold": ...})`.
-- `segmentation.mode=radial_expansion` calls `FiberAnalyzer_2D.segment(mode="radial_expansion", params={"expansion_factor": ...})`.
+- `segmentation_mode=watershed` makes `analysis.segment(...)` run a gradient-masked watershed (`watershed_grad_threshold`).
+- `segmentation_mode=radial_expansion` makes `analysis.segment(...)` rasterize the expanded ridge fragments.
 - `merge_expansion_factor` controls overlap-based ridge-fragment merging (default `0.7`).
 - `segmentation_expansion_factor` controls radial label expansion (default `1.0`).
 - `strict_centerlines` affects the measurement-centerline filtering stage.
@@ -16,14 +16,12 @@
 
 ## Core Runtime Data
 - `ImageBatch`: ordered list of frames plus metadata (`filenames`, `z_indices`, `source_type`).
-- `Frame`: per-slice state container (`orig_img`, prediction outputs, segmentation outputs, measurement outputs).
+- `Frame`: per-slice state container (`orig_img`, prediction outputs, segmentation outputs, measurement outputs). It is the only owner of per-image state; `analysis` functions are stateless and `PipelineController` keeps only the loaded model.
 - `BatchResult`: `frame_results: list[Frame]`.
 - `dt`: model output distance transform (`float32`).
 - `foreground_prob`: optional foreground probability (`float32`) from `nout == 2` checkpoints.
 - `dt_u8`, `dt_normalized`, `gx`, `gy`, `laplacian`: cached prediction products.
-- `segmentation_centerlines`: `list[FiberFragment]` built directly from raw ridges.
-- `measurement_centerlines`: `list[FiberFragment]` filtered from `segmentation_centerlines`.
-- `markers`: `int32` marker image rendered from `segmentation_centerlines` and used by watershed.
+- `fragments`: `list[FiberFragment]` that own a label; each carries its segmentation and measurement centerlines.
 - `labels_2d`: `uint16` segmentation labels.
 - `samples_table`, `thickness_units`, `angles_samples_deg`, `porosity`, `pores`, `pore_diams_units`: measurement outputs.
 
@@ -37,7 +35,7 @@
 - If `_image_batch` exists and not already in callbacks, GUI routes through `_run_batch_analysis(...)`.
 3. CLI path:
 - `CliRunner` loads config and source via `ImageBatch.from_source(...)`.
-- It instantiates analyzer + `PipelineController`, processes each frame, builds `BatchResult`, and exports.
+- It instantiates `PipelineController(model_path, device)`, processes each frame, builds `BatchResult`, and exports.
 
 ## Batch Execution Flow
 1. `_run_batch_analysis(...)` configures `BatchCallbacks` and calls `BatchService.run_batch(...)`.
@@ -51,41 +49,28 @@
 6. CLI uses the same controller stages (`ensure_segmentation` / `ensure_measurements`) and writes exports via `BatchResult.save_all(...)`.
 
 ## Per-Frame Segmentation Flow
-1. Validate `orig_img` and `analyzer`.
-2. Clear downstream frame state (`clear_segmentation`, `clear_measurements`).
-3. Resolve current scale and processing image in `PipelineController`.
-4. Read runtime config from `AppConfig` (+ `invert_input` flag from GUI checkbox or CLI argument).
-5. If no cached DT prediction, run:
-- `FiberAnalyzer_2D.predict_dt(...)`
-- internally: `_run_model()` -> `OnnxFiberposeModel.predict(...)`
-- `predict(...)` returns `(dt, foreground_prob)`; `nout != 2` uses the last channel as DT and has no foreground
-- then smooth DT, compute gradients/laplacian, cache outputs
-6. Always run `FiberAnalyzer_2D.process_centerlines(...)`:
+1. `ensure_prediction`: if the frame has no prediction for the current signature, resolve the scaled processing image and run `analysis.predict(model, image)`:
+- pads to the model stride, runs `OnnxFiberposeModel.predict(...)` -> `(dt, foreground_prob)`; `nout != 2` uses the last channel as DT and has no foreground
+- smooths DT, computes gradients/laplacian; stored via `Frame.set_prediction_outputs(...)`
+2. If the frame's segmentation signature (prediction signature + `segmentation_params(config)`) matches, stop.
+3. Otherwise `clear_segmentation()` and run `analysis.segment(dt, dt_u8, gx, gy, foreground_prob, **segmentation_params)`:
 - `RidgeDetector.detect_ridges(...)` (raw ridge lines)
-- `_group_detected_polylines_into_segmentation_fragments(...)`:
-  - sample local DT radius on raw ridges
-  - merge locally expanded ridge regions using `merge_expansion_factor * DT`
-  - merge overlapping expanded regions and assign stable label ids
-- `_filter_measurement_centerlines(...)` derives measurement centerlines from segmentation centerlines
-- render segmentation/measurement/comparison centerline overlays
-7. Copy analyzer prediction caches into `Frame` via `set_prediction_outputs(...)`.
-8. Segment by mode through unified dispatch:
-- `FiberAnalyzer_2D.segment(mode=..., params=...)`
-- watershed thresholds the cached DT gradient magnitude, unions two 3x3 dilations of detected centerline markers, then applies erode -> dilate to the combined mask
-- radial_expansion uses the precomputed expanded ridge labels
-- foreground, when available, prunes labels after pure-DT segmentation
-9. Build label colors + overlay and store via `set_segmentation_outputs(...)`.
+- `_group_detected_polylines_into_segmentation_fragments(...)` merges ridges whose `merge_expansion_factor * DT` disks overlap
+- `_filter_measurement_centerlines(...)` derives measurement centerlines; the shortest fraction is dropped
+- `_filter_fragments_by_grad_quality(...)` drops fragments with unreliable DT gradients
+- watershed thresholds the DT gradient magnitude, unions two 3x3 dilations of the centerline markers, then applies erode -> dilate; radial_expansion rasterizes the expanded fragments
+- foreground, when available, prunes labels; only fragments that keep a label are returned
+4. Store the labels and fragments via `set_segmentation_outputs(...)`. The pipeline draws no images.
 
 ## Per-Frame Measurement Flow
-1. GUI `analyze_fibers()` or CLI measurement mode ensures prediction + measurement centerlines are ready.
-2. Sets `analyzer.scale_factor = frame.scale_factor`.
-3. Calls `FiberAnalyzer_2D.analyze(spacing_px=...)` returning measurement and drawing samples.
-4. Builds thickness arrays/sample table and orientation stats in `PipelineController`.
-5. Computes porosity and pore sampling:
-- `void_mask_and_pore_dt(thr_u8)`
-- `sample_inscribed_circles(...)`
-6. Stores outputs in `Frame` via `set_measurement_outputs(...)`.
-7. GUI renders overlays/histograms for display:
+1. GUI `analyze_fibers()` or CLI measurement mode ensures prediction + segmentation are ready.
+2. Calls `analysis.sample_centerlines(dt, gx, gy, frame.fragments, spacing_px, frame.scale_factor)` returning measurement and drawing samples.
+3. Builds thickness arrays/sample table and orientation stats in `PipelineController`.
+4. Computes porosity and pore sampling:
+- `analysis.void_mask_and_pore_dt(dt_u8, thr_u8)`
+- `analysis.sample_inscribed_circles(...)`
+5. Stores outputs in `Frame` via `set_measurement_outputs(...)`.
+6. GUI shows the selected view and histograms:
 - thickness histogram always
 - angles histogram or pore size histogram depending on pores view
 
@@ -101,11 +86,9 @@ Stack input normalization in `ImageBatch._normalize_stack(...)`:
 - `analyze()` (`api.py`): public single-image entry point wrapping `PipelineController`.
 - `MainWindow` (`ui_main.py`): GUI orchestration, UI state, view updates, and user-triggered batch runs.
 - `CliRunner` (`cli_runner.py`): CLI orchestration for batch processing/export.
-- `PipelineController` (`pipeline.py`): shared processing engine for prediction, centerlines, segmentation, and measurements.
+- `PipelineController` (`pipeline.py`): shared processing engine; owns the lazily loaded model and caches each stage on `Frame` by signature.
 - `BatchService` (`pipeline.py`): frame iteration orchestration using callbacks.
-- `FiberAnalyzer_2D`: prediction, centerline extraction, segmentation, pore and measurement math.
+- `analysis.py`: stateless prediction, centerline extraction, segmentation, pore and measurement functions.
+- `render(frame, view)` (`render.py`): builds every displayed or exported image from frame data on demand and caches it in `Frame.views` until a stage is recomputed.
 - `ImageBatch` / `Frame` / `BatchResult` (`domain.py`): runtime data transport/state.
 - `RidgeDetector`: ridge/junction extraction backend.
-
-## Notes
-- `centerline_kwargs` defaults from `FiberAnalyzer_2D._default_centerline_kwargs()` and are used by `process_centerlines()`.

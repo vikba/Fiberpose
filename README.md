@@ -249,7 +249,8 @@ Fiberpose/
     ├── ui_support.py          # GUI helpers
     ├── cli_runner.py          # Batch CLI processing
     ├── pipeline.py            # Pipeline orchestration
-    ├── fiber_analyzer_2D.py   # 2D prediction, segmentation, and measurement logic
+    ├── analysis.py            # Stateless prediction, segmentation, and measurement functions
+    ├── render.py              # Display/export images of a frame (overlays, views)
     ├── ridge_detector.py      # Ridge/centerline detector
     ├── ml.py                  # ONNX Runtime inference wrapper
     ├── domain.py              # Data models and configuration

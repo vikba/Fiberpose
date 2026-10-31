@@ -355,18 +355,9 @@ class CliRunner:
             print(f"Error: failed to detect runtime providers: {exc}")
             return 2
 
-        try:
-            from .fiber_analyzer_2D import FiberAnalyzer_2D
-            from .pipeline import PipelineController
+        from .pipeline import PipelineController
 
-            analyzer = FiberAnalyzer_2D(
-                model_path=model_path,
-                device=device,
-            )
-            controller = PipelineController(analyzer)
-        except Exception as exc:
-            print(f"Error: failed to initialize analyzer: {exc}")
-            return 2
+        controller = PipelineController(model_path, device)
 
         output_dir = self._effective_output_dir()
         os.makedirs(output_dir, exist_ok=True)

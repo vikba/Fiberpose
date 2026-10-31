@@ -469,14 +469,8 @@ class Frame:
 
     # Segmentation products
     labels_2d: Optional[np.ndarray] = None
-    segmentation_centerlines_overlay_img: Optional[np.ndarray] = None
-    measurement_centerlines_overlay_img: Optional[np.ndarray] = None
-    centerlines_comparison_overlay_img: Optional[np.ndarray] = None
-    overlay_img: Optional[np.ndarray] = None
-    sampling_overlay: Optional[np.ndarray] = None
-    diameters_overlay: Optional[np.ndarray] = None
-    orientations_overlay: Optional[np.ndarray] = None
-    pores_overlay: Optional[np.ndarray] = None
+    # Fragments that own a label; never modified after segmentation, so snapshots share them.
+    fragments: Optional[List[FiberFragment]] = None
 
     # Measurement outputs
     samples_table: Optional[Any] = None
@@ -490,16 +484,8 @@ class Frame:
     pore_dt: Optional[np.ndarray] = None
     pores: Optional[Any] = None
 
-    # Render cache (local only)
-    labels_rgb_cache: tuple[Optional[int], Optional[np.ndarray]] = field(
-        default_factory=lambda: (None, None),
-        repr=False,
-    )
-    # Cached "Segmentation outline" visualization: (labels-id, outline-rgb-image).
-    segmentation_outline_cache: tuple[Optional[int], Optional[np.ndarray]] = field(
-        default_factory=lambda: (None, None),
-        repr=False,
-    )
+    # Images built by `render.render`, keyed by view; emptied whenever any stage is cleared.
+    views: Dict[str, Optional[np.ndarray]] = field(default_factory=dict, repr=False)
 
     @classmethod
     def empty(
@@ -529,16 +515,7 @@ class Frame:
     def clear_segmentation(self) -> None:
         self.has_segmentation = False
         self.labels_2d = None
-        self.segmentation_centerlines_overlay_img = None
-        self.measurement_centerlines_overlay_img = None
-        self.centerlines_comparison_overlay_img = None
-        self.overlay_img = None
-        self.sampling_overlay = None
-        self.diameters_overlay = None
-        self.orientations_overlay = None
-        self.pores_overlay = None
-        self.labels_rgb_cache = (None, None)
-        self.segmentation_outline_cache = (None, None)
+        self.fragments = None
         self.segmentation_sig = None
         self.clear_measurements()
 
@@ -554,10 +531,8 @@ class Frame:
         self.void_mask = None
         self.pore_dt = None
         self.pores = None
-        self.diameters_overlay = None
-        self.orientations_overlay = None
-        self.pores_overlay = None
         self.measurement_sig = None
+        self.views = {}
 
 
     def set_prediction_outputs(
@@ -589,30 +564,12 @@ class Frame:
     def set_segmentation_outputs(
         self,
         *,
-        labels_2d: Optional[np.ndarray],
-        segmentation_centerlines_overlay_img: Optional[np.ndarray],
-        measurement_centerlines_overlay_img: Optional[np.ndarray],
-        centerlines_comparison_overlay_img: Optional[np.ndarray],
-        overlay_img: Optional[np.ndarray],
-        sampling_overlay: Optional[np.ndarray] = None,
-        labels_rgb_cache: Optional[tuple[Optional[int], Optional[np.ndarray]]] = None,
-        segmentation_outline_cache: Optional[tuple[Optional[int], Optional[np.ndarray]]] = None,
+        labels_2d: np.ndarray,
+        fragments: List[FiberFragment],
     ) -> None:
         self.labels_2d = labels_2d
-        self.segmentation_centerlines_overlay_img = segmentation_centerlines_overlay_img
-        self.measurement_centerlines_overlay_img = measurement_centerlines_overlay_img
-        self.centerlines_comparison_overlay_img = centerlines_comparison_overlay_img
-        self.overlay_img = overlay_img
-        self.sampling_overlay = sampling_overlay
-        if labels_rgb_cache is not None:
-            self.labels_rgb_cache = labels_rgb_cache
-        elif labels_2d is None:
-            self.labels_rgb_cache = (None, None)
-        if segmentation_outline_cache is not None:
-            self.segmentation_outline_cache = segmentation_outline_cache
-        elif labels_2d is None:
-            self.segmentation_outline_cache = (None, None)
-        self.has_segmentation = self.labels_2d is not None
+        self.fragments = fragments
+        self.has_segmentation = True
         self.error_message = None
         self.clear_measurements()
 
@@ -629,7 +586,6 @@ class Frame:
         void_mask: Optional[np.ndarray],
         pore_dt: Optional[np.ndarray],
         pores: Optional[Any],
-        sampling_overlay: Optional[np.ndarray],
     ) -> None:
         """Update measurement outputs and synchronize dependent runtime state."""
         self.samples_table = samples_table
@@ -642,7 +598,6 @@ class Frame:
         self.void_mask = void_mask
         self.pore_dt = pore_dt
         self.pores = pores
-        self.sampling_overlay = sampling_overlay
         self.has_measurements = True
         self.error_message = None
 
@@ -670,14 +625,6 @@ class Frame:
         clone.gy = _clone_array(clone.gy)
 
         clone.labels_2d = _clone_array(clone.labels_2d)
-        clone.segmentation_centerlines_overlay_img = _clone_array(clone.segmentation_centerlines_overlay_img)
-        clone.measurement_centerlines_overlay_img = _clone_array(clone.measurement_centerlines_overlay_img)
-        clone.centerlines_comparison_overlay_img = _clone_array(clone.centerlines_comparison_overlay_img)
-        clone.overlay_img = _clone_array(clone.overlay_img)
-        clone.sampling_overlay = _clone_array(clone.sampling_overlay)
-        clone.diameters_overlay = _clone_array(clone.diameters_overlay)
-        clone.orientations_overlay = _clone_array(clone.orientations_overlay)
-        clone.pores_overlay = _clone_array(clone.pores_overlay)
 
         clone.samples_table = _clone_array(clone.samples_table)
         clone.thickness_units = _clone_array(clone.thickness_units)
@@ -685,11 +632,8 @@ class Frame:
         clone.void_mask = _clone_array(clone.void_mask)
         clone.pore_dt = _clone_array(clone.pore_dt)
 
-        labels_cache_id, labels_cache_img = clone.labels_rgb_cache
-        clone.labels_rgb_cache = (labels_cache_id, _clone_array(labels_cache_img))
-        outline_cache_id, outline_cache_img = clone.segmentation_outline_cache
-        clone.segmentation_outline_cache = (outline_cache_id, _clone_array(outline_cache_img))
-
+        # Cached images are never modified in place, so the clone may share them.
+        clone.views = dict(clone.views)
         if clone.fiber_summary is not None:
             clone.fiber_summary = dict(clone.fiber_summary)
         if frame_id is not None:

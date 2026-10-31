@@ -11,7 +11,7 @@ import imageio.v3 as iio
 import numpy as np
 
 from .domain import AppConfig, BatchResult, Frame, ImageBatch
-from .utils import labels_to_color
+from .render import render
 
 
 class ExportService:
@@ -166,6 +166,16 @@ class BatchResultExporter:
         "measurements": {"tables"},
         "full": {"dt", "foreground", "labels", "overlay", "diameters", "orientations", "outline", "tables"},
     }
+    # Array written for each non-table artifact; None means the frame lacks it.
+    _ARRAYS = {
+        "dt": lambda frame: frame.dt,
+        "foreground": lambda frame: frame.foreground_prob,
+        "labels": lambda frame: render(frame, "Segmentation") if frame.labels_2d is not None and frame.labels_2d.any() else None,
+        "overlay": lambda frame: render(frame, "Overlay"),
+        "diameters": lambda frame: render(frame, "Diameters"),
+        "orientations": lambda frame: render(frame, "Orientations"),
+        "outline": lambda frame: render(frame, "Segmentation outline"),
+    }
 
     def __init__(self, export_config: dict[str, Any] | None = None):
         self.export_config = dict(export_config or {})
@@ -264,66 +274,21 @@ class BatchResultExporter:
                 if artifact not in artifacts:
                     continue
                 try:
-                    if artifact == "dt":
-                        if frame.dt is None:
-                            skipped.append(self._skip_item(frame_index, artifact, "missing_data"))
-                            continue
-                        # DT is exported as float32 TIFF to preserve precision.
-                        path = self._resolve_output_path(output_dir, base_name, "_dt", ".tiff", cfg)
-                        iio.imwrite(path, np.asarray(frame.dt, dtype=np.float32))
-                        written_files.append(path)
-                    elif artifact == "foreground":
-                        if frame.foreground_prob is None:
-                            skipped.append(self._skip_item(frame_index, artifact, "missing_data"))
-                            continue
-                        path = self._resolve_output_path(output_dir, base_name, "_foreground", ".tiff", cfg)
-                        iio.imwrite(path, np.asarray(frame.foreground_prob, dtype=np.float32))
-                        written_files.append(path)
-                    elif artifact == "labels":
-                        labels_rgb = self._labels_rgb_image(frame)
-                        if labels_rgb is None:
-                            skipped.append(self._skip_item(frame_index, artifact, "missing_data"))
-                            continue
-                        path = self._resolve_output_path(output_dir, base_name, "_labels", image_ext, cfg)
-                        iio.imwrite(path, np.asarray(labels_rgb, dtype=np.uint8))
-                        written_files.append(path)
-                    elif artifact == "overlay":
-                        if frame.overlay_img is None:
-                            skipped.append(self._skip_item(frame_index, artifact, "missing_data"))
-                            continue
-                        path = self._resolve_output_path(output_dir, base_name, "_overlay", image_ext, cfg)
-                        iio.imwrite(path, np.asarray(frame.overlay_img, dtype=np.uint8))
-                        written_files.append(path)
-                    elif artifact == "diameters":
-                        src = frame.diameters_overlay
-                        if src is None:
-                            skipped.append(self._skip_item(frame_index, artifact, "missing_data"))
-                            continue
-                        path = self._resolve_output_path(output_dir, base_name, "_diameters", image_ext, cfg)
-                        iio.imwrite(path, np.asarray(src, dtype=np.uint8))
-                        written_files.append(path)
-                    elif artifact == "orientations":
-                        src = frame.orientations_overlay
-                        if src is None:
-                            skipped.append(self._skip_item(frame_index, artifact, "missing_data"))
-                            continue
-                        path = self._resolve_output_path(output_dir, base_name, "_orientations", image_ext, cfg)
-                        iio.imwrite(path, np.asarray(src, dtype=np.uint8))
-                        written_files.append(path)
-                    elif artifact == "outline":
-                        outline_img = self._cached_outline_image(frame)
-                        if outline_img is None:
-                            skipped.append(self._skip_item(frame_index, artifact, "missing_data"))
-                            continue
-                        path = self._resolve_output_path(output_dir, base_name, "_outline", image_ext, cfg)
-                        iio.imwrite(path, np.asarray(outline_img, dtype=np.uint8))
-                        written_files.append(path)
-                    elif artifact == "tables":
+                    if artifact == "tables":
                         if frame.samples_table is None or len(frame.samples_table) == 0:
                             skipped.append(self._skip_item(frame_index, artifact, "missing_data"))
                             continue
                         path = self._resolve_output_path(output_dir, base_name, "_samples", ".csv", cfg)
                         self._write_samples_csv(frame, path)
+                        written_files.append(path)
+                    else:
+                        array = self._ARRAYS[artifact](frame)
+                        if array is None:
+                            skipped.append(self._skip_item(frame_index, artifact, "missing_data"))
+                            continue
+                        ext = ".tiff" if artifact in ("dt", "foreground") else image_ext
+                        path = self._resolve_output_path(output_dir, base_name, f"_{artifact}", ext, cfg)
+                        iio.imwrite(path, array)
                         written_files.append(path)
                 except Exception as exc:
                     errors.append(
@@ -362,66 +327,7 @@ class BatchResultExporter:
             if artifact not in artifacts:
                 continue
             try:
-                if artifact == "dt":
-                    arrays = self._collect_stack_arrays(frames, artifact)
-                    if arrays is None:
-                        skipped.append(self._skip_item(-1, artifact, "missing_data"))
-                        continue
-                    path = self._resolve_output_path(output_dir, base_name, "_dt", ".tiff", cfg)
-                    iio.imwrite(path, np.stack(arrays, axis=0))
-                    written_files.append(path)
-                elif artifact == "foreground":
-                    arrays = self._collect_stack_arrays(frames, artifact)
-                    if arrays is None:
-                        skipped.append(self._skip_item(-1, artifact, "missing_data"))
-                        continue
-                    path = self._resolve_output_path(output_dir, base_name, "_foreground", ".tiff", cfg)
-                    iio.imwrite(path, np.stack(arrays, axis=0))
-                    written_files.append(path)
-                elif artifact == "labels":
-                    arrays = self._collect_stack_arrays(frames, artifact)
-                    if arrays is None:
-                        skipped.append(self._skip_item(-1, artifact, "missing_data"))
-                        continue
-                    if not any(np.any(arr) for arr in arrays):
-                        skipped.append(self._skip_item(-1, artifact, "missing_data"))
-                        continue
-                    path = self._resolve_output_path(output_dir, base_name, "_labels", ".tiff", cfg)
-                    iio.imwrite(path, np.stack(arrays, axis=0))
-                    written_files.append(path)
-                elif artifact == "overlay":
-                    arrays = self._collect_stack_arrays(frames, artifact)
-                    if arrays is None:
-                        skipped.append(self._skip_item(-1, artifact, "missing_data"))
-                        continue
-                    path = self._resolve_output_path(output_dir, base_name, "_overlay", ".tiff", cfg)
-                    iio.imwrite(path, np.stack(arrays, axis=0))
-                    written_files.append(path)
-                elif artifact == "diameters":
-                    arrays = self._collect_stack_arrays(frames, artifact)
-                    if arrays is None:
-                        skipped.append(self._skip_item(-1, artifact, "missing_data"))
-                        continue
-                    path = self._resolve_output_path(output_dir, base_name, "_diameters", ".tiff", cfg)
-                    iio.imwrite(path, np.stack(arrays, axis=0))
-                    written_files.append(path)
-                elif artifact == "orientations":
-                    arrays = self._collect_stack_arrays(frames, artifact)
-                    if arrays is None:
-                        skipped.append(self._skip_item(-1, artifact, "missing_data"))
-                        continue
-                    path = self._resolve_output_path(output_dir, base_name, "_orientations", ".tiff", cfg)
-                    iio.imwrite(path, np.stack(arrays, axis=0))
-                    written_files.append(path)
-                elif artifact == "outline":
-                    arrays = self._collect_stack_arrays(frames, artifact)
-                    if arrays is None:
-                        skipped.append(self._skip_item(-1, artifact, "missing_data"))
-                        continue
-                    path = self._resolve_output_path(output_dir, base_name, "_outline", ".tiff", cfg)
-                    iio.imwrite(path, np.stack(arrays, axis=0))
-                    written_files.append(path)
-                elif artifact == "tables":
+                if artifact == "tables":
                     if not any(
                         frame.samples_table is not None and len(frame.samples_table) > 0
                         for frame in frames
@@ -430,6 +336,14 @@ class BatchResultExporter:
                         continue
                     path = self._resolve_output_path(output_dir, base_name, "_samples", ".csv", cfg)
                     self._write_stack_samples_csv(frames, path)
+                    written_files.append(path)
+                else:
+                    arrays = [self._ARRAYS[artifact](frame) for frame in frames]
+                    if any(array is None for array in arrays):
+                        skipped.append(self._skip_item(-1, artifact, "missing_data"))
+                        continue
+                    path = self._resolve_output_path(output_dir, base_name, f"_{artifact}", ".tiff", cfg)
+                    iio.imwrite(path, np.stack(arrays, axis=0))
                     written_files.append(path)
             except Exception as exc:
                 errors.append(
@@ -442,88 +356,6 @@ class BatchResultExporter:
                 )
 
         return written_files, skipped, errors
-
-    def _collect_stack_arrays(self, frames: list[Any], artifact: str) -> list[np.ndarray] | None:
-        arrays: list[np.ndarray] = []
-        for frame in frames:
-            if artifact == "dt":
-                src = frame.dt
-                if src is None:
-                    return None
-                arrays.append(np.asarray(src, dtype=np.float32))
-            elif artifact == "foreground":
-                src = frame.foreground_prob
-                if src is None:
-                    return None
-                arrays.append(np.asarray(src, dtype=np.float32))
-            elif artifact == "labels":
-                src = self._labels_rgb_image(frame)
-                if src is None:
-                    return None
-                arr = np.asarray(src, dtype=np.uint8)
-                if arr.ndim != 3 or arr.shape[2] < 3:
-                    return None
-                arrays.append(arr[..., :3])
-            elif artifact == "overlay":
-                src = frame.overlay_img
-                if src is None:
-                    return None
-                arrays.append(np.asarray(src, dtype=np.uint8))
-            elif artifact == "diameters":
-                src = frame.diameters_overlay
-                if src is None:
-                    return None
-                arrays.append(np.asarray(src, dtype=np.uint8))
-            elif artifact == "orientations":
-                src = frame.orientations_overlay
-                if src is None:
-                    return None
-                arrays.append(np.asarray(src, dtype=np.uint8))
-            elif artifact == "outline":
-                src = self._cached_outline_image(frame)
-                if src is None:
-                    return None
-                arrays.append(np.asarray(src, dtype=np.uint8))
-            else:
-                return None
-        return arrays
-
-    @staticmethod
-    def _cached_outline_image(frame: Any) -> np.ndarray | None:
-        """
-        Return the cached outline visualization image.
-        Saving must not recompute outlines.
-        """
-        cache = frame.segmentation_outline_cache
-        if not isinstance(cache, tuple) or len(cache) != 2:
-            return None
-        cached_img = cache[1]
-        if cached_img is None:
-            return None
-        return np.asarray(cached_img, dtype=np.uint8)
-
-    @staticmethod
-    def _labels_rgb_image(frame: Frame) -> np.ndarray | None:
-        """Return segmentation labels as RGB using the same mapping as visualization."""
-        labels = frame.labels_2d
-        if labels is None:
-            return None
-        labels_arr = np.asarray(labels)
-        if labels_arr.ndim != 2:
-            return None
-        if labels_arr.size == 0 or int(np.max(labels_arr)) <= 0:
-            return None
-
-        cache = frame.labels_rgb_cache
-        if isinstance(cache, tuple) and len(cache) == 2:
-            cache_id, cache_img = cache
-            if cache_img is not None and cache_id == id(labels):
-                return np.asarray(cache_img, dtype=np.uint8)
-
-        rendered = labels_to_color(labels_arr)
-        if rendered is None:
-            return None
-        return np.asarray(rendered, dtype=np.uint8)
 
     def _stack_base_name(self, frames: list[Any], cfg: dict[str, Any]) -> str:
         explicit_base = cfg.get("base_name")
