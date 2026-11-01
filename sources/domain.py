@@ -54,12 +54,12 @@ class AppConfig:
     # --- Save/export defaults (single image, folder batch, and stack exports) ---
     save_options: dict = field(
         default_factory=lambda: {
-            "dt": True,
-            "foreground": True,
+            "dt": False,
+            "foreground": False,
             "labels": True,
-            "overlay": True,
-            "diameters": True,
-            "orientations": True,
+            "overlay": False,
+            "diameters": False,
+            "orientations": False,
             "outline": False,
             "tables": True,
             "image_format": "png",

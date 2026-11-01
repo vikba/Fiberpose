@@ -28,7 +28,6 @@ logging.basicConfig(level=logging.INFO)
 
 from .ui_support import (
     PlotProfileDialog,
-    SaveOptionsDialog,
     ConfigEditorDialog,
 )
 from .fiber_analyzer_2D import FiberAnalyzer_2D
@@ -151,16 +150,17 @@ class MainWindow(QMainWindow):
         self.action_load_image.triggered.connect(self.load_original)
         self.action_save_masks_predictions.triggered.connect(self.save_predictions)
         self.action_save_measurements.triggered.connect(self.save_measurements)
-        self.action_save_options.triggered.connect(self._on_edit_save_options)
+        self.action_save_options.triggered.connect(lambda: self.btn_export_settings.setChecked(True))
         self.action_edit_config.triggered.connect(self._on_edit_config)
         self.action_load_config.triggered.connect(self._on_load_config)
 
         self.btn_load_image.clicked.connect(self.load_original)
+        self.btn_load_folder.clicked.connect(lambda: self.open_source(source_kind="folder"))
         self.btn_segment.clicked.connect(self.segment)
         self.btn_measure.clicked.connect(self.analyze_fibers)
         self.btn_set_scalebar.clicked.connect(self._on_set_scalebar_clicked)
         self.btn_plot_profile.clicked.connect(self._on_plot_profile_clicked)
-        self.btn_export_results.clicked.connect(self._on_export_results_clicked)
+        self.btn_export_results.clicked.connect(self.save_predictions)
         self.btn_save_screenshot.clicked.connect(self._on_save_screenshot_clicked)
         self.btn_export_csv.clicked.connect(self.save_measurements)
         self.action_batch_processing.triggered.connect(self._on_batch_processing)
@@ -169,6 +169,7 @@ class MainWindow(QMainWindow):
         for button, panel in (
             (self.btn_segmentation_advanced, self.widget_segmentation_advanced),
             (self.btn_measurement_advanced, self.widget_measurement_advanced),
+            (self.btn_export_settings, self.widget_export_settings),
         ):
             panel.setVisible(False)
             button.toggled.connect(
@@ -178,8 +179,8 @@ class MainWindow(QMainWindow):
         # Remove connection of radiobutton signals and instead hook up the combobox change
         self.cb_view.currentIndexChanged.connect(self.refresh_view)
         self.cb_view.setMinimumHeight(self.btn_load_image.sizeHint().height())
-        # Units belong to the plots: hidden with them, but keep the row's space so plots don't shift.
-        for widget in (self.label_units, self.cb_units):
+        # Units, CSV export and stats belong to the plots: hidden with them, but keep their space so nothing shifts.
+        for widget in (self.label_units, self.cb_units, self.btn_export_csv, self.text_edit2):
             policy = widget.sizePolicy()
             policy.setRetainSizeWhenHidden(True)
             widget.setSizePolicy(policy)
@@ -187,6 +188,23 @@ class MainWindow(QMainWindow):
 
         # Set default model
         self._init_model_selector()
+
+        # Export settings in the left panel write straight into config.save_options.
+        self._export_checkboxes = {
+            "labels": self.chb_export_labels,
+            "tables": self.chb_export_tables,
+            "overlay": self.chb_export_overlay,
+            "dt": self.chb_export_dt,
+            "foreground": self.chb_export_foreground,
+            "diameters": self.chb_export_diameters,
+            "orientations": self.chb_export_orientations,
+            "outline": self.chb_export_outline,
+        }
+        self._sync_export_settings_to_ui()
+        for checkbox in (*self._export_checkboxes.values(), self.chb_write_manifest):
+            checkbox.toggled.connect(self._on_export_settings_changed)
+        self.cb_image_format.currentTextChanged.connect(self._on_export_settings_changed)
+        self.cb_collision.currentTextChanged.connect(self._on_export_settings_changed)
 
         # Disable saves initially.
         self._refresh_save_actions()
@@ -558,15 +576,23 @@ class MainWindow(QMainWindow):
         self._apply_runtime_after_config_change()
         self.statusbar.showMessage(f"Config updated: {self.config_filepath}", 5000)
 
-    def _on_edit_save_options(self) -> bool:
-        current_options = self._normalize_save_options(self.config.save_options)
-        dialog = SaveOptionsDialog(self, current_options)
-        if dialog.exec() != QtWidgets.QDialog.DialogCode.Accepted:
-            return False
+    def _sync_export_settings_to_ui(self) -> None:
+        options = self._normalize_save_options(self.config.save_options)
+        for key, checkbox in self._export_checkboxes.items():
+            checkbox.setChecked(bool(options[key]))
+        self.cb_image_format.setCurrentText(options["image_format"])
+        self.cb_collision.setCurrentText(options["collision"])
+        self.chb_write_manifest.setChecked(bool(options["write_manifest"]))
 
-        self.config.save_options = self._normalize_save_options(dialog.options())
-        self.statusbar.showMessage("Save options updated.", 4000)
-        return True
+    def _on_export_settings_changed(self, *_args) -> None:
+        options = {key: checkbox.isChecked() for key, checkbox in self._export_checkboxes.items()}
+        if not self.chb_export_tables.isEnabled():
+            # The table box is shown unchecked until Measure; keep the stored choice meanwhile.
+            options["tables"] = self._normalize_save_options(self.config.save_options)["tables"]
+        options["image_format"] = self.cb_image_format.currentText()
+        options["collision"] = self.cb_collision.currentText()
+        options["write_manifest"] = self.chb_write_manifest.isChecked()
+        self.config.save_options = self._normalize_save_options(options)
 
 
     # ------------------- Drag & drop -------------------
@@ -630,10 +656,6 @@ class MainWindow(QMainWindow):
         selected = menu.exec(global_pos)
         if selected is action_save:
             self._save_active_image_png()
-
-    def _on_export_results_clicked(self) -> None:
-        if self.current_frame.orig_img is not None and self._on_edit_save_options():
-            self.save_predictions()
 
     def _on_save_screenshot_clicked(self) -> None:
         if self.current_frame.orig_img is not None:
@@ -936,19 +958,28 @@ class MainWindow(QMainWindow):
         has_csv = self._has_export_data("csv", batch_result)
         self.action_save_masks_predictions.setEnabled(has_results)
         self.action_save_measurements.setEnabled(has_csv)
+        # The measurements table can only be exported after Measure.
+        self.chb_export_tables.blockSignals(True)
+        self.chb_export_tables.setEnabled(has_csv)
+        self.chb_export_tables.setChecked(
+            has_csv and bool(self._normalize_save_options(self.config.save_options)["tables"])
+        )
+        self.chb_export_tables.blockSignals(False)
 
     def _save_by_kind(self, kind: str) -> None:
         batch_result = self._effective_batch_result_for_save()
         if not self._has_export_data(kind, batch_result):
-            message = "Run segmentation first." if kind == "results" else "Run Analyze fibers first."
+            message = "Press Segment and/or Measure first." if kind == "results" else "Press Measure first."
             self._show_info("Nothing to export", message)
             return
 
         save_options = self._normalize_save_options(self.config.save_options)
+        if not self._has_export_data("csv", batch_result):
+            save_options["tables"] = False
         if kind == "results" and not any(bool(save_options.get(key, False)) for key in self._save_artifact_keys()):
             self._show_warning(
                 "Nothing selected",
-                "All artifacts are disabled in File -> Save options.",
+                "Nothing is selected in Export Settings.",
             )
             return
 
@@ -1694,6 +1725,7 @@ class MainWindow(QMainWindow):
         self.text_edit2.setVisible(True)
         self.label_units.setVisible(True)
         self.cb_units.setVisible(True)
+        self.btn_export_csv.setVisible(True)
         # Thickness
         diameters = (
             self.current_frame.thickness_units
@@ -1780,13 +1812,18 @@ class MainWindow(QMainWindow):
         kind = self._image_batch.kind
         if kind == "Folder":
             filename = self._image_batch.metadata["filenames"][self._current_z_index]
-            text = f"Image: {filename} ({current}/{total})"
+            prefix, name, suffix = "Image: ", filename, f" ({current}/{total})"
         elif kind == "Stack":
-            text = f"Stack: {self._image_batch.name} (slice {current}/{total})"
+            prefix, name, suffix = "Stack: ", self._image_batch.name, f" (slice {current}/{total})"
         else:
-            text = f"Image: {self._image_batch.name}"
-        self.label_image_name.setText(text)
-        self.label_image_name.setToolTip(text)
+            prefix, name, suffix = "Image: ", self._image_batch.name, ""
+        # Names too long for the label keep their start and end, with "…" in between.
+        metrics = self.label_image_name.fontMetrics()
+        width = self.label_image_name.width() - metrics.horizontalAdvance(suffix)
+        short_name = metrics.elidedText(name, Qt.TextElideMode.ElideMiddle, width)
+        label_prefix = prefix if short_name == name else prefix.rstrip() + "\n"  # shortened name gets its own line
+        self.label_image_name.setText(label_prefix + short_name + suffix)
+        self.label_image_name.setToolTip(prefix + name + suffix)
 
     def _frame_base_name(self, frame_id: str, z_index: int) -> str:
         base = os.path.splitext(str(frame_id))[0]
@@ -2025,6 +2062,7 @@ class MainWindow(QMainWindow):
         self.text_edit2.setVisible(False)
         self.label_units.setVisible(False)
         self.cb_units.setVisible(False)
+        self.btn_export_csv.setVisible(False)
         for pw in (self.graph_diameters, self.graph_angles):
             pw.clear()
             pw.setTitle(None)
