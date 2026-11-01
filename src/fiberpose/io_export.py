@@ -3,15 +3,45 @@
 from __future__ import annotations
 
 import csv
+import dataclasses
 import json
 import os
 from typing import Any
 
+import cv2
 import imageio.v3 as iio
 import numpy as np
 
 from .domain import AppConfig, BatchResult, Frame, ImageBatch
 from .render import render
+
+
+def frame_at_original_scale(frame: Frame) -> Frame:
+    """Copy of `frame` with per-pixel outputs mapped from the processing scale back to `orig_img`'s size.
+
+    Labels use nearest neighbour (ids never mixed); the DT is resampled and divided by the scale
+    so its values are distances in original pixels.
+    """
+    scale = float(frame.scale_factor or 1.0)
+    if scale == 1.0 or frame.orig_img is None or frame.dt is None:
+        return frame
+    (h, w), (sh, sw) = frame.orig_img.shape[:2], frame.dt.shape[:2]
+    interp = cv2.INTER_AREA if scale > 1.0 else cv2.INTER_LINEAR
+    resize = lambda a: None if a is None else cv2.resize(np.asarray(a, np.float32), (w, h), interpolation=interp)
+    rows = np.minimum(((np.arange(h) + 0.5) * sh / h).astype(np.intp), sh - 1)
+    cols = np.minimum(((np.arange(w) + 0.5) * sw / w).astype(np.intp), sw - 1)
+    labels = frame.labels_2d
+    return dataclasses.replace(
+        frame,
+        orig_img_scaled=None,
+        scale_factor=1.0,
+        dt=resize(frame.dt) / scale,
+        foreground_prob=resize(frame.foreground_prob),
+        labels_2d=None if labels is None else labels[rows[:, None], cols],
+        # measurement_samples already hold the same tuples in original coordinates.
+        drawing_samples=frame.measurement_samples,
+        views={},
+    )
 
 
 class ExportService:
@@ -269,6 +299,7 @@ class BatchResultExporter:
         image_ext = ".tiff" if cfg["image_format"] == "tiff" else ".png"
 
         for frame_index, frame in enumerate(batch_result.frame_results):
+            frame = frame_at_original_scale(frame)
             base_name = self._make_base_name(frame, frame_index, cfg)
             for artifact in self._ALL_ARTIFACTS:
                 if artifact not in artifacts:
@@ -317,7 +348,7 @@ class BatchResultExporter:
         written_files: list[str] = []
         skipped: list[dict[str, Any]] = []
         errors: list[dict[str, Any]] = []
-        frames = list(batch_result.frame_results)
+        frames = [frame_at_original_scale(frame) for frame in batch_result.frame_results]
         if not frames:
             return written_files, skipped, errors
 
