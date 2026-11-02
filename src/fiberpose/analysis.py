@@ -10,6 +10,7 @@ from typing import Any
 
 import cv2
 import numpy as np
+from numba import njit
 from scipy.ndimage import gaussian_filter, laplace, value_indices
 from scipy.sparse import coo_matrix
 from scipy.sparse.csgraph import connected_components
@@ -479,27 +480,19 @@ def _filter_measurement_centerlines(
     keep_segments_without_measurement_centerlines: bool,
 ) -> list[FiberFragment]:
     """Collect measurement centerlines per fragment and update fragments in place."""
+    if strict and (gx is None or gy is None):
+        raise ValueError("Strict centerline filtering requires dt, grad_x, and grad_y.")
+    if not strict:
+        gx = gy = dt  # never read outside strict mode, but numba needs arrays
     active_segmentation_fragments: list[FiberFragment] = []
     for seg in segmentation_fragments:
         seg.measurement_centerlines_xy = []
         for polyline_xy in seg.segment_centerlines_xy:
-            seg_xy = polyline_xy.reshape(-1, 1, 2)
-            windows_xy = _sliding_window_filter(
-                seg_xy,
-                image=dt_u8,
-                dt=dt,
-                grad_x=gx,
-                grad_y=gy,
-                win_len=win_len,
-                std_thresh=std_thresh,
-                max_angle=max_angle_deg,
-                strict=bool(strict),
+            pts_xy = np.ascontiguousarray(polyline_xy, dtype=np.float32).reshape(-1, 2)
+            spans = _window_spans(
+                pts_xy, dt_u8, dt, gx, gy, float(win_len), float(std_thresh), float(max_angle_deg), bool(strict)
             )
-            for window_xy in windows_xy:
-                pts_xy = window_xy.reshape(-1, 2).astype(np.float32, copy=False)
-                if pts_xy.shape[0] < 2:
-                    continue
-                seg.measurement_centerlines_xy.append(pts_xy)
+            seg.measurement_centerlines_xy += [pts_xy[s:e + 1].copy() for s, e in spans]
         seg.recompute_total_measurement_centerline_length_px()
         if seg.has_measurement_centerline:
             active_segmentation_fragments.append(seg)
@@ -640,176 +633,104 @@ def _render_markers(shape: tuple[int, int], segments: list[FiberFragment]) -> np
 # ------------------------------------------------------------------ #
 # Measurement-centerline windows
 
+# Strict-mode thresholds; never configured, so numba folds them in as constants.
+_GRAD_ALIGNMENT_COS = 0.95
+_RADIUS_REL_TOL = 0.25
+_MIN_VALID_FRACTION = 0.7
 
-def _sliding_window_filter(
-    seg_xy: np.ndarray,
-    image: np.ndarray,
-    dt: np.ndarray | None = None,
-    grad_x: np.ndarray | None = None,
-    grad_y: np.ndarray | None = None,
-    win_len: float = 15.0,
-    std_thresh: float = 0.6,
-    max_angle: float = 20.0,
-    strict: bool = False,
-    grad_alignment_cos: float = 0.95,
-    radius_rel_tol: float = 0.25,
-    min_valid_fraction: float = 0.7,
-) -> list[np.ndarray]:
-    if strict and (dt is None or grad_x is None or grad_y is None):
-        raise ValueError("Strict centerline filtering requires dt, grad_x, and grad_y.")
 
-    pts_xy = seg_xy.reshape(-1, 2).astype(np.float32)
-    if pts_xy.shape[0] < 2:
-        return []
+@njit(cache=True)
+def _window_spans(pts_xy, image, dt, gx, gy, win_len, std_thresh, max_angle_deg, strict):
+    """Merged (start, end) point spans of flat, level windows, each at least `win_len` long.
 
-    cum_dist = [0.0]
-    for i in range(1, len(pts_xy)):
-        cum_dist.append(cum_dist[-1] + float(np.linalg.norm(pts_xy[i] - pts_xy[i - 1])))
-    cum_dist = np.asarray(cum_dist, dtype=np.float32)
-    total_len = float(cum_dist[-1])
-    if total_len <= 0:
-        return []
+    Windows of arc length `win_len` slide along the polyline in steps of `win_len / 2`.
+    A window is accepted when `image` is flat along it (low std, small end-to-end rise)
+    and, in strict mode, when the DT looks like a clean fiber cross-section.
+    Overlapping accepted windows merge as they are found.
+    """
+    n = len(pts_xy)
+    h, w = image.shape
+    cum = np.zeros(n, dtype=np.float32)  # arc length at each point
+    intens = np.empty(n, dtype=np.float64)  # image at each point, rounded to the nearest pixel
+    total = 0.0
+    for i in range(n):
+        if i > 0:
+            dx, dy = pts_xy[i, 0] - pts_xy[i - 1, 0], pts_xy[i, 1] - pts_xy[i - 1, 1]
+            total += np.sqrt(dx * dx + dy * dy)
+            cum[i] = total
+        x = min(max(int(np.rint(pts_xy[i, 0])), 0), w - 1)
+        y = min(max(int(np.rint(pts_xy[i, 1])), 0), h - 1)
+        intens[i] = image[y, x]
 
-    gray = image
-    h, w = gray.shape[:2]
-
-    def sample_intensity(p_xy: np.ndarray) -> float:
-        x, y = int(round(p_xy[0])), int(round(p_xy[1]))
-        x = min(max(x, 0), w - 1)
-        y = min(max(y, 0), h - 1)
-        return float(gray[y, x])
-
-    valid_windows: list[tuple[int, int]] = []
-    start_idx = 0
-    half_step = float(win_len) / 2.0
-    max_angle = float(max_angle)
-
-    n_pts = len(pts_xy)
-    while start_idx < n_pts - 1:
-        start_s = float(cum_dist[start_idx])
-        target_s = start_s + float(win_len)
-        end_idx = int(np.searchsorted(cum_dist, target_s, side="left"))
-
-        if end_idx <= start_idx + 1:
-            end_idx = start_idx + 1
-        if end_idx >= n_pts:
-            end_idx = n_pts - 1
-
-        window_pts_xy = pts_xy[start_idx : end_idx + 1]
-        intensities = np.fromiter((sample_intensity(p_xy) for p_xy in window_pts_xy), dtype=np.float32)
-        if intensities.size >= 2:
-            if np.std(intensities) < std_thresh:
-                ds = float(cum_dist[end_idx] - cum_dist[start_idx])
-                if ds > 0.0:
-                    dI = abs(float(intensities[-1]) - float(intensities[0]))
-                    angle_deg = np.degrees(np.arctan(dI / ds))
-                    if angle_deg < max_angle:
-                        if strict:
-                            if _window_high_confidence(
-                                window_pts_xy,
-                                dt=dt,
-                                grad_x=grad_x,
-                                grad_y=grad_y,
-                                grad_alignment_cos=grad_alignment_cos,
-                                radius_rel_tol=radius_rel_tol,
-                                min_valid_fraction=min_valid_fraction,
-                            ):
-                                valid_windows.append((start_idx, end_idx))
-                        else:
-                            valid_windows.append((start_idx, end_idx))
-
-        new_target_s = start_s + half_step
-        new_start_idx = int(np.searchsorted(cum_dist, new_target_s, side="left"))
-        if new_start_idx <= start_idx:
-            break
-        start_idx = new_start_idx
-
-    merged: list[tuple[int, int]] = []
-    for win in valid_windows:
-        if not merged:
-            merged.append(win)
-        else:
-            a0, a1 = merged[-1]
-            b0, b1 = win
-            if b0 <= a1:
-                merged[-1] = (a0, max(a1, b1))
+    spans = np.empty((n, 2), dtype=np.int64)
+    k = 0
+    if n < 2 or cum[-1] <= 0:
+        return spans[:0]
+    s = 0
+    while s < n - 1:
+        e = min(max(np.searchsorted(cum, cum[s] + win_len), s + 1), n - 1)
+        if _is_flat(intens[s:e + 1], cum[e] - cum[s], std_thresh, max_angle_deg) and (
+            not strict or _is_clean_cross_section(pts_xy[s:e + 1], dt, gx, gy)
+        ):
+            if k > 0 and s <= spans[k - 1, 1]:
+                spans[k - 1, 1] = max(spans[k - 1, 1], e)
             else:
-                merged.append(win)
+                spans[k, 0], spans[k, 1] = s, e
+                k += 1
+        next_s = np.searchsorted(cum, cum[s] + win_len / 2.0)
+        if next_s <= s:
+            break
+        s = next_s
+    spans = spans[:k]
+    return spans[cum[spans[:, 1]] - cum[spans[:, 0]] >= win_len]
 
-    out_segments: list[np.ndarray] = []
-    for s_idx, e_idx in merged:
-        if float(cum_dist[e_idx] - cum_dist[s_idx]) >= float(win_len):
-            sub_xy = pts_xy[s_idx : e_idx + 1].copy().reshape(-1, 1, 2)
-            out_segments.append(sub_xy)
-    return out_segments
 
+@njit(cache=True)
+def _is_flat(intens, length, std_thresh, max_angle_deg):
+    """Low intensity spread, and a rise from first to last point below `max_angle_deg`.
 
-def _window_high_confidence(
-    pts_xy: np.ndarray,
-    dt: np.ndarray,
-    grad_x: np.ndarray,
-    grad_y: np.ndarray,
-    grad_alignment_cos: float = 0.95,
-    radius_rel_tol: float = 0.1,
-    min_valid_fraction: float = 0.7,
-) -> bool:
+    Intensities are integers, so distinct stds are far apart and float32 rounding only
+    merges a std with a threshold it exactly equals; that tie counts as not flat.
     """
-    Validate a candidate window against gradient alignment and radius consistency criteria.
-    """
-    pts_xy = np.asarray(pts_xy, dtype=np.float32).reshape(-1, 2)
-    if pts_xy.shape[0] < 2:
+    if length <= 0.0 or np.float32(np.sqrt(np.mean((intens - np.mean(intens)) ** 2))) >= np.float32(std_thresh):
         return False
+    return np.degrees(np.arctan(abs(intens[-1] - intens[0]) / length)) < max_angle_deg
 
-    n_pts = pts_xy.shape[0]
-    tangents = np.zeros_like(pts_xy, dtype=np.float32)
-    tangents[1:-1] = pts_xy[2:] - pts_xy[:-2]
-    tangents[0] = pts_xy[1] - pts_xy[0]
-    tangents[-1] = pts_xy[-1] - pts_xy[-2]
 
-    tan_norm = np.linalg.norm(tangents, axis=1, keepdims=True) + 1e-6
-    tangents /= tan_norm
-    normals = np.stack([-tangents[:, 1], tangents[:, 0]], axis=1)
+@njit(cache=True)
+def _is_clean_cross_section(pts_xy, dt, gx, gy):
+    """Most points look like a clean fiber cross-section in the DT.
 
-    valid = 0
-    total = 0
-    for idx in range(n_pts):
-        px, py = float(pts_xy[idx, 0]), float(pts_xy[idx, 1])
-        r = float(_bilinear(dt, py, px))
-        if r <= 1e-6:
+    At each point, probe half the local radius r to either side along the normal: the
+    DT gradients there must point in opposite directions and the DT must be about r/2.
+    """
+    n = len(pts_xy)
+    valid = total = 0
+    for i in range(n):
+        a, b = max(i - 1, 0), min(i + 1, n - 1)
+        tx, ty = pts_xy[b, 0] - pts_xy[a, 0], pts_xy[b, 1] - pts_xy[a, 1]
+        tan_norm = np.sqrt(tx * tx + ty * ty) + np.float32(1e-6)
+        nx, ny = float(-ty / tan_norm), float(tx / tan_norm)
+        px, py = float(pts_xy[i, 0]), float(pts_xy[i, 1])
+        r = _bilinear(dt, py, px)
+        if r <= 1e-6 or (abs(nx) <= 1e-8 and abs(ny) <= 1e-8):
             continue
 
         h = 0.5 * r
-        nx, ny = float(normals[idx, 0]), float(normals[idx, 1])
-        if np.isclose(nx, 0.0) and np.isclose(ny, 0.0):
-            continue
-
-        p_plus = (px + nx * h, py + ny * h)
-        p_minus = (px - nx * h, py - ny * h)
-
-        g_plus = _sample_vec2(grad_x, grad_y, p_plus[1], p_plus[0])
-        g_minus = _sample_vec2(grad_x, grad_y, p_minus[1], p_minus[0])
-
-        mag_plus = float(np.linalg.norm(g_plus))
-        mag_minus = float(np.linalg.norm(g_minus))
+        g_plus = _sample_vec2(gx, gy, py + ny * h, px + nx * h)
+        g_minus = _sample_vec2(gx, gy, py - ny * h, px - nx * h)
+        mag_plus = np.sqrt(g_plus[0] ** 2 + g_plus[1] ** 2)
+        mag_minus = np.sqrt(g_minus[0] ** 2 + g_minus[1] ** 2)
         if mag_plus <= 1e-6 or mag_minus <= 1e-6:
             continue
+        u_plus, u_minus = g_plus / (mag_plus + 1e-6), g_minus / (mag_minus + 1e-6)
+        opposed = -(u_plus[0] * u_minus[0] + u_plus[1] * u_minus[1]) >= _GRAD_ALIGNMENT_COS
 
-        g_plus_unit = g_plus / (mag_plus + 1e-6)
-        g_minus_unit = g_minus / (mag_minus + 1e-6)
-        align_score = -float(np.dot(g_plus_unit, g_minus_unit))
-
-        target = 0.5 * r
-        dt_plus = float(_bilinear(dt, p_plus[1], p_plus[0]))
-        dt_minus = float(_bilinear(dt, p_minus[1], p_minus[0]))
+        tol = _RADIUS_REL_TOL * max(r, 1e-6)
         radius_ok = (
-            abs(dt_plus - target) <= radius_rel_tol * max(r, 1e-6)
-            and abs(dt_minus - target) <= radius_rel_tol * max(r, 1e-6)
+            abs(_bilinear(dt, py + ny * h, px + nx * h) - h) <= tol
+            and abs(_bilinear(dt, py - ny * h, px - nx * h) - h) <= tol
         )
-
         total += 1
-        if align_score >= grad_alignment_cos and radius_ok:
-            valid += 1
-
-    if total == 0:
-        return False
-    return (valid / float(total)) >= float(min_valid_fraction)
+        valid += opposed and radius_ok
+    return total > 0 and valid / total >= _MIN_VALID_FRACTION
