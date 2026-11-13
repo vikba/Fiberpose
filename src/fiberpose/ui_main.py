@@ -1546,6 +1546,10 @@ class MainWindow(QMainWindow):
                                     pen=pg.mkPen(color="#507E2D", width=1))
                 self.graph_angles.addItem(bg)
 
+        # Fit the complete histograms even after the user has zoomed or panned.
+        self.graph_diameters.autoRange()
+        self.graph_angles.autoRange()
+
     # ------------------- View & reset -------------------
 
     def refresh_view(self) -> np.ndarray | None:
