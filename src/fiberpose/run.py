@@ -14,7 +14,7 @@ import argparse
 import sys
 
 from . import __version__
-from .paths import USER_CONFIG_PATH, default_config_path
+from .paths import APP_ICON_PATH, USER_CONFIG_PATH, default_config_path
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -54,7 +54,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
 def _launch_gui(config_path: str) -> int:
     try:
-        from PyQt6.QtGui import QColor, QPalette
+        from PyQt6.QtGui import QColor, QIcon, QPalette
         from PyQt6.QtWidgets import QApplication
     except ImportError:
         print('Error: the GUI requires PyQt6. In the Fiberpose folder, run:  pip install -e ".[gui]"')
@@ -84,6 +84,7 @@ def _launch_gui(config_path: str) -> int:
         app.setPalette(dark_palette)
 
     app = QApplication(sys.argv)
+    app.setWindowIcon(QIcon(str(APP_ICON_PATH)))
     apply_dark_palette(app)
     font = app.font()
     font.setPointSize(12)

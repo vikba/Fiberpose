@@ -16,6 +16,7 @@ RESOURCES_DIR = PACKAGE_DIR / "resources"
 
 DEFAULT_UI_PATH = RESOURCES_DIR / "fiber_tool.ui"
 DARK_THEME_PATH = RESOURCES_DIR / "dark_theme.qss"
+APP_ICON_PATH = RESOURCES_DIR / "fiberpose.png"
 EXAMPLE_IMAGE_PATH = RESOURCES_DIR / "test.png"
 BUNDLED_CONFIG_PATH = RESOURCES_DIR / "config.json"
 
