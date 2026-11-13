@@ -27,7 +27,6 @@ logging.basicConfig(level=logging.INFO)
 
 from .ui_support import (
     PlotProfileDialog,
-    SaveOptionsDialog,
     ConfigEditorDialog,
 )
 from .ml import onnx_cuda_available
@@ -124,7 +123,6 @@ class MainWindow(QMainWindow):
         self.action_load_image.triggered.connect(self.load_original)
         self.action_save_masks_predictions.triggered.connect(self.save_predictions)
         self.action_save_measurements.triggered.connect(self.save_measurements)
-        self.action_save_options.triggered.connect(self._on_edit_save_options)
         self.action_edit_config.triggered.connect(self._on_edit_config)
         self.action_load_config.triggered.connect(self._on_load_config)
 
@@ -142,6 +140,7 @@ class MainWindow(QMainWindow):
         for button, panel in (
             (self.btn_segmentation_advanced, self.widget_segmentation_advanced),
             (self.btn_measurement_advanced, self.widget_measurement_advanced),
+            (self.btn_export_advanced, self.widget_export_advanced),
         ):
             panel.setVisible(False)
             button.toggled.connect(
@@ -219,6 +218,12 @@ class MainWindow(QMainWindow):
         # Note: We use `editingFinished` instead of `textChanged`.
         self.le_pixelsize.editingFinished.connect(self.sync_ui_to_sample_properties)
         self.le_voxeldepth.editingFinished.connect(self.sync_ui_to_sample_properties)
+
+        # Export options live in config.save_options, not in the binder.
+        for checkbox in (*self._export_checkboxes().values(), self.chb_write_manifest):
+            checkbox.toggled.connect(self._sync_ui_to_save_options)
+        self.cb_image_format.currentIndexChanged.connect(self._sync_ui_to_save_options)
+        self.cb_collision.currentIndexChanged.connect(self._sync_ui_to_save_options)
 
     def _init_model_selector(self) -> None:
         models = self._discover_model_files()
@@ -481,15 +486,40 @@ class MainWindow(QMainWindow):
         self._apply_runtime_after_config_change()
         self.statusbar.showMessage(f"Config updated: {self.config_filepath}", 5000)
 
-    def _on_edit_save_options(self) -> bool:
-        current_options = self._normalize_save_options(self.config.save_options)
-        dialog = SaveOptionsDialog(self, current_options)
-        if dialog.exec() != QtWidgets.QDialog.DialogCode.Accepted:
-            return False
+    def _export_checkboxes(self) -> Dict[str, QtWidgets.QCheckBox]:
+        """Export-panel checkboxes keyed by their save_options artifact name."""
+        return {key: getattr(self, f"chb_export_{key}") for key in self._save_artifact_keys()}
 
-        self.config.save_options = self._normalize_save_options(dialog.options())
-        self.statusbar.showMessage("Save options updated.", 4000)
-        return True
+    def _sync_save_options_to_ui(self) -> None:
+        """Show config.save_options in the export panel without echoing back into the config."""
+        options = self._normalize_save_options(self.config.save_options)
+        widgets = (
+            *self._export_checkboxes().values(),
+            self.chb_write_manifest,
+            self.cb_image_format,
+            self.cb_collision,
+        )
+        for widget in widgets:
+            widget.blockSignals(True)
+        try:
+            for key, checkbox in self._export_checkboxes().items():
+                checkbox.setChecked(bool(options[key]))
+            self.chb_write_manifest.setChecked(bool(options["write_manifest"]))
+            self.cb_image_format.setCurrentIndex(max(0, self.cb_image_format.findText(options["image_format"])))
+            self.cb_collision.setCurrentIndex(max(0, self.cb_collision.findText(options["collision"])))
+        finally:
+            for widget in widgets:
+                widget.blockSignals(False)
+
+    def _sync_ui_to_save_options(self, *_args) -> None:
+        """Store the export panel state in config.save_options."""
+        options: Dict[str, Any] = {
+            key: checkbox.isChecked() for key, checkbox in self._export_checkboxes().items()
+        }
+        options["image_format"] = self.cb_image_format.currentText()
+        options["collision"] = self.cb_collision.currentText()
+        options["write_manifest"] = self.chb_write_manifest.isChecked()
+        self.config.save_options = self._normalize_save_options(options)
 
 
     # ------------------- Drag & drop -------------------
@@ -555,8 +585,7 @@ class MainWindow(QMainWindow):
             self._save_active_image_png()
 
     def _on_export_results_clicked(self) -> None:
-        if self.current_frame.orig_img is not None and self._on_edit_save_options():
-            self.save_predictions()
+        self.save_predictions()
 
     def _on_save_screenshot_clicked(self) -> None:
         if self.current_frame.orig_img is not None:
@@ -854,6 +883,9 @@ class MainWindow(QMainWindow):
         has_csv = self._has_export_data("csv", batch_result)
         self.action_save_masks_predictions.setEnabled(has_results)
         self.action_save_measurements.setEnabled(has_csv)
+        self.btn_export_results.setEnabled(has_results)
+        self.btn_export_csv.setEnabled(has_csv)
+        self.btn_save_screenshot.setEnabled(self.current_frame.orig_img is not None)
 
     def _save_by_kind(self, kind: str) -> None:
         batch_result = self._effective_batch_result_for_save()
@@ -866,7 +898,7 @@ class MainWindow(QMainWindow):
         if kind == "results" and not any(bool(save_options.get(key, False)) for key in self._save_artifact_keys()):
             self._show_warning(
                 "Nothing selected",
-                "All artifacts are disabled in File -> Save options.",
+                "All outputs are unchecked in the Export results panel.",
             )
             return
 
@@ -1721,6 +1753,7 @@ class MainWindow(QMainWindow):
     def sync_config_to_ui(self):
         """Updates the UI widgets to reflect the values in self.config."""
         self._ui_binder.sync_config_to_ui(self, self.config)
+        self._sync_save_options_to_ui()
 
     # ------------------- Panel helpers -------------------
 

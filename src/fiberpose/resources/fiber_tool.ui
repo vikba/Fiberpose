@@ -15,6 +15,9 @@
   </property>
   <widget class="QWidget" name="centralwidget">
    <layout class="QHBoxLayout" name="horizontalLayout">
+    <property name="leftMargin">
+     <number>10</number>
+    </property>
     <property name="topMargin">
      <number>18</number>
     </property>
@@ -59,7 +62,14 @@
          <item>
           <widget class="QPushButton" name="btn_load_image">
            <property name="text">
-            <string>Load image…</string>
+            <string>Load image</string>
+           </property>
+          </widget>
+         </item>
+         <item>
+          <widget class="QPushButton" name="btn_load_folder">
+           <property name="text">
+            <string>Load folder</string>
            </property>
           </widget>
          </item>
@@ -469,8 +479,202 @@
             </layout>
            </widget>
           </item>
+         </layout>
+        </widget>
+       </item>
+       <item>
+        <widget class="QGroupBox" name="groupBox_export">
+         <property name="title">
+          <string>Export results</string>
+         </property>
+         <layout class="QVBoxLayout" name="exportLayout">
           <item>
-           <widget class="QPlainTextEdit" name="text_edit2"/>
+           <widget class="QPushButton" name="btn_export_results">
+            <property name="text">
+             <string>Export results</string>
+            </property>
+           </widget>
+          </item>
+          <item>
+           <widget class="QCheckBox" name="chb_export_labels">
+            <property name="text">
+             <string>Segmentation masks</string>
+            </property>
+           </widget>
+          </item>
+          <item>
+           <widget class="QCheckBox" name="chb_export_tables">
+            <property name="text">
+             <string>Measurements table (CSV)</string>
+            </property>
+           </widget>
+          </item>
+          <item>
+           <widget class="QCheckBox" name="chb_export_overlay">
+            <property name="text">
+             <string>Overlay visualization</string>
+            </property>
+           </widget>
+          </item>
+          <item>
+           <widget class="QToolButton" name="btn_export_advanced">
+            <property name="text">
+             <string>Advanced</string>
+            </property>
+            <property name="checkable">
+             <bool>true</bool>
+            </property>
+            <property name="toolButtonStyle">
+             <enum>Qt::ToolButtonStyle::ToolButtonTextBesideIcon</enum>
+            </property>
+            <property name="autoRaise">
+             <bool>true</bool>
+            </property>
+            <property name="arrowType">
+             <enum>Qt::ArrowType::RightArrow</enum>
+            </property>
+           </widget>
+          </item>
+          <item>
+           <widget class="QWidget" name="widget_export_advanced" native="true">
+            <layout class="QVBoxLayout" name="exportAdvancedLayout">
+             <property name="leftMargin">
+              <number>0</number>
+             </property>
+             <property name="topMargin">
+              <number>0</number>
+             </property>
+             <property name="rightMargin">
+              <number>0</number>
+             </property>
+             <property name="bottomMargin">
+              <number>0</number>
+             </property>
+             <item>
+              <widget class="QCheckBox" name="chb_export_diameters">
+               <property name="text">
+                <string>Diameter measurements overlay</string>
+               </property>
+              </widget>
+             </item>
+             <item>
+              <widget class="QCheckBox" name="chb_export_orientations">
+               <property name="text">
+                <string>Orientation measurements overlay</string>
+               </property>
+              </widget>
+             </item>
+             <item>
+              <widget class="QCheckBox" name="chb_export_outline">
+               <property name="text">
+                <string>Segmentation outline image</string>
+               </property>
+              </widget>
+             </item>
+             <item>
+              <widget class="QCheckBox" name="chb_export_dt">
+               <property name="text">
+                <string>Distance transform (float32 TIFF)</string>
+               </property>
+              </widget>
+             </item>
+             <item>
+              <widget class="QCheckBox" name="chb_export_foreground">
+               <property name="text">
+                <string>Foreground probability (float32 TIFF)</string>
+               </property>
+              </widget>
+             </item>
+             <item>
+              <layout class="QHBoxLayout" name="imageFormatRow">
+               <item>
+                <widget class="QLabel" name="label_image_format">
+                 <property name="text">
+                  <string>Image format:</string>
+                 </property>
+                </widget>
+               </item>
+               <item>
+                <widget class="QComboBox" name="cb_image_format">
+                 <item>
+                  <property name="text">
+                   <string>png</string>
+                  </property>
+                 </item>
+                 <item>
+                  <property name="text">
+                   <string>tiff</string>
+                  </property>
+                 </item>
+                </widget>
+               </item>
+               <item>
+                <spacer name="imageFormatRowSpacer">
+                 <property name="orientation">
+                  <enum>Qt::Orientation::Horizontal</enum>
+                 </property>
+                 <property name="sizeHint" stdset="0">
+                  <size>
+                   <width>0</width>
+                   <height>0</height>
+                  </size>
+                 </property>
+                </spacer>
+               </item>
+              </layout>
+             </item>
+             <item>
+              <layout class="QHBoxLayout" name="collisionRow">
+               <item>
+                <widget class="QLabel" name="label_collision">
+                 <property name="text">
+                  <string>Collision policy:</string>
+                 </property>
+                </widget>
+               </item>
+               <item>
+                <widget class="QComboBox" name="cb_collision">
+                 <item>
+                  <property name="text">
+                   <string>suffix</string>
+                  </property>
+                 </item>
+                 <item>
+                  <property name="text">
+                   <string>overwrite</string>
+                  </property>
+                 </item>
+                 <item>
+                  <property name="text">
+                   <string>error</string>
+                  </property>
+                 </item>
+                </widget>
+               </item>
+               <item>
+                <spacer name="collisionRowSpacer">
+                 <property name="orientation">
+                  <enum>Qt::Orientation::Horizontal</enum>
+                 </property>
+                 <property name="sizeHint" stdset="0">
+                  <size>
+                   <width>0</width>
+                   <height>0</height>
+                  </size>
+                 </property>
+                </spacer>
+               </item>
+              </layout>
+             </item>
+             <item>
+              <widget class="QCheckBox" name="chb_write_manifest">
+               <property name="text">
+                <string>Write export manifest (manifest.json)</string>
+               </property>
+              </widget>
+             </item>
+            </layout>
+           </widget>
           </item>
          </layout>
         </widget>
@@ -577,6 +781,13 @@
          </widget>
         </item>
         <item>
+         <widget class="QPushButton" name="btn_save_screenshot">
+          <property name="text">
+           <string>Export Current View</string>
+          </property>
+         </widget>
+        </item>
+        <item>
          <spacer name="viewSpacer">
           <property name="orientation">
            <enum>Qt::Orientation::Horizontal</enum>
@@ -588,27 +799,6 @@
            </size>
           </property>
          </spacer>
-        </item>
-        <item>
-         <widget class="QPushButton" name="btn_save_screenshot">
-          <property name="text">
-           <string>Save Screenshot</string>
-          </property>
-         </widget>
-        </item>
-        <item>
-         <widget class="QPushButton" name="btn_export_results">
-          <property name="text">
-           <string>Export Results ...</string>
-          </property>
-         </widget>
-        </item>
-        <item>
-         <widget class="QPushButton" name="btn_export_csv">
-          <property name="text">
-           <string>Export CSV</string>
-          </property>
-         </widget>
         </item>
        </layout>
       </item>
@@ -724,6 +914,42 @@
              </property>
             </widget>
            </item>
+           <item>
+            <layout class="QVBoxLayout" name="statsColumn">
+             <item>
+              <widget class="QPlainTextEdit" name="text_edit2">
+               <property name="sizePolicy">
+                <sizepolicy hsizetype="Expanding" vsizetype="Ignored">
+                 <horstretch>0</horstretch>
+                 <verstretch>0</verstretch>
+                </sizepolicy>
+               </property>
+               <property name="minimumSize">
+                <size>
+                 <width>0</width>
+                 <height>160</height>
+                </size>
+               </property>
+               <property name="maximumSize">
+                <size>
+                 <width>240</width>
+                 <height>300</height>
+                </size>
+               </property>
+               <property name="readOnly">
+                <bool>true</bool>
+               </property>
+              </widget>
+             </item>
+             <item alignment="Qt::AlignmentFlag::AlignLeft">
+              <widget class="QPushButton" name="btn_export_csv">
+               <property name="text">
+                <string>Export CSV</string>
+               </property>
+              </widget>
+             </item>
+            </layout>
+           </item>
           </layout>
          </item>
         </layout>
@@ -753,7 +979,6 @@
     <addaction name="action_batch_processing"/>
     <addaction name="action_save_masks_predictions"/>
     <addaction name="action_save_measurements"/>
-    <addaction name="action_save_options"/>
    </widget>
    <widget class="QMenu" name="menuEdit">
     <property name="title">
@@ -813,11 +1038,6 @@
   <action name="action_edit_config">
    <property name="text">
     <string>Edit config...</string>
-   </property>
-  </action>
-  <action name="action_save_options">
-   <property name="text">
-    <string>Save Options...</string>
    </property>
   </action>
   <action name="action_load_config">
