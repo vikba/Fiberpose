@@ -1,4 +1,4 @@
-"""Application entry point for launching Fiberpose GUI or CLI.
+"""Application entry point for launching the Fiberpose GUI, CLI or web interface.
 
 Installed as the ``fiberpose`` command and run by ``python -m fiberpose``.
 """
@@ -18,11 +18,12 @@ from .paths import APP_ICON_PATH, USER_CONFIG_PATH, default_config_path
 
 
 def _build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="fiberpose", description="Fiberpose launcher (GUI + CLI).")
+    parser = argparse.ArgumentParser(prog="fiberpose", description="Fiberpose launcher (GUI, CLI, web).")
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     group = parser.add_mutually_exclusive_group()
     group.add_argument("--cli", action="store_true", help="Run command-line batch processing mode.")
     group.add_argument("--gui", action="store_true", help="Force GUI mode (default when --cli is not set).")
+    group.add_argument("--web", action="store_true", help="Serve the Gradio web interface.")
 
     parser.add_argument("--input", dest="input_path", help="Input path for CLI mode (folder, stack, or image).")
     parser.add_argument(
@@ -94,6 +95,18 @@ def _launch_gui(config_path: str) -> int:
     return int(app.exec())
 
 
+def _launch_web(config_path: str) -> int:
+    try:
+        from .web import launch
+    except ImportError:
+        print('Error: the web interface requires Gradio. Run:  pip install "fiberpose[web]"')
+        return 2
+    from .domain import AppConfig
+
+    launch(AppConfig.load_from_json(config_path))
+    return 0
+
+
 def _launch_cli(args: argparse.Namespace, config_path: str) -> int:
     if not args.input_path:
         print("Error: --input is required with --cli.")
@@ -129,6 +142,8 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.cli:
         return _launch_cli(args, config_path)
+    if args.web:
+        return _launch_web(config_path)
     return _launch_gui(config_path)
 
 

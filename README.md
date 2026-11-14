@@ -159,6 +159,16 @@ fiberpose --cli --input /path/to/image_or_folder_or_stack --measurements --save-
 | `1` | Processing finished, but one or more frames failed during processing or export. |
 | `2` | Invalid arguments, missing input/config/model, or startup/runtime error. |
 
+### Web interface
+
+```bash
+pip install "fiberpose[web]"
+fiberpose --web            # http://localhost:7860
+```
+
+The same page runs in Docker (`docker build -t fiberpose . && docker run -p 7860:7860 fiberpose`)
+and as a Hugging Face Docker Space; `.github/workflows/deploy.yml` publishes both on a version tag.
+
 ### Python API
 
 ```python
@@ -241,10 +251,11 @@ Fiberpose/
 ├── PIPELINE.md                # Runtime pipeline details
 ├── LICENSE
 └── src/fiberpose/
-    ├── run.py                 # GUI/CLI launcher (`fiberpose` command)
+    ├── run.py                 # GUI/CLI/web launcher (`fiberpose` command)
     ├── api.py                 # Public Python API: analyze()
     ├── models.py              # Model lookup, download, and cache
     ├── paths.py               # Bundled resources and user config locations
+    ├── web/                   # Gradio web interface (`fiberpose --web`)
     ├── ui_main.py             # Main PyQt GUI
     ├── ui_support.py          # GUI helpers
     ├── cli_runner.py          # Batch CLI processing

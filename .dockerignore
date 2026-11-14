@@ -1,0 +1,7 @@
+*
+!src
+!checkpoints/R108_dt_fg.onnx
+!pyproject.toml
+!README.md
+!LICENSE
+**/__pycache__

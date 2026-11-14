@@ -1,0 +1,37 @@
+# Publishes the web interface on every version tag.
+# Needs: repository variable HF_SPACE (e.g. "vikba/fiberpose") and secret HF_TOKEN (write access).
+name: deploy
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+jobs:
+  hf-space:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Put the Space header on top of the README
+        run: cat deploy/hf_header.md README.md > README.tmp && mv README.tmp README.md
+      - name: Upload to the Space
+        run: pip install -q huggingface_hub && hf upload "${{ vars.HF_SPACE }}" . . --repo-type space --exclude ".github/*"
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+
+  image:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ghcr.io/vikba/fiberpose:latest
