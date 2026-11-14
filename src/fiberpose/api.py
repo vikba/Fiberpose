@@ -58,11 +58,15 @@ def analyze(
     pixel_size: float = 1.0,
     unit: str = "px",
     invert: bool = False,
+    previous: AnalysisResult | None = None,
 ) -> AnalysisResult:
     """Run prediction, segmentation and measurements on a 2D image.
 
     ``config.model_path`` selects the model by file name or absolute path; when
     empty, the default pretrained model is used (downloaded on first use).
+
+    Pass the ``previous`` result of the same image to change settings without
+    repeating the stages they don't affect (e.g. the model prediction).
     """
     config = config or AppConfig(use_gpu=False)
     model_path = resolve_model_path(config.model_path)
@@ -73,7 +77,7 @@ def analyze(
         unit=str(unit).strip() or "px",
         source="api",
     )
-    frame = Frame.empty(frame_id="image", orig_img=np.asarray(image))
+    frame = previous.frame if previous else Frame.empty(frame_id="image", orig_img=np.asarray(image))
 
     outcome = _controller(model_path, device).ensure_measurements(
         frame, config, sample_props, invert_input=bool(invert)
