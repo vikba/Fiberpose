@@ -61,7 +61,7 @@ def build_demo(config: AppConfig | None = None) -> gr.Blocks:
                 unit = gr.Dropdown(["px", "nm", "µm", "mm"], value="px", label="Unit", allow_custom_value=True, min_width=80)
                 edge_threshold = gr.Number(
                     config.watershed_grad_threshold, label="Edge threshold", minimum=0, maximum=1, step=0.05,
-                    min_width=80, info="min |∇DT|; lower = wider. Enter to apply",
+                    min_width=80, info="min |∇DT|; lower = wider.",
                 )
                 invert = gr.Checkbox(label="Invert", info="for dark fibers", min_width=80)
             with gr.Row(variant="panel"):
