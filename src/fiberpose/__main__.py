@@ -1,5 +1,5 @@
 """Allow ``python -m fiberpose``."""
 
-from .run import main
+from .cli import main
 
 raise SystemExit(main())

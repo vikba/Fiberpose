@@ -25,21 +25,21 @@ import logging
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
 
-from .ui_support import (
+from .support import (
     PlotProfileDialog,
     ConfigEditorDialog,
 )
-from .ml import onnx_cuda_available
-from .domain import BatchResult, Frame, ImageBatch, AppConfig, SampleProperties
-from .render import render
-from .utils import to_uint8_for_view
-from .pipeline import PipelineController, PipelineOutcome
-from .ui_support import UiConfigBinder
-from .pipeline import BatchService, BatchCallbacks
-from .io_export import ExportService
-from .ui_support import ScalebarTool, ProfileTool
-from .paths import DEFAULT_UI_PATH, EXAMPLE_IMAGE_PATH, default_config_path
-from .models import DEFAULT_MODEL, discover_models, models_dir, normalize_model_entry, resolve_model_path
+from ..ml import onnx_cuda_available
+from ..domain import BatchResult, Frame, ImageBatch, AppConfig, SampleProperties
+from ..render import render
+from ..utils import to_uint8_for_view
+from ..pipeline import PipelineController, PipelineOutcome
+from .support import UiConfigBinder
+from ..pipeline import BatchService, BatchCallbacks
+from ..io_export import ExportService
+from .support import ScalebarTool, ProfileTool
+from ..paths import DEFAULT_UI_PATH, EXAMPLE_IMAGE_PATH, default_config_path
+from ..models import DEFAULT_MODEL, discover_models, models_dir, normalize_model_entry, resolve_model_path
 
 # ------------------- MainWindow -------------------
 

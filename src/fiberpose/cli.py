@@ -11,10 +11,9 @@ import os
 os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
 
 import argparse
-import sys
 
 from . import __version__
-from .paths import APP_ICON_PATH, USER_CONFIG_PATH, default_config_path
+from .paths import USER_CONFIG_PATH, default_config_path
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -55,44 +54,11 @@ def _build_parser() -> argparse.ArgumentParser:
 
 def _launch_gui(config_path: str) -> int:
     try:
-        from PyQt6.QtGui import QColor, QIcon, QPalette
-        from PyQt6.QtWidgets import QApplication
+        from .gui import launch
     except ImportError:
         print('Error: the GUI requires PyQt6. In the Fiberpose folder, run:  pip install -e ".[gui]"')
         return 2
-
-    from .ui_main import MainWindow
-
-    def apply_dark_palette(app: QApplication) -> None:
-        app.setStyle("Fusion")
-        dark_palette = QPalette()
-
-        dark_color = QColor(45, 45, 45)
-        highlight_color = QColor(42, 130, 218)
-
-        dark_palette.setColor(QPalette.ColorRole.Window, dark_color)
-        dark_palette.setColor(QPalette.ColorRole.WindowText, QColor(220, 220, 220))
-        dark_palette.setColor(QPalette.ColorRole.Base, QColor(30, 30, 30))
-        dark_palette.setColor(QPalette.ColorRole.AlternateBase, dark_color.darker())
-        dark_palette.setColor(QPalette.ColorRole.ToolTipBase, QColor(255, 255, 255))
-        dark_palette.setColor(QPalette.ColorRole.ToolTipText, QColor(220, 220, 220))
-        dark_palette.setColor(QPalette.ColorRole.Text, QColor(220, 220, 220))
-        dark_palette.setColor(QPalette.ColorRole.Button, dark_color)
-        dark_palette.setColor(QPalette.ColorRole.ButtonText, QColor(220, 220, 220))
-        dark_palette.setColor(QPalette.ColorRole.BrightText, QColor(255, 0, 0))
-        dark_palette.setColor(QPalette.ColorRole.Highlight, highlight_color)
-        dark_palette.setColor(QPalette.ColorRole.HighlightedText, QColor(255, 255, 255))
-        app.setPalette(dark_palette)
-
-    app = QApplication(sys.argv)
-    app.setWindowIcon(QIcon(str(APP_ICON_PATH)))
-    apply_dark_palette(app)
-    font = app.font()
-    font.setPointSize(12)
-    app.setFont(font)
-    win = MainWindow(config_path=config_path)
-    win.show()
-    return int(app.exec())
+    return launch(config_path)
 
 
 def _launch_web(config_path: str) -> int:

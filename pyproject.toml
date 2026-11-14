@@ -41,7 +41,7 @@ gui = ["PyQt6>=6.5", "pyqtgraph>=0.13"]
 web = ["gradio>=6", "matplotlib>=3.7"]
 
 [project.scripts]
-fiberpose = "fiberpose.run:main"
+fiberpose = "fiberpose.cli:main"
 
 [project.urls]
 Homepage = "https://github.com/vikba/Fiberpose"

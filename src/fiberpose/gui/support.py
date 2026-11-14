@@ -15,7 +15,7 @@ from PyQt6.QtCore import Qt, pyqtSignal
 import pyqtgraph as pg
 from skimage.measure import profile_line
 
-from .domain import AppConfig, SampleProperties
+from ..domain import AppConfig, SampleProperties
 
 
 class PlotProfileDialog(QtWidgets.QDialog):

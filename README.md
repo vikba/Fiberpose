@@ -251,13 +251,12 @@ Fiberpose/
 ├── PIPELINE.md                # Runtime pipeline details
 ├── LICENSE
 └── src/fiberpose/
-    ├── run.py                 # GUI/CLI/web launcher (`fiberpose` command)
+    ├── cli.py                 # GUI/CLI/web launcher (`fiberpose` command)
     ├── api.py                 # Public Python API: analyze()
     ├── models.py              # Model lookup, download, and cache
     ├── paths.py               # Bundled resources and user config locations
     ├── web/                   # Gradio web interface (`fiberpose --web`)
-    ├── ui_main.py             # Main PyQt GUI
-    ├── ui_support.py          # GUI helpers
+    ├── gui/                   # PyQt desktop interface (`fiberpose --gui`)
     ├── cli_runner.py          # Batch CLI processing
     ├── pipeline.py            # Pipeline orchestration
     ├── analysis.py            # Stateless prediction, segmentation, and measurement functions

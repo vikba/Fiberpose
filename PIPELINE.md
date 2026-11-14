@@ -1,7 +1,7 @@
 # Fiberpose Pipeline
 
 ## Scope
-- Documents runtime behavior in `src/fiberpose/run.py`, `src/fiberpose/ui_main.py`, `src/fiberpose/pipeline.py`, and `src/fiberpose/analysis.py`.
+- Documents runtime behavior in `src/fiberpose/cli.py`, `src/fiberpose/gui/main_window.py`, `src/fiberpose/pipeline.py`, and `src/fiberpose/analysis.py`.
 - Covers GUI and CLI startup, segmentation, measurement, and batch execution/export.
 
 ## Runtime Modes and Flags
@@ -26,7 +26,7 @@
 - `samples_table`, `thickness_units`, `angles_samples_deg`, `porosity`, `pores`, `pore_diams_units`: measurement outputs.
 
 ## Entry Flow
-1. `fiberpose.run.main()` (the `fiberpose` command) dispatches mode:
+1. `fiberpose.cli.main()` (the `fiberpose` command) dispatches mode:
 - GUI default (`fiberpose` or `fiberpose --gui`)
 - CLI (`fiberpose --cli --input <path> ...`)
 2. GUI path:
@@ -82,9 +82,9 @@ Stack input normalization in `ImageBatch._normalize_stack(...)`:
 - `ZxHxWxC` -> color stack
 
 ## Class Roles
-- `run.py`: top-level GUI/CLI dispatch and argument parsing (`fiberpose` command).
+- `cli.py`: top-level GUI/CLI dispatch and argument parsing (`fiberpose` command).
 - `analyze()` (`api.py`): public single-image entry point wrapping `PipelineController`.
-- `MainWindow` (`ui_main.py`): GUI orchestration, UI state, view updates, and user-triggered batch runs.
+- `MainWindow` (`gui/main_window.py`): GUI orchestration, UI state, view updates, and user-triggered batch runs.
 - `CliRunner` (`cli_runner.py`): CLI orchestration for batch processing/export.
 - `PipelineController` (`pipeline.py`): shared processing engine; owns the lazily loaded model and caches each stage on `Frame` by signature.
 - `BatchService` (`pipeline.py`): frame iteration orchestration using callbacks.
