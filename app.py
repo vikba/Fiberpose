@@ -16,6 +16,17 @@ from fiberpose.domain import AppConfig  # noqa: E402
 from fiberpose.paths import EXAMPLE_IMAGE_PATH, default_config_path  # noqa: E402
 from fiberpose.web import launch  # noqa: E402
 
+# ZeroGPU hardware refuses to start an app without a @spaces.GPU function. Fiberpose runs on
+# the CPU, so this one is never called and uses no GPU quota; elsewhere it does nothing.
+try:
+    import spaces
+
+    @spaces.GPU
+    def _zerogpu_placeholder() -> None:
+        pass
+except ImportError:  # not running on a Space
+    pass
+
 # Analyse the example once so the first visitor does not wait for numba to compile.
 fiberpose.analyze(iio.imread(EXAMPLE_IMAGE_PATH))
 
