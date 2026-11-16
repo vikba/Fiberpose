@@ -1,0 +1,14 @@
+# Dependencies of the Hugging Face Space (app.py). Keep in sync with pyproject.toml.
+# Gradio itself is installed by the Space from sdk_version in deploy/hf_header.md.
+numpy>=1.26
+scipy>=1.11
+scikit-image>=0.22
+numba>=0.59
+onnxruntime>=1.17
+opencv-python-headless>=4.8
+imageio>=2.31
+tifffile>=2023.7.10
+tqdm>=4.64
+platformdirs>=3
+pooch>=1.8
+matplotlib>=3.7

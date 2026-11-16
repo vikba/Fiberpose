@@ -14,7 +14,7 @@ jobs:
       - name: Put the Space header on top of the README
         run: cat deploy/hf_header.md README.md > README.tmp && mv README.tmp README.md
       - name: Upload to the Space
-        run: pip install -q huggingface_hub && hf upload "${{ vars.HF_SPACE }}" . . --repo-type space --exclude ".github/*"
+        run: pip install -q huggingface_hub && hf upload "${{ vars.HF_SPACE }}" . . --repo-type space --exclude ".github/*" --exclude "Dockerfile" --exclude ".dockerignore"
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
 
