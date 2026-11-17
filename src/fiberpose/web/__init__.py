@@ -4,7 +4,8 @@
 Analysis settings come from the same config file as the GUI and CLI.
 Host, port and proxy path come from Gradio's own environment variables
 (``GRADIO_SERVER_NAME``, ``GRADIO_SERVER_PORT``, ``GRADIO_ROOT_PATH``);
-``FIBERPOSE_MAX_UPLOAD`` caps the upload size (default ``50mb``);
+``FIBERPOSE_MAX_UPLOAD`` caps the upload size (default ``50mb``) and
+``FIBERPOSE_MAX_SIDE`` the image width and height (default ``1920`` px);
 ``FIBERPOSE_USAGE_REPO`` turns on the usage log (see ``usage.py``).
 """
 
@@ -18,7 +19,7 @@ import gradio as gr
 
 from ..api import FiberposeError
 from ..domain import AppConfig
-from ..paths import EXAMPLE_IMAGE_PATH
+from ..paths import EXAMPLE_IMAGE_PATHS
 from . import callbacks as cb
 from . import usage
 
@@ -37,10 +38,14 @@ def build_demo(config: AppConfig | None = None) -> gr.Blocks:
         if not path:
             raise gr.Error("Upload an image first.")
         settings = replace(config, watershed_grad_threshold=edge_threshold)
-        example = os.path.basename(path) == EXAMPLE_IMAGE_PATH.name
+        example = os.path.basename(path) in {p.name for p in EXAMPLE_IMAGE_PATHS}
         start = time.perf_counter()
         try:
             session = cb.analyze_file(path, settings, pixel_size, unit, invert, previous)
+        except cb.ImageTooLarge as exc:  # a warning; whatever was analysed before stays on the page
+            usage.log(ok=False, seconds=round(time.perf_counter() - start, 2), example=example)
+            gr.Warning(str(exc))
+            return (gr.skip(),) * 6
         except FiberposeError as exc:
             usage.log(ok=False, seconds=round(time.perf_counter() - start, 2), example=example)
             raise gr.Error(str(exc)) from exc
@@ -60,7 +65,7 @@ def build_demo(config: AppConfig | None = None) -> gr.Blocks:
     with gr.Blocks(title="Fiberpose") as demo:
         gr.Markdown(
             "# Fiberpose\nSegmentation and morphometry of fibrous microstructures. Upload a micrograph "
-            "(or click the example) and press **Analyze**. [Source code](https://github.com/vikba/Fiberpose)"
+            f"up to {cb.MAX_SIDE} x {cb.MAX_SIDE} px (or click an example) and press **Analyze**. [Source code](https://github.com/vikba/Fiberpose)"
         )
         session = gr.State()  # this browser tab's analysed image (callbacks.Session)
         with gr.Row(equal_height=True):  # settings, each above the image it applies to
@@ -82,7 +87,7 @@ def build_demo(config: AppConfig | None = None) -> gr.Blocks:
                 with gr.Row():
                     button = gr.Button("Analyze", variant="primary")
                     gr.HTML()  # empty half: keeps the button at half width
-                gr.Examples([[str(EXAMPLE_IMAGE_PATH)]], inputs=image)
+                gr.Examples([[str(path)] for path in EXAMPLE_IMAGE_PATHS], inputs=image)
                 summary = gr.Markdown()
             with gr.Column():  # under the result
                 with gr.Row():

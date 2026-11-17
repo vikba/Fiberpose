@@ -13,7 +13,7 @@ import matplotlib
 import numpy as np
 from matplotlib.figure import Figure
 
-from ..api import AnalysisResult, analyze
+from ..api import AnalysisResult, FiberposeError, analyze
 from ..domain import AppConfig
 from ..io_export import BatchResultExporter
 from ..render import render
@@ -29,6 +29,11 @@ LABELS = {  # summary key -> name shown on the page
     "fragments_with_centerlines": "Fibers measured",
 }
 ACCENT = "#f97316"
+MAX_SIDE = int(os.environ.get("FIBERPOSE_MAX_SIDE", 1920))  # largest accepted width and height, px
+
+
+class ImageTooLarge(FiberposeError):
+    """The image exceeds ``MAX_SIDE``; it is not analysed."""
 
 
 @dataclass
@@ -49,6 +54,11 @@ def analyze_file(
     """Run the pipeline on an image file; a `previous` session of the same file skips its unchanged stages."""
     same = previous.result if previous and previous.source == path else None
     image = same.frame.orig_img if same else iio.imread(path)  # read from disk to keep the bit depth
+    height, width = image.shape[:2]
+    if max(height, width) > MAX_SIDE:
+        raise ImageTooLarge(
+            f"Image is {width} x {height} px; the web version accepts up to {MAX_SIDE} x {MAX_SIDE} px."
+        )
     result = analyze(image, config, pixel_size=pixel_size or 1.0, unit=unit, invert=invert, previous=same)
     return Session(result, path, tempfile.TemporaryDirectory(prefix="fiberpose_"))
 

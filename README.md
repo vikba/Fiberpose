@@ -281,7 +281,8 @@ Fiberpose/
     └── resources/
         ├── config.json        # Default configuration
         ├── fiber_tool.ui      # Qt GUI layout
-        └── test.png           # Example image
+        ├── test.png           # Example image
+        └── example_*.png      # More examples for the web interface
 ```
 
 ---
