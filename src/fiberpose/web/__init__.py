@@ -4,12 +4,14 @@
 Analysis settings come from the same config file as the GUI and CLI.
 Host, port and proxy path come from Gradio's own environment variables
 (``GRADIO_SERVER_NAME``, ``GRADIO_SERVER_PORT``, ``GRADIO_ROOT_PATH``);
-``FIBERPOSE_MAX_UPLOAD`` caps the upload size (default ``50mb``).
+``FIBERPOSE_MAX_UPLOAD`` caps the upload size (default ``50mb``);
+``FIBERPOSE_USAGE_REPO`` turns on the usage log (see ``usage.py``).
 """
 
 from __future__ import annotations
 
 import os
+import time
 from dataclasses import replace
 
 import gradio as gr
@@ -18,6 +20,7 @@ from ..api import FiberposeError
 from ..domain import AppConfig
 from ..paths import EXAMPLE_IMAGE_PATH
 from . import callbacks as cb
+from . import usage
 
 __all__ = ["build_demo", "launch"]
 
@@ -34,10 +37,15 @@ def build_demo(config: AppConfig | None = None) -> gr.Blocks:
         if not path:
             raise gr.Error("Upload an image first.")
         settings = replace(config, watershed_grad_threshold=edge_threshold)
+        example = os.path.basename(path) == EXAMPLE_IMAGE_PATH.name
+        start = time.perf_counter()
         try:
             session = cb.analyze_file(path, settings, pixel_size, unit, invert, previous)
         except FiberposeError as exc:
+            usage.log(ok=False, seconds=round(time.perf_counter() - start, 2), example=example)
             raise gr.Error(str(exc)) from exc
+        height, width = session.result.frame.orig_img.shape[:2]
+        usage.log(ok=True, seconds=round(time.perf_counter() - start, 2), width=width, height=height, example=example)
         if session.result.message:
             gr.Info(session.result.message)
         figure, svg = cb.charts(session)
