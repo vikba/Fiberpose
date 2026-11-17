@@ -4,6 +4,10 @@
 
 It is designed for fibrous materials where conventional thresholding becomes fragile: dense networks, weak contrast, uneven illumination, touching fibers, and overlapping structures.
 
+![Fiberpose desktop GUI: instance segmentation with diameter measurements, diameter and orientation histograms](docs/gui.png)
+
+**Try it in the browser:** [Fiberpose on Hugging Face Spaces](https://huggingface.co/spaces/vikba/fiberpose) — no installation needed.
+
 > Status: research-preview software under active development. Validate outputs on your own data before using them for publication or production decisions.
 
 ---
@@ -69,7 +73,7 @@ Running `pip install -e .` again reinstalls the CPU build, so repeat these two c
 
 ## Pretrained model
 
-The default model, `R108_dt_fg.onnx`, is downloaded automatically on first use and cached locally. Fiberpose looks for models, by file name, in this order:
+The default model, `R108_dt_fg.onnx`, ships with the repository in `checkpoints/`, so a source checkout works offline. Fiberpose looks for models, by file name, in this order:
 
 1. the folder set in the `FIBERPOSE_MODELS_DIR` environment variable;
 2. `checkpoints/` in the repository, when running from a source checkout;
@@ -161,13 +165,15 @@ fiberpose --cli --input /path/to/image_or_folder_or_stack --measurements --save-
 
 ### Web interface
 
+A hosted version runs at <https://huggingface.co/spaces/vikba/fiberpose>. To run it locally, from the repository folder:
+
 ```bash
-pip install "fiberpose[web]"
+pip install -e ".[web]"
 fiberpose --web            # http://localhost:7860
 ```
 
 The same page runs in Docker (`docker build -t fiberpose . && docker run -p 7860:7860 fiberpose`)
-and as a Hugging Face Docker Space; `.github/workflows/deploy.yml` publishes both on a version tag.
+and as a Hugging Face Gradio Space; `.github/workflows/deploy.yml` publishes both on a version tag.
 
 ### Python API
 
@@ -250,6 +256,11 @@ Fiberpose/
 ├── README.md
 ├── PIPELINE.md                # Runtime pipeline details
 ├── LICENSE
+├── app.py                     # Entry point of the Hugging Face Space
+├── requirements.txt           # Dependencies of the Hugging Face Space
+├── Dockerfile                 # Web interface as a container
+├── checkpoints/               # Pretrained model (R108_dt_fg.onnx)
+├── docs/                      # README images
 └── src/fiberpose/
     ├── cli.py                 # GUI/CLI/web launcher (`fiberpose` command)
     ├── api.py                 # Public Python API: analyze()
@@ -261,6 +272,7 @@ Fiberpose/
     ├── pipeline.py            # Pipeline orchestration
     ├── analysis.py            # Stateless prediction, segmentation, and measurement functions
     ├── render.py              # Display/export images of a frame (overlays, views)
+    ├── raster.py              # Vectorized disk rasterization helpers
     ├── ridge_detector.py      # Ridge/centerline detector
     ├── ml.py                  # ONNX Runtime inference wrapper
     ├── domain.py              # Data models and configuration
@@ -278,7 +290,7 @@ Fiberpose/
 
 ### Model file not found
 
-The default model is downloaded on first use, which needs an internet connection. On an offline machine, copy `R108_dt_fg.onnx` into a folder and point `FIBERPOSE_MODELS_DIR` at it. For a custom model, check that `model_path` in your configuration is a file name in the models folder or an absolute path.
+The default model is expected in `checkpoints/` of the source checkout. If Fiberpose runs from elsewhere, copy `R108_dt_fg.onnx` into a folder and point `FIBERPOSE_MODELS_DIR` at it. For a custom model, check that `model_path` in your configuration is a file name in the models folder or an absolute path.
 
 ### GPU is not used
 
