@@ -31,6 +31,7 @@ dependencies = [
     "opencv-python-headless>=4.8",
     "imageio>=2.31",
     "tifffile>=2023.7.10",
+    "imagecodecs>=2023.7.10",
     "tqdm>=4.64",
     "platformdirs>=3",
     "pooch>=1.8",
