@@ -5,7 +5,7 @@
 - Covers GUI and CLI startup, segmentation, measurement, and batch execution/export.
 
 ## Runtime Modes and Flags
-- `segmentation_mode=watershed` makes `analysis.segment(...)` run a gradient-masked watershed (`watershed_grad_threshold`).
+- `segmentation_mode=watershed` makes `analysis.segment(...)` run a watershed inside a fiber mask (`watershed_grad_threshold` sets its gradient part).
 - `segmentation_mode=radial_expansion` makes `analysis.segment(...)` rasterize the expanded ridge fragments.
 - `merge_expansion_factor` controls overlap-based ridge-fragment merging (default `0.7`).
 - `segmentation_expansion_factor` controls radial label expansion (default `1.0`).
@@ -53,12 +53,12 @@
 - pads to the model stride, runs `OnnxFiberposeModel.predict(...)` -> `(dt, foreground_prob)`; `nout != 2` uses the last channel as DT and has no foreground
 - smooths DT, computes gradients/laplacian; stored via `Frame.set_prediction_outputs(...)`
 2. If the frame's segmentation signature (prediction signature + `segmentation_params(config)`) matches, stop.
-3. Otherwise `clear_segmentation()` and run `analysis.segment(dt, dt_u8, gx, gy, foreground_prob, **segmentation_params)`:
+3. Otherwise `clear_segmentation()` and run `analysis.segment(dt, dt_u8, gx, gy, foreground_prob, laplacian, **segmentation_params)`:
 - `RidgeDetector.detect_ridges(...)` (raw ridge lines)
 - `_group_detected_polylines_into_segmentation_fragments(...)` merges ridges whose `merge_expansion_factor * DT` disks overlap
 - `_filter_measurement_centerlines(...)` derives measurement centerlines; the shortest fraction is dropped
 - `_filter_fragments_by_grad_quality(...)` drops fragments with unreliable DT gradients
-- watershed thresholds the DT gradient magnitude, unions two 3x3 dilations of the centerline markers, then applies erode -> dilate; radial_expansion rasterizes the expanded fragments
+- watershed builds its mask from the DT gradient magnitude above the threshold or a negative Laplacian (ridge), keeps it only where the smoothed DT is positive, unions two 3x3 dilations of the centerline markers, then applies erode -> dilate; radial_expansion rasterizes the expanded fragments
 - foreground, when available, prunes labels; only fragments that keep a label are returned
 4. Store the labels and fragments via `set_segmentation_outputs(...)`. The pipeline draws no images.
 

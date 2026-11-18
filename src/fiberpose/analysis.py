@@ -32,6 +32,12 @@ logger = logging.getLogger(__name__)
 
 Sample = tuple[int, int, float, float, float, float]
 
+# Smoothing applied to the predicted DT before differentiating it; the watershed
+# mask gates on the same smoothed DT, so both must use this value.
+_DT_SMOOTH_SIGMA = 1.5
+# A fiber centerline is a ridge of the DT: its Laplacian is clearly negative.
+_RIDGE_LAPLACIAN_THRESHOLD = 0.03
+
 
 # ------------------------------------------------------------------ #
 # Public pipeline stages
@@ -45,7 +51,7 @@ def predict(model: OnnxFiberposeModel, image: np.ndarray) -> dict[str, np.ndarra
     dt_pad, fg_pad = model.predict(np.pad(image, pad_width, mode="reflect"))
 
     dt = np.asarray(dt_pad[:h, :w], dtype=np.float32)
-    dt_smooth = gaussian_filter(dt, sigma=1.5)
+    dt_smooth = gaussian_filter(dt, sigma=_DT_SMOOTH_SIGMA)
     gy, gx = np.gradient(dt_smooth)
     return {
         "dt": dt,
@@ -64,6 +70,7 @@ def segment(
     gx: np.ndarray,
     gy: np.ndarray,
     foreground_prob: np.ndarray | None,
+    laplacian: np.ndarray,
     *,
     segmentation_mode: str,
     watershed_grad_threshold: float,
@@ -138,7 +145,7 @@ def segment(
         labels = np.clip(labels_i32, 0, np.iinfo(np.uint16).max).astype(np.uint16, copy=False)
     else:
         markers = _render_markers(shape, fragments)
-        labels = _watershed(dt_u8, gx, gy, markers, gradient_threshold=watershed_grad_threshold)
+        labels = _watershed(dt, dt_u8, gx, gy, laplacian, markers, gradient_threshold=watershed_grad_threshold)
     labels = _prune_labels_by_foreground(
         labels,
         foreground_prob=foreground_prob,
@@ -513,26 +520,35 @@ def _clamp_trim_fraction(value: float) -> float:
 
 
 def _watershed(
+    dt: np.ndarray,
     dt_u8: np.ndarray,
     gx: np.ndarray,
     gy: np.ndarray,
+    laplacian: np.ndarray,
     markers: np.ndarray,
     gradient_threshold: float,
 ) -> np.ndarray:
     """
-    Watershed on inverted DT, constrained by thresholded gradient magnitude.
+    Watershed on inverted DT, constrained to a fiber mask.
 
-    Two dilations of the detected centerline markers are added to the
-    threshold mask. The combined mask is then eroded and dilated before
-    watershed.
+    The mask is the fiber flanks (gradient magnitude above the threshold) plus
+    the ridges between them (negative Laplacian, where the gradient vanishes),
+    both limited to where the smoothed DT is positive: the predicted background
+    is negative and sloped, so neither test alone tells it from a fiber.
+
+    Two dilations of the detected centerline markers are added to the mask,
+    which keeps fibers too thin for the smoothed DT to stay positive. The
+    combined mask is then eroded and dilated before watershed.
     """
 
+    dt = np.asarray(dt, dtype=np.float32)
     dt_u8 = np.asarray(dt_u8)
     gx = np.asarray(gx, dtype=np.float32)
     gy = np.asarray(gy, dtype=np.float32)
+    laplacian = np.asarray(laplacian, dtype=np.float32)
     markers = np.asarray(markers)
-    if gx.shape != dt_u8.shape or gy.shape != dt_u8.shape or markers.shape != dt_u8.shape:
-        raise ValueError("DT, gradients, and markers must have matching shapes.")
+    if any(arr.shape != dt_u8.shape for arr in (dt, gx, gy, laplacian, markers)):
+        raise ValueError("DT, gradients, Laplacian, and markers must have matching shapes.")
     if not markers.any():
         return np.zeros_like(dt_u8, dtype=np.uint16)
 
@@ -543,6 +559,8 @@ def _watershed(
     dt_norm = dt_u8.astype(np.float32) / 255.0
     grad_magnitude = np.hypot(gx, gy)
     fiber_region_mask = np.isfinite(grad_magnitude) & (grad_magnitude >= threshold)
+    fiber_region_mask |= laplacian < -_RIDGE_LAPLACIAN_THRESHOLD
+    fiber_region_mask &= gaussian_filter(dt, sigma=_DT_SMOOTH_SIGMA) > 0.0
 
     morphology_kernel = np.ones((3, 3), dtype=np.uint8)
     centerline_mask = (markers > 0).astype(np.uint8)
@@ -569,7 +587,7 @@ def _watershed(
         return np.zeros_like(dt_u8, dtype=np.uint16)
     marker_pixels = markers > 0
     logger.info(
-        "Watershed gradient mask: threshold=%.4f mask=%d/%d marker_pixels=%d/%d",
+        "Watershed fiber mask: threshold=%.4f mask=%d/%d marker_pixels=%d/%d",
         threshold,
         int(np.count_nonzero(fiber_region_mask)),
         int(fiber_region_mask.size),

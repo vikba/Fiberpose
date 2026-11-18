@@ -335,7 +335,13 @@ class PipelineController:
         frame.clear_segmentation()
         try:
             labels, fragments = analysis.segment(
-                frame.dt, frame.dt_u8, frame.gx, frame.gy, frame.foreground_prob, **self.segmentation_params(config)
+                frame.dt,
+                frame.dt_u8,
+                frame.gx,
+                frame.gy,
+                frame.foreground_prob,
+                frame.lapl_img,
+                **self.segmentation_params(config),
             )
         except Exception as exc:
             frame.fail(str(exc))
