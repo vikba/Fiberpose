@@ -10,7 +10,7 @@ jobs:
   hf-space:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Put the Space header on top of the README
         run: cat deploy/hf_header.md README.md > README.tmp && mv README.tmp README.md
       # The Hub skips uploaded files that match .gitignore, and ours ignores checkpoints/ and *.onnx,
@@ -28,7 +28,7 @@ jobs:
       contents: read
       packages: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: docker/login-action@v3
         with:
           registry: ghcr.io
