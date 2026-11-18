@@ -58,6 +58,8 @@ def build_demo(config: AppConfig | None = None) -> gr.Blocks:
         gr.Markdown(
             "# Fiberpose\nSegmentation and morphometry of fibrous microstructures. Upload a micrograph "
             f"up to {cb.MAX_SIDE} x {cb.MAX_SIDE} px (or click an example) and press **Analyze**. [Source code](https://github.com/vikba/Fiberpose)"
+            "\n\nIf you use Fiberpose in scientific work, please cite the preprint: "
+            "[arXiv:2611.22953](https://doi.org/10.48550/arXiv.2611.22953)."
         )
         session = gr.State()  # this browser tab's analysed image (callbacks.Session)
         with gr.Row(equal_height=True):  # settings, each above the image it applies to

@@ -320,14 +320,20 @@ fiberpose --cli --input /path/to/data --measurements
 
 ## Citation
 
-If you use Fiberpose in scientific work, please cite the associated manuscript/preprint when available.
+If you use Fiberpose in scientific work, please cite the preprint:
+
+> V. A. Balashov, D. S. Antonenko. *Fiberpose: state-of-the-art fiber morphometry and instance segmentation with a distance-transform neural network.* arXiv:2611.22953 (2026). <https://doi.org/10.48550/arXiv.2611.22953>
 
 ```bibtex
-@software{fiberpose,
-  title  = {Fiberpose: A deep learning framework for segmentation and quantitative analysis of fibrous structures},
-  author = {Balashov, Viktor},
-  year   = {2026},
-  url    = {https://github.com/vikba/Fiberpose}
+@misc{balashov2026fiberpose,
+  title         = {Fiberpose: state-of-the-art fiber morphometry and instance segmentation with a distance-transform neural network},
+  author        = {Balashov, Viktor A. and Antonenko, Daniil S.},
+  year          = {2026},
+  eprint        = {2611.22953},
+  archivePrefix = {arXiv},
+  primaryClass  = {cs.CV},
+  doi           = {10.48550/arXiv.2611.22953},
+  url           = {https://doi.org/10.48550/arXiv.2611.22953}
 }
 ```
 
