@@ -5,13 +5,30 @@ build-backend = "hatchling.build"
 [project]
 name = "fiberpose"
 dynamic = ["version"]
-description = "Segmentation and morphometry of fibrous microstructures from a predicted distance-transform field"
+description = "Deep-learning fiber segmentation and morphometry (diameter, orientation) for SEM and microscopy images"
 readme = "README.md"
 license = "GPL-3.0-only"
 license-files = ["LICENSE"]
 requires-python = ">=3.10"
 authors = [{ name = "Viktor Balashov" }]
-keywords = ["microscopy", "segmentation", "fibers", "morphometry", "distance transform", "image analysis"]
+keywords = [
+    "microscopy",
+    "SEM",
+    "scanning electron microscopy",
+    "segmentation",
+    "instance segmentation",
+    "fiber segmentation",
+    "fibers",
+    "nanofibers",
+    "electrospinning",
+    "fiber diameter",
+    "fiber orientation",
+    "porosity",
+    "morphometry",
+    "distance transform",
+    "deep learning",
+    "image analysis",
+]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Science/Research",
@@ -45,7 +62,11 @@ web = ["gradio>=6", "matplotlib>=3.7"]
 fiberpose = "fiberpose.cli:main"
 
 [project.urls]
-Homepage = "https://github.com/vikba/Fiberpose"
+Homepage = "https://fiberpose.org"
+Repository = "https://github.com/vikba/Fiberpose"
+Documentation = "https://github.com/vikba/Fiberpose#readme"
+Paper = "https://arxiv.org/abs/2611.22953"
+Demo = "https://huggingface.co/spaces/vikba/fiberpose"
 Issues = "https://github.com/vikba/Fiberpose/issues"
 
 [tool.hatch.version]

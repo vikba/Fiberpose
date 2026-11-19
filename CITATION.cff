@@ -1,0 +1,47 @@
+cff-version: 1.2.0
+message: "If you use Fiberpose in scientific work, please cite the preprint."
+title: "Fiberpose"
+abstract: >-
+  Fiberpose is research software for instance segmentation and quantitative
+  morphometry of fibrous microstructures in microscopy images. A neural network
+  predicts a distance-transform field, which is used for centerline extraction,
+  fiber instance segmentation, and measurement of fiber diameter, orientation,
+  porosity, and pore size.
+type: software
+authors:
+  - family-names: Balashov
+    given-names: Viktor A.
+  - family-names: Antonenko
+    given-names: Daniil S.
+version: 0.1.0
+license: GPL-3.0-only
+repository-code: "https://github.com/vikba/Fiberpose"
+url: "https://fiberpose.org"
+keywords:
+  - fiber segmentation
+  - instance segmentation
+  - fiber diameter
+  - fiber orientation
+  - morphometry
+  - microscopy
+  - scanning electron microscopy
+  - nanofibers
+  - distance transform
+  - deep learning
+  - image analysis
+preferred-citation:
+  type: article
+  title: "Fiberpose: state-of-the-art fiber morphometry and instance segmentation with a distance-transform neural network"
+  authors:
+    - family-names: Balashov
+      given-names: Viktor A.
+    - family-names: Antonenko
+      given-names: Daniil S.
+  year: 2026
+  journal: "arXiv preprint"
+  doi: 10.48550/arXiv.2611.22953
+  url: "https://arxiv.org/abs/2611.22953"
+  identifiers:
+    - type: other
+      value: "arXiv:2611.22953"
+      description: arXiv identifier

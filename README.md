@@ -1,8 +1,18 @@
-# Fiberpose
+# Fiberpose: fiber segmentation and morphometry for microscopy images
 
-**Fiberpose** is a research software package for segmentation and quantitative morphometry of fibrous microstructures. Instead of relying on threshold-based binarization, Fiberpose predicts a neural distance-transform field from microscopy images and uses it as a geometric representation for centerline extraction, instance segmentation, diameter measurement, orientation analysis, and pore statistics.
+[![Website](https://img.shields.io/badge/website-fiberpose.org-brightgreen.svg)](https://fiberpose.org)
+[![arXiv](https://img.shields.io/badge/arXiv-2611.22953-b31b1b.svg)](https://arxiv.org/abs/2611.22953)
+[![Demo on Hugging Face Spaces](https://img.shields.io/badge/demo-Hugging%20Face%20Spaces-yellow.svg)](https://huggingface.co/spaces/vikba/fiberpose)
+[![License: GPL-3.0-only](https://img.shields.io/badge/license-GPL--3.0--only-blue.svg)](LICENSE)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](pyproject.toml)
+
+**Fiberpose** is a deep-learning research software package for instance segmentation and quantitative morphometry of fibrous microstructures. Instead of relying on threshold-based binarization, Fiberpose predicts a neural distance-transform field from microscopy images and uses it as a geometric representation for centerline extraction, instance segmentation, diameter measurement, orientation analysis, and pore statistics.
+
+Typical uses are measuring fiber diameter distributions, fiber orientation (alignment), porosity, and pore size in scanning electron microscopy (SEM) and other microscopy images of fibrous materials, such as electrospun nanofibers, nonwoven mats, and fibrous scaffolds.
 
 It is designed for fibrous materials where conventional thresholding becomes fragile: dense networks, weak contrast, uneven illumination, touching fibers, and overlapping structures.
+
+Website: [fiberpose.org](https://fiberpose.org) · Paper: [Fiberpose: state-of-the-art fiber morphometry and instance segmentation with a distance-transform neural network](https://arxiv.org/abs/2611.22953) (arXiv:2611.22953).
 
 ![Fiberpose desktop GUI: instance segmentation with diameter measurements, diameter and orientation histograms](docs/gui.png)
 
@@ -37,6 +47,21 @@ Fiberpose follows a simple geometric pipeline:
    - pore sizes are estimated from the distance transform of the void space.
 
 This makes the distance-transform field the central representation connecting neural inference, segmentation, and quantitative analysis.
+
+---
+
+## Related tools
+
+Fiberpose addresses the same kind of task as several established fiber-analysis tools, and can be used as an alternative to them when thresholding fails or per-fiber instances are needed:
+
+| Tool | Platform | Approach |
+|---|---|---|
+| [DiameterJ](https://imagej.net/plugins/diameterj) | ImageJ/Fiji plugin | Fiber diameter from thresholded (binarized) SEM images. |
+| [OrientationJ](https://bigwww.epfl.ch/demo/orientation/) | ImageJ/Fiji plugin | Orientation and coherency from the structure tensor; no segmentation. |
+| [CT-FIRE](https://eliceirilab.org/software/ctfire/) | MATLAB | Individual fiber extraction with the curvelet transform, mainly for collagen. |
+| [GTFiber](https://github.com/Imperssonator/GTFiber-Mac) | MATLAB | Fiber orientation and length analysis, mainly for AFM images. |
+
+Fiberpose differs in that it uses a neural network instead of a threshold, returns individual fiber instances, and derives diameter, orientation, and pore statistics from one predicted distance-transform field.
 
 ---
 
@@ -256,6 +281,7 @@ Fiberpose/
 ├── README.md
 ├── PIPELINE.md                # Runtime pipeline details
 ├── LICENSE
+├── CITATION.cff               # Citation metadata (GitHub "Cite this repository")
 ├── app.py                     # Entry point of the Hugging Face Space
 ├── requirements.txt           # Dependencies of the Hugging Face Space
 ├── Dockerfile                 # Web interface as a container
