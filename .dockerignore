@@ -1,6 +1,6 @@
 *
 !src
-!checkpoints/R108_dt_fg.onnx
+!checkpoints/R108_dt_R111_fg.onnx
 !pyproject.toml
 !README.md
 !LICENSE

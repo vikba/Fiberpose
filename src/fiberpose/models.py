@@ -16,7 +16,7 @@ from pathlib import Path
 
 import pooch
 
-DEFAULT_MODEL = "R108_dt_fg.onnx"
+DEFAULT_MODEL = "R108_dt_R111_fg.onnx"
 
 # TODO: upload the registered files as assets of this release before publishing.
 _BASE_URL = "https://github.com/vikba/Fiberpose/releases/download/models-v1/"
@@ -24,10 +24,12 @@ _BASE_URL = "https://github.com/vikba/Fiberpose/releases/download/models-v1/"
 # Model file -> files to download; external-data files (.onnx.data) must sit
 # next to their .onnx graph.
 _MODELS: dict[str, tuple[str, ...]] = {
+    "R108_dt_R111_fg.onnx": ("R108_dt_R111_fg.onnx",),
     "R108_dt_fg.onnx": ("R108_dt_fg.onnx",),
 }
 
 _REGISTRY = {
+    "R108_dt_R111_fg.onnx": "sha256:8f89b9161cb454968d36fc7e6ea9c6d770a6dd45a891f0aa308d86e99778c6c0",
     "R108_dt_fg.onnx": "sha256:bb515be44e1daa220f8ba457fb1f9d856a2c3865149f4b6b97e12aefdea37536",
 }
 

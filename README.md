@@ -73,7 +73,7 @@ Running `pip install -e .` again reinstalls the CPU build, so repeat these two c
 
 ## Pretrained model
 
-The default model, `R108_dt_fg.onnx`, ships with the repository in `checkpoints/`, so a source checkout works offline. Fiberpose looks for models, by file name, in this order:
+The default model, `R108_dt_R111_fg.onnx`, ships with the repository in `checkpoints/`, so a source checkout works offline. Fiberpose looks for models, by file name, in this order:
 
 1. the folder set in the `FIBERPOSE_MODELS_DIR` environment variable;
 2. `checkpoints/` in the repository, when running from a source checkout;
@@ -259,7 +259,7 @@ Fiberpose/
 ├── app.py                     # Entry point of the Hugging Face Space
 ├── requirements.txt           # Dependencies of the Hugging Face Space
 ├── Dockerfile                 # Web interface as a container
-├── checkpoints/               # Pretrained model (R108_dt_fg.onnx)
+├── checkpoints/               # Pretrained models (default: R108_dt_R111_fg.onnx)
 ├── docs/                      # README images
 └── src/fiberpose/
     ├── cli.py                 # GUI/CLI/web launcher (`fiberpose` command)
@@ -291,7 +291,7 @@ Fiberpose/
 
 ### Model file not found
 
-The default model is expected in `checkpoints/` of the source checkout. If Fiberpose runs from elsewhere, copy `R108_dt_fg.onnx` into a folder and point `FIBERPOSE_MODELS_DIR` at it. For a custom model, check that `model_path` in your configuration is a file name in the models folder or an absolute path.
+The default model is expected in `checkpoints/` of the source checkout. If Fiberpose runs from elsewhere, copy `R108_dt_R111_fg.onnx` into a folder and point `FIBERPOSE_MODELS_DIR` at it. For a custom model, check that `model_path` in your configuration is a file name in the models folder or an absolute path.
 
 ### GPU is not used
 

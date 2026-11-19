@@ -1,5 +1,5 @@
 {
-    "model_path": "R108_dt_fg.onnx",
+    "model_path": "R108_dt_R111_fg.onnx",
     "use_gpu": true,
     "scale_label": "1x",
     "max_angle_deg": 30.0,
