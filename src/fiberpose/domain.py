@@ -13,6 +13,9 @@ import logging
 from tifffile import TiffFile
 logger = logging.getLogger(__name__)
 
+# Settings that no longer exist; configs saved by older versions may still carry them.
+_REMOVED_CONFIG_KEYS = ("measurement_centerline_length_trim_fraction",)
+
 @dataclass
 class AppConfig:
     # --- Model & Hardware ---
@@ -27,7 +30,6 @@ class AppConfig:
     ridge_low: float = 0.01
     ridge_high: float = 0.4
     min_fragment_centerline_length_px: float = 10.0
-    measurement_centerline_length_trim_fraction: float = 0.05
     grad_quality_trim_fraction: float = 0.0
     strict_centerlines: bool = False
     keep_segments_without_measurement_centerlines: bool = False
@@ -82,6 +84,8 @@ class AppConfig:
         if not isinstance(data, dict):
             raise ValueError("Config JSON root must be an object.")
         data = dict(data)
+        for key in _REMOVED_CONFIG_KEYS:  # saved by older versions; ignored
+            data.pop(key, None)
         valid_keys = set(cls.__dataclass_fields__)
         unknown_keys = sorted(set(data.keys()) - valid_keys)
         if unknown_keys:

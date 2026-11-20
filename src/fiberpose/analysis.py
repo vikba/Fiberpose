@@ -84,7 +84,6 @@ def segment(
     merge_expansion_factor: float,
     segmentation_expansion_factor: float,
     min_fragment_centerline_length_px: float,
-    measurement_centerline_length_trim_fraction: float,
     grad_quality_trim_fraction: float,
 ) -> tuple[np.ndarray, list[FiberFragment]]:
     """Segment fibers: ridges -> fragments -> uint16 labels.
@@ -118,16 +117,6 @@ def segment(
         strict=strict_centerlines,
         keep_segments_without_measurement_centerlines=keep_segments_without_measurement_centerlines,
     )
-
-    # Drop the fragments with the shortest measurement centerlines.
-    trim_count = int(np.floor(len(fragments) * _clamp_trim_fraction(measurement_centerline_length_trim_fraction)))
-    if trim_count > 0:
-        ordered = sorted(
-            fragments,
-            key=lambda seg: (float(seg.total_measurement_centerline_length_px), int(seg.fragment_id)),
-        )
-        drop_ids = {int(seg.fragment_id) for seg in ordered[:trim_count]}
-        fragments = [seg for seg in fragments if int(seg.fragment_id) not in drop_ids]
 
     grad_err = np.abs(np.sqrt(gx * gx + gy * gy) - 1.0)
     # Pixels each fragment covers at the segmentation expansion, shared by both steps below.

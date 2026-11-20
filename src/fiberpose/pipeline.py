@@ -28,7 +28,6 @@ _SEGMENTATION_FIELDS = (
     "merge_expansion_factor",
     "segmentation_expansion_factor",
     "min_fragment_centerline_length_px",
-    "measurement_centerline_length_trim_fraction",
     "grad_quality_trim_fraction",
 )
 
