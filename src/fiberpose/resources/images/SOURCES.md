@@ -27,3 +27,9 @@ converted to PNG and some were cropped.
    Mechanical Behavior of Electrospun Fibrous Mats.* Scientific Reports 10, 7709
    (2020). <https://doi.org/10.1038/s41598-020-64735-5>.
    License: [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).
+5. T. Maurer, M. H. Stoffel, Y. Belyaev, N. G. Stiefel, B. Vidondo, S. Küker,
+   H. Mogel, B. Schäfer, J. Balmer. *Structural characterization of four different
+   naturally occurring porcine collagen membranes suitable for medical
+   applications.* PLOS ONE 13(10), e0205027 (2018).
+   <https://doi.org/10.1371/journal.pone.0205027>.
+   License: [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).
