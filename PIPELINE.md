@@ -59,7 +59,8 @@
 - `_filter_measurement_centerlines(...)` derives measurement centerlines
 - `_filter_fragments_by_grad_quality(...)` drops fragments with unreliable DT gradients
 - watershed builds its mask from the DT gradient magnitude above the threshold or a negative Laplacian (ridge), keeps it only where the smoothed DT is positive, unions two 3x3 dilations of the centerline markers, then applies erode -> dilate; radial_expansion rasterizes the expanded fragments
-- foreground, when available, prunes labels; only fragments that keep a label are returned
+- the watershed is seeded with every detected fragment, so a filtered-out fiber keeps its own pixels instead of being flooded by its neighbours
+- foreground, when available, prunes labels; then the labels of the filtered-out fragments are removed; only fragments that keep a label are returned
 4. Store the labels and fragments via `set_segmentation_outputs(...)`. The pipeline draws no images.
 
 ## Per-Frame Measurement Flow

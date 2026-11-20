@@ -133,13 +133,21 @@ def segment(
         labels_i32 = _rasterize_segmentation_fragments(fragments=fragments, fragment_pixels=fragment_pixels, shape=shape)
         labels = np.clip(labels_i32, 0, np.iinfo(np.uint16).max).astype(np.uint16, copy=False)
     else:
-        markers = _render_markers(shape, fragments)
+        # Every detected fragment gets a marker, including those filtered out above: the
+        # watershed assigns the whole fiber mask, so a fiber without a marker would be
+        # flooded by the labels of its neighbours. The filtered ones are removed afterwards.
+        markers = _render_markers(shape, raw_fragments)
         labels = _watershed(dt, dt_u8, gx, gy, laplacian, markers, gradient_threshold=watershed_grad_threshold)
     labels = _prune_labels_by_foreground(
         labels,
         foreground_prob=foreground_prob,
         min_segment_foreground_mean=min_segment_foreground_mean,
     )
+    kept_ids = np.zeros(int(labels.max()) + 1, dtype=bool)
+    for fragment in fragments:
+        if 0 < int(fragment.parent_fiber_id) < kept_ids.size:
+            kept_ids[int(fragment.parent_fiber_id)] = True
+    labels = np.where(kept_ids[labels], labels, 0).astype(labels.dtype, copy=False)
 
     surviving_ids = set(np.unique(labels)) - {0}
     fragments = [fragment for fragment in fragments if int(fragment.parent_fiber_id) in surviving_ids]
