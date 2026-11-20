@@ -17,9 +17,14 @@ RESOURCES_DIR = PACKAGE_DIR / "resources"
 DEFAULT_UI_PATH = RESOURCES_DIR / "fiber_tool.ui"
 DARK_THEME_PATH = RESOURCES_DIR / "dark_theme.qss"
 APP_ICON_PATH = RESOURCES_DIR / "fiberpose.png"
-EXAMPLE_IMAGE_PATH = RESOURCES_DIR / "test.png"
-# Examples offered on the web page.
-EXAMPLE_IMAGE_PATHS = [EXAMPLE_IMAGE_PATH, RESOURCES_DIR / "example_fibers.png", RESOURCES_DIR / "example_ribbons.png"]
+EXAMPLE_IMAGES_DIR = RESOURCES_DIR / "images"
+EXAMPLE_IMAGE_PATH = EXAMPLE_IMAGES_DIR / "test.png"
+# Examples offered on the web page: the default one first, then the rest of the folder.
+EXAMPLE_IMAGE_PATHS = [EXAMPLE_IMAGE_PATH] + sorted(
+    path
+    for path in EXAMPLE_IMAGES_DIR.iterdir()
+    if path.suffix.lower() in {".png", ".tif", ".tiff", ".jpg", ".jpeg"} and path != EXAMPLE_IMAGE_PATH
+)
 BUNDLED_CONFIG_PATH = RESOURCES_DIR / "config.json"
 
 USER_CONFIG_PATH = Path(user_config_dir("fiberpose", appauthor=False)) / "config.json"
