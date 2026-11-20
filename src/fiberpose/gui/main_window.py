@@ -529,6 +529,10 @@ class MainWindow(QMainWindow):
         v.setAcceptDrops(True)
         v.viewport().setAcceptDrops(True)
         v.viewport().installEventFilter(self)
+        # Cmd/Ctrl+C copies the image only while the view itself has focus.
+        copy_shortcut = QtGui.QShortcut(QtGui.QKeySequence(QtGui.QKeySequence.StandardKey.Copy), v)
+        copy_shortcut.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
+        copy_shortcut.activated.connect(self._copy_active_image)
 
     def eventFilter(self, obj, event):
         if obj is self.graphicsView.viewport():
@@ -579,10 +583,26 @@ class MainWindow(QMainWindow):
         if self._pixitem.pixmap().isNull():
             return
         menu = QtWidgets.QMenu(self)
-        action_save = menu.addAction("Save active image as PNG")
+        action_copy = menu.addAction("Copy Image")
+        action_copy.setShortcut(QtGui.QKeySequence(QtGui.QKeySequence.StandardKey.Copy))
+        action_save = menu.addAction("Save Image As\u2026")
         selected = menu.exec(global_pos)
-        if selected is action_save:
+        if selected is action_copy:
+            self._copy_active_image()
+        elif selected is action_save:
             self._save_active_image_png()
+
+    def _copy_active_image(self) -> None:
+        """Copy the full-resolution image of the selected view mode to the clipboard."""
+        if self.current_frame.orig_img is None:
+            return
+        img = self.refresh_view()
+        if img is None:
+            self._show_info("No image", "No active image is available to copy for this view mode.")
+            return
+        # Detach from the numpy buffer: the clipboard outlives this array.
+        QtWidgets.QApplication.clipboard().setImage(self._numpy_to_qimage(img).copy())
+        self.statusbar.showMessage("Image copied to clipboard", 5000)
 
     def _on_export_results_clicked(self) -> None:
         self.save_predictions()
@@ -606,7 +626,7 @@ class MainWindow(QMainWindow):
 
         selected_path, _ = QtWidgets.QFileDialog.getSaveFileName(
             self,
-            "Save active image as PNG",
+            "Save Image As",
             default_path,
             "PNG Files (*.png);;All Files (*)",
         )
