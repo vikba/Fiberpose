@@ -307,7 +307,7 @@ Fiberpose/
     └── resources/
         ├── config.json        # Default configuration
         ├── fiber_tool.ui      # Qt GUI layout
-        └── images/            # Example images (test.png is the default)
+        └── images/            # Example images (test.png is the default) and their SOURCES.md
 ```
 
 ---
@@ -368,6 +368,11 @@ If you use Fiberpose in scientific work, please cite the preprint:
 
 Fiberpose is free software licensed under the GNU General Public License,
 version 3 only (`GPL-3.0-only`). See `LICENSE` for details.
+
+The example images in `src/fiberpose/resources/images/` are third-party work
+from published open-access datasets (Hotaling et al. 2015; Huling et al. 2022;
+Obermayer et al. 2026; Chavoshnejad & Razavi 2020). They keep the license of
+their source and are not covered by the GPL. The full references are listed in [SOURCES.md](src/fiberpose/resources/images/SOURCES.md).
 
 ---
 
