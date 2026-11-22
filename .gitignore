@@ -22,6 +22,7 @@ profiling_results/
 out/
 tests/
 train/
+prototypes/
 
 # Local tooling and notes
 .agents/

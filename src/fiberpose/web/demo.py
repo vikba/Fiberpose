@@ -56,8 +56,10 @@ def build_demo(config: AppConfig | None = None) -> gr.Blocks:
 
     with gr.Blocks(title="Fiberpose") as demo:
         gr.Markdown(
-            "# Fiberpose\nSegmentation and morphometry of fibrous microstructures. Upload a micrograph "
+            "# Fiberpose\nSegmentation and morphometry of **fibrous structures in SEM images**. Upload a micrograph "
             f"up to {cb.MAX_SIDE} x {cb.MAX_SIDE} px (or click an example) and press **Analyze**. [Source code](https://github.com/vikba/Fiberpose)"
+            "\n\nFiberpose expects bright fibers on a dark background. If your image has **dark fibers on a "
+            "bright background**, tick **Invert** before analyzing."
             "\n\nIf you use Fiberpose in scientific work, please cite the preprint: "
             "V. A. Balashov, D. S. Antonenko. *Fiberpose: state-of-the-art fiber morphometry and instance "
             "segmentation with a distance-transform neural network.* "
