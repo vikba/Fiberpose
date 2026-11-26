@@ -55,7 +55,9 @@
 2. If the frame's segmentation signature (prediction signature + `segmentation_params(config)`) matches, stop.
 3. Otherwise `clear_segmentation()` and run `analysis.segment(dt, dt_u8, gx, gy, foreground_prob, laplacian, **segmentation_params)`:
 - `RidgeDetector.detect_ridges(...)` (raw ridge lines)
-- `_group_detected_polylines_into_segmentation_fragments(...)` merges ridges whose `merge_expansion_factor * DT` disks overlap
+- `_cut_polylines_by_foreground(...)` cuts each ridge where the foreground probability crosses `min_segment_foreground_mean`, so a ridge running from a fiber into a rejected object is split there (no foreground: nothing is cut)
+- `_group_detected_polylines_into_segmentation_fragments(...)` merges ridges whose `merge_expansion_factor * DT` disks overlap; pieces inside and outside the foreground are never merged
+- fragments outside the foreground only seed the watershed and are not measured or returned
 - `_filter_measurement_centerlines(...)` derives measurement centerlines
 - `_filter_fragments_by_grad_quality(...)` drops fragments with unreliable DT gradients
 - watershed builds its mask from the DT gradient magnitude above the threshold or a negative Laplacian (ridge), keeps it only where the smoothed DT is positive, unions two 3x3 dilations of the centerline markers, then applies erode -> dilate; radial_expansion rasterizes the expanded fragments

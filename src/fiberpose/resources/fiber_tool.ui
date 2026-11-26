@@ -279,7 +279,7 @@
                <item>
                 <widget class="QDoubleSpinBox" name="sp_foreground_threshold">
                  <property name="toolTip">
-                  <string>Minimum mean foreground probability a segment needs to be kept. 0 keeps every segment.</string>
+                  <string>Centerlines are cut where the foreground probability falls below this value, and a segment is kept only if its mean probability reaches it. 0 keeps everything.</string>
                  </property>
                  <property name="decimals">
                   <number>2</number>

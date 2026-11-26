@@ -658,6 +658,8 @@ class FiberFragment:
     measurement_centerlines_xy: list[np.ndarray] = field(default_factory=list)
     total_measurement_centerline_length_px: float = 0.0
     grad_quality_score: float = float("nan")
+    # False for a fragment traced outside the predicted foreground: it only seeds the watershed.
+    in_foreground: bool = True
 
     @staticmethod
     def _normalize_centerline(points_raw: np.ndarray, label: str) -> np.ndarray:

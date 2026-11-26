@@ -98,15 +98,21 @@ def segment(
         high=float(ridge_high),
         polarity="light",
     )
+    # A ridge can run from a fiber straight into a neighbouring object the foreground
+    # rejects. Cut it there, so the fiber keeps a fragment (and a label) of its own.
+    detected_polylines, polyline_in_foreground = _cut_polylines_by_foreground(
+        detected_polylines, foreground_prob, min_segment_foreground_mean
+    )
     raw_fragments = _group_detected_polylines_into_segmentation_fragments(
         detected_polylines=detected_polylines,
+        polyline_in_foreground=polyline_in_foreground,
         dt=dt,
         merge_expansion_factor=float(merge_expansion_factor),
         min_fragment_centerline_length_px=float(min_fragment_centerline_length_px),
         trim=3,
     )
     fragments = _filter_measurement_centerlines(
-        segmentation_fragments=raw_fragments,
+        segmentation_fragments=[fragment for fragment in raw_fragments if fragment.in_foreground],
         dt_u8=dt_u8,
         dt=dt,
         gx=gx,
@@ -133,9 +139,10 @@ def segment(
         labels_i32 = _rasterize_segmentation_fragments(fragments=fragments, fragment_pixels=fragment_pixels, shape=shape)
         labels = np.clip(labels_i32, 0, np.iinfo(np.uint16).max).astype(np.uint16, copy=False)
     else:
-        # Every detected fragment gets a marker, including those filtered out above: the
-        # watershed assigns the whole fiber mask, so a fiber without a marker would be
-        # flooded by the labels of its neighbours. The filtered ones are removed afterwards.
+        # Every detected fragment gets a marker, including those filtered out above and
+        # those outside the foreground: the watershed assigns the whole fiber mask, so an
+        # object without a marker would be flooded by the labels of its neighbours. The
+        # filtered ones are removed afterwards.
         markers = _render_markers(shape, raw_fragments)
         labels = _watershed(dt, dt_u8, gx, gy, laplacian, markers, gradient_threshold=watershed_grad_threshold)
     labels = _prune_labels_by_foreground(
@@ -310,23 +317,59 @@ def sample_inscribed_circles(
 # Fragments
 
 
+def _cut_polylines_by_foreground(
+    polylines: list[np.ndarray],
+    foreground_prob: np.ndarray | None,
+    threshold: float,
+) -> tuple[list[np.ndarray], list[bool]]:
+    """Cut each polyline where it crosses the foreground threshold.
+
+    Returns the pieces and, for each, whether it lies in the foreground. Pieces of a
+    single point are dropped. Without a foreground map nothing is cut.
+    """
+    if foreground_prob is None:
+        return list(polylines), [True] * len(polylines)
+    h, w = foreground_prob.shape[:2]
+    pieces: list[np.ndarray] = []
+    in_foreground: list[bool] = []
+    for pts_xy_raw in polylines:
+        pts_xy = np.asarray(pts_xy_raw, dtype=np.float32)
+        if pts_xy.ndim != 2 or pts_xy.shape[1] != 2 or pts_xy.shape[0] < 2:
+            continue
+        x_idx = np.clip(np.rint(pts_xy[:, 0]).astype(np.int32), 0, w - 1)
+        y_idx = np.clip(np.rint(pts_xy[:, 1]).astype(np.int32), 0, h - 1)
+        inside = foreground_prob[y_idx, x_idx] >= float(threshold)
+        bounds = np.concatenate(([0], np.flatnonzero(inside[1:] != inside[:-1]) + 1, [len(pts_xy)]))
+        for start, end in zip(bounds[:-1], bounds[1:]):
+            if end - start >= 2:
+                pieces.append(pts_xy[start:end])
+                in_foreground.append(bool(inside[start]))
+    return pieces, in_foreground
+
+
 def _group_detected_polylines_into_segmentation_fragments(
     *,
     detected_polylines: list[np.ndarray],
     dt: np.ndarray,
+    polyline_in_foreground: list[bool] | None = None,
     merge_expansion_factor: float = 0.7,
     min_fragment_centerline_length_px: float = 10.0,
     trim: int = 3,
 ) -> list[FiberFragment]:
     """
     Group detected polylines into segmentation fragments using overlap under merge expansion.
+
+    With `polyline_in_foreground`, polylines inside and outside the foreground never share a fragment.
     """
     h, w = dt.shape[:2]
     trim_n = max(0, int(trim))
 
     polylines: list[np.ndarray] = []
     polyline_radii: list[np.ndarray] = []
-    for pts_xy_raw in detected_polylines:
+    in_foreground: list[bool] = []
+    if polyline_in_foreground is None:
+        polyline_in_foreground = [True] * len(detected_polylines)
+    for pts_xy_raw, inside in zip(detected_polylines, polyline_in_foreground):
         pts_xy = np.asarray(pts_xy_raw, dtype=np.float32)
         if pts_xy.ndim != 2 or pts_xy.shape[1] != 2:
             continue
@@ -338,11 +381,15 @@ def _group_detected_polylines_into_segmentation_fragments(
         y_idx = np.clip(np.rint(pts_xy[:, 1]).astype(np.int32), 0, h - 1)
         polylines.append(pts_xy)
         polyline_radii.append(np.asarray(dt[y_idx, x_idx], dtype=np.float32))
+        in_foreground.append(bool(inside))
 
     if not polylines:
         return []
 
-    group_ids = _overlap_groups(polylines, polyline_radii, max(0.0, float(merge_expansion_factor)), (h, w))
+    group_ids = _overlap_groups(
+        polylines, polyline_radii, max(0.0, float(merge_expansion_factor)), (h, w), np.array(in_foreground)
+    )
+    group_in_foreground = dict(zip(group_ids.tolist(), in_foreground))
     grouped_polylines: dict[int, list[np.ndarray]] = {}
     grouped_radii: dict[int, list[np.ndarray]] = {}
     for label_id, pts_xy, radii in zip(group_ids.tolist(), polylines, polyline_radii):
@@ -362,6 +409,7 @@ def _group_detected_polylines_into_segmentation_fragments(
                 segment_centerlines_xy=grouped_polylines[label_id],
                 segment_radii=grouped_radii[label_id],
                 parent_fiber_id=int(label_id),
+                in_foreground=group_in_foreground[label_id],
             )
         )
 
@@ -373,11 +421,12 @@ def _overlap_groups(
     radii: list[np.ndarray],
     expansion: float,
     shape: tuple[int, int],
+    classes: np.ndarray | None = None,
 ) -> np.ndarray:
     """Group ids (1-based) for polylines whose expanded disks share at least one pixel.
 
     Groups are the connected components of the "shares a pixel" graph, numbered in
-    order of their first polyline.
+    order of their first polyline. Polylines of different `classes` are never linked.
     """
     n = len(polylines)
     owners = np.repeat(np.arange(n), [len(p) for p in polylines])
@@ -388,6 +437,8 @@ def _overlap_groups(
     order = np.lexsort((owner, pixel))
     pixel, owner = pixel[order], owner[order]
     shared = pixel[1:] == pixel[:-1]
+    if classes is not None:
+        shared &= classes[owner[1:]] == classes[owner[:-1]]
     edges = np.unique(owner[:-1][shared] * n + owner[1:][shared])
     graph = coo_matrix((np.ones(edges.size, dtype=np.int32), (edges // n, edges % n)), shape=(n, n))
     _, component = connected_components(graph, directed=False)
