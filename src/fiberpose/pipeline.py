@@ -17,7 +17,7 @@ from .ml import OnnxFiberposeModel
 # Config fields passed to `analysis.segment`; changing any of them invalidates the segmentation.
 _SEGMENTATION_FIELDS = (
     "segmentation_mode",
-    "watershed_grad_threshold",
+    "watershed_mask_threshold",
     "min_segment_foreground_mean",
     "max_angle_deg",
     "ridge_sigma",
@@ -339,7 +339,6 @@ class PipelineController:
                 frame.gx,
                 frame.gy,
                 frame.foreground_prob,
-                frame.lapl_img,
                 **self.segmentation_params(config),
             )
         except Exception as exc:

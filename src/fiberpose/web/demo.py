@@ -25,10 +25,10 @@ def _download(path: str | None):
 def build_demo(config: AppConfig | None = None) -> gr.Blocks:
     config = config or AppConfig(use_gpu=False)
 
-    def run(path, pixel_size, unit, invert, edge_threshold, previous):
+    def run(path, pixel_size, unit, invert, mask_threshold, previous):
         if not path:
             raise gr.Error("Upload an image first.")
-        settings = replace(config, watershed_grad_threshold=edge_threshold)
+        settings = replace(config, watershed_mask_threshold=mask_threshold)
         filename = os.path.basename(path)  # Gradio keeps the uploaded file's own name
         example = filename in {p.name for p in EXAMPLE_IMAGE_PATHS}
         start = time.perf_counter()
@@ -70,9 +70,9 @@ def build_demo(config: AppConfig | None = None) -> gr.Blocks:
             with gr.Row(variant="panel"):  # segmentation settings
                 pixel_size = gr.Number(1.0, label="Pixel size", minimum=0, min_width=80)
                 unit = gr.Dropdown(["px", "nm", "µm", "mm"], value="px", label="Unit", allow_custom_value=True, min_width=80)
-                edge_threshold = gr.Number(
-                    config.watershed_grad_threshold, label="Edge threshold", minimum=0, maximum=1, step=0.05,
-                    min_width=80, info="min |∇DT|; lower = wider.",
+                mask_threshold = gr.Number(
+                    config.watershed_mask_threshold, label="Mask threshold", minimum=0, maximum=5, step=0.1,
+                    min_width=80, info="min DT, px; lower = wider.",
                 )
                 invert = gr.Checkbox(label="Invert", info="for dark fibers", min_width=80)
             with gr.Row(variant="panel"):
@@ -95,8 +95,8 @@ def build_demo(config: AppConfig | None = None) -> gr.Blocks:
                     save_all = gr.DownloadButton("Save results (ZIP)", size="sm", interactive=False)
                 plots = gr.Plot(label="Distributions")
 
-        inputs = [image, pixel_size, unit, invert, edge_threshold, session]
-        for trigger in (button.click, edge_threshold.submit):  # the threshold reuses the model prediction
+        inputs = [image, pixel_size, unit, invert, mask_threshold, session]
+        for trigger in (button.click, mask_threshold.submit):  # the threshold reuses the model prediction
             analysed = trigger(run, inputs, [session, summary, plots, save_charts, save_csv, save_all])
             analysed.success(show, [session, view], [output, save_view])
         view.change(show, [session, view], [output, save_view])

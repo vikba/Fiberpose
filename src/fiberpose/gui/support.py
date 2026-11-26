@@ -130,8 +130,8 @@ class ConfigEditorDialog(QtWidgets.QDialog):
             "max": 5.0,
             "step": 0.05,
         },
-        "watershed_grad_threshold": {
-            "label": "Watershed gradient threshold",
+        "watershed_mask_threshold": {
+            "label": "Watershed DT mask threshold",
             "kind": "float",
             "min": 0.0,
             "max": 5.0,
@@ -507,7 +507,7 @@ class UiConfigBinder:
         prev_scale_label = str(config.scale_label)
         prev_strict = bool(config.strict_centerlines)
         prev_mode = str(config.segmentation_mode)
-        prev_gradient_threshold = float(config.watershed_grad_threshold)
+        prev_mask_threshold = float(config.watershed_mask_threshold)
         prev_foreground_threshold = float(config.min_segment_foreground_mean)
 
         config.model_path = window.cb_model.currentText().strip()
@@ -520,7 +520,7 @@ class UiConfigBinder:
         else:
             config.segmentation_mode = "watershed"
 
-        config.watershed_grad_threshold = float(window.sp_grad_magnitude_threshold.value())
+        config.watershed_mask_threshold = float(window.sp_mask_threshold.value())
         config.min_segment_foreground_mean = float(window.sp_foreground_threshold.value())
 
         prediction_changed = (
@@ -531,8 +531,8 @@ class UiConfigBinder:
             prev_strict != bool(config.strict_centerlines)
             or prev_mode != str(config.segmentation_mode)
             or not math.isclose(
-                prev_gradient_threshold,
-                float(config.watershed_grad_threshold),
+                prev_mask_threshold,
+                float(config.watershed_mask_threshold),
                 rel_tol=1e-9,
                 abs_tol=1e-9,
             )
@@ -581,9 +581,9 @@ class UiConfigBinder:
         window.rb_watershed.blockSignals(False)
         window.rb_ridge.blockSignals(False)
 
-        window.sp_grad_magnitude_threshold.blockSignals(True)
-        window.sp_grad_magnitude_threshold.setValue(float(config.watershed_grad_threshold))
-        window.sp_grad_magnitude_threshold.blockSignals(False)
+        window.sp_mask_threshold.blockSignals(True)
+        window.sp_mask_threshold.setValue(float(config.watershed_mask_threshold))
+        window.sp_mask_threshold.blockSignals(False)
 
         window.sp_foreground_threshold.blockSignals(True)
         window.sp_foreground_threshold.setValue(float(config.min_segment_foreground_mean))

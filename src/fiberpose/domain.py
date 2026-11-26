@@ -14,7 +14,7 @@ from tifffile import TiffFile
 logger = logging.getLogger(__name__)
 
 # Settings that no longer exist; configs saved by older versions may still carry them.
-_REMOVED_CONFIG_KEYS = ("measurement_centerline_length_trim_fraction",)
+_REMOVED_CONFIG_KEYS = ("measurement_centerline_length_trim_fraction", "watershed_grad_threshold")
 
 @dataclass
 class AppConfig:
@@ -38,8 +38,9 @@ class AppConfig:
     segmentation_mode: str = "watershed"
     merge_expansion_factor: float = 0.7
     segmentation_expansion_factor: float = 1.0
-    watershed_grad_threshold: float = 0.3
-    # Retained for DT-based void/pore analysis; watershed uses the gradient threshold above.
+    # The watershed labels the pixels whose predicted DT is above this (px).
+    watershed_mask_threshold: float = 0.5
+    # Threshold of the DT-based void/pore analysis.
     seg_threshold: int = 1
     min_segment_foreground_mean: float = 0.5
     
@@ -658,7 +659,7 @@ class FiberFragment:
     measurement_centerlines_xy: list[np.ndarray] = field(default_factory=list)
     total_measurement_centerline_length_px: float = 0.0
     grad_quality_score: float = float("nan")
-    # False for a fragment traced outside the predicted foreground: it only seeds the watershed.
+    # False for a fragment traced outside the predicted foreground: it is not segmented or measured.
     in_foreground: bool = True
 
     @staticmethod

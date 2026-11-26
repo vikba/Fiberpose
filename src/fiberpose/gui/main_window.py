@@ -212,7 +212,7 @@ class MainWindow(QMainWindow):
         self.rb_ridge.toggled.connect(self.sync_ui_to_config)
 
         # Spinboxes
-        self.sp_grad_magnitude_threshold.valueChanged.connect(self.sync_ui_to_config)
+        self.sp_mask_threshold.valueChanged.connect(self.sync_ui_to_config)
         self.sp_foreground_threshold.valueChanged.connect(self.sync_ui_to_config)
 
         # Line Edits (Text boxes)

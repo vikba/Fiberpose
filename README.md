@@ -26,7 +26,7 @@ Website: [fiberpose.org](https://fiberpose.org) · Paper: [Fiberpose: state-of-t
 
 - **Neural distance-transform prediction** from raw microscopy images.
 - **Fiber centerline extraction** using ridge detection on the predicted distance-transform field.
-- **Instance segmentation** of fiber fragments using marker-controlled watershed or radial expansion modes.
+- **Instance segmentation** of fiber fragments using alignment-merge watershed or radial expansion modes.
 - **Morphometric analysis** of fiber diameter, orientation, orientation index, porosity, and pore-size distributions.
 - **Interactive desktop GUI** for loading images, inspecting intermediate maps, adjusting parameters, visualizing overlays, and exporting results.
 - **Batch-oriented CLI** for reproducible processing of folders and image stacks.

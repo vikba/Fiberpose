@@ -215,16 +215,16 @@
               </layout>
              </item>
              <item>
-              <layout class="QHBoxLayout" name="gradientRow">
+              <layout class="QHBoxLayout" name="maskRow">
                <item>
-                <widget class="QLabel" name="label_gradient">
+                <widget class="QLabel" name="label_mask">
                  <property name="text">
-                  <string>Gradient magnitude:</string>
+                  <string>DT mask threshold:</string>
                  </property>
                 </widget>
                </item>
                <item>
-                <spacer name="gradientSpacer">
+                <spacer name="maskSpacer">
                  <property name="orientation">
                   <enum>Qt::Orientation::Horizontal</enum>
                  </property>
@@ -237,7 +237,7 @@
                 </spacer>
                </item>
                <item>
-                <widget class="QDoubleSpinBox" name="sp_grad_magnitude_threshold">
+                <widget class="QDoubleSpinBox" name="sp_mask_threshold">
                  <property name="decimals">
                   <number>2</number>
                  </property>
@@ -248,7 +248,7 @@
                   <double>0.050000000000000</double>
                  </property>
                  <property name="value">
-                  <double>0.800000000000000</double>
+                  <double>0.500000000000000</double>
                  </property>
                 </widget>
                </item>

@@ -14,7 +14,6 @@ from numba import njit
 from scipy.ndimage import gaussian_filter, laplace, value_indices
 from scipy.sparse import coo_matrix
 from scipy.sparse.csgraph import connected_components
-from skimage.segmentation import watershed
 
 from .domain import FiberFragment
 from .ml import OnnxFiberposeModel
@@ -26,17 +25,15 @@ from .utils import (
     normals_from_dt_2d,
     resample_polyline_xy,
 )
+from .watershed import segment_fibers
 
 
 logger = logging.getLogger(__name__)
 
 Sample = tuple[int, int, float, float, float, float]
 
-# Smoothing applied to the predicted DT before differentiating it; the watershed
-# mask gates on the same smoothed DT, so both must use this value.
+# Smoothing applied to the predicted DT before differentiating it.
 _DT_SMOOTH_SIGMA = 1.5
-# A fiber centerline is a ridge of the DT: its Laplacian is clearly negative.
-_RIDGE_LAPLACIAN_THRESHOLD = 0.03
 
 
 # ------------------------------------------------------------------ #
@@ -70,10 +67,9 @@ def segment(
     gx: np.ndarray,
     gy: np.ndarray,
     foreground_prob: np.ndarray | None,
-    laplacian: np.ndarray,
     *,
     segmentation_mode: str,
-    watershed_grad_threshold: float,
+    watershed_mask_threshold: float,
     min_segment_foreground_mean: float,
     max_angle_deg: float,
     ridge_sigma: float,
@@ -139,12 +135,10 @@ def segment(
         labels_i32 = _rasterize_segmentation_fragments(fragments=fragments, fragment_pixels=fragment_pixels, shape=shape)
         labels = np.clip(labels_i32, 0, np.iinfo(np.uint16).max).astype(np.uint16, copy=False)
     else:
-        # Every detected fragment gets a marker, including those filtered out above and
-        # those outside the foreground: the watershed assigns the whole fiber mask, so an
-        # object without a marker would be flooded by the labels of its neighbours. The
-        # filtered ones are removed afterwards.
-        markers = _render_markers(shape, raw_fragments)
-        labels = _watershed(dt, dt_u8, gx, gy, laplacian, markers, gradient_threshold=watershed_grad_threshold)
+        # The watershed labels the fiber pieces from the DT alone; each fragment then joins
+        # the label it lies in, and labels without a surviving fragment are removed below.
+        labels = segment_fibers(dt, mask_threshold=watershed_mask_threshold)
+        _assign_fragments_to_labels(fragments, labels)
     labels = _prune_labels_by_foreground(
         labels,
         foreground_prob=foreground_prob,
@@ -567,89 +561,14 @@ def _clamp_trim_fraction(value: float) -> float:
 # Labels
 
 
-def _watershed(
-    dt: np.ndarray,
-    dt_u8: np.ndarray,
-    gx: np.ndarray,
-    gy: np.ndarray,
-    laplacian: np.ndarray,
-    markers: np.ndarray,
-    gradient_threshold: float,
-) -> np.ndarray:
-    """
-    Watershed on inverted DT, constrained to a fiber mask.
-
-    The mask is the fiber flanks (gradient magnitude above the threshold) plus
-    the ridges between them (negative Laplacian, where the gradient vanishes),
-    both limited to where the smoothed DT is positive: the predicted background
-    is negative and sloped, so neither test alone tells it from a fiber.
-
-    Two dilations of the detected centerline markers are added to the mask,
-    which keeps fibers too thin for the smoothed DT to stay positive. The
-    combined mask is then eroded and dilated before watershed.
-    """
-
-    dt = np.asarray(dt, dtype=np.float32)
-    dt_u8 = np.asarray(dt_u8)
-    gx = np.asarray(gx, dtype=np.float32)
-    gy = np.asarray(gy, dtype=np.float32)
-    laplacian = np.asarray(laplacian, dtype=np.float32)
-    markers = np.asarray(markers)
-    if any(arr.shape != dt_u8.shape for arr in (dt, gx, gy, laplacian, markers)):
-        raise ValueError("DT, gradients, Laplacian, and markers must have matching shapes.")
-    if not markers.any():
-        return np.zeros_like(dt_u8, dtype=np.uint16)
-
-    threshold = float(gradient_threshold)
-    if not np.isfinite(threshold) or threshold < 0.0:
-        raise ValueError("Gradient magnitude threshold must be finite and non-negative.")
-
-    dt_norm = dt_u8.astype(np.float32) / 255.0
-    grad_magnitude = np.hypot(gx, gy)
-    fiber_region_mask = np.isfinite(grad_magnitude) & (grad_magnitude >= threshold)
-    fiber_region_mask |= laplacian < -_RIDGE_LAPLACIAN_THRESHOLD
-    fiber_region_mask &= gaussian_filter(dt, sigma=_DT_SMOOTH_SIGMA) > 0.0
-
-    morphology_kernel = np.ones((3, 3), dtype=np.uint8)
-    centerline_mask = (markers > 0).astype(np.uint8)
-    dilated_centerlines = cv2.dilate(
-        centerline_mask,
-        morphology_kernel,
-        iterations=2,
-    ).astype(bool)
-    fiber_region_mask |= dilated_centerlines
-    fiber_region_mask_u8 = fiber_region_mask.astype(np.uint8)
-    fiber_region_mask_u8 = cv2.erode(
-        fiber_region_mask_u8,
-        morphology_kernel,
-        iterations=1,
-    )
-    fiber_region_mask = cv2.dilate(
-        fiber_region_mask_u8,
-        morphology_kernel,
-        iterations=1,
-    ).astype(bool)
-
-    elev = 1.0 - dt_norm
-    if not fiber_region_mask.any():
-        return np.zeros_like(dt_u8, dtype=np.uint16)
-    marker_pixels = markers > 0
-    logger.info(
-        "Watershed fiber mask: threshold=%.4f mask=%d/%d marker_pixels=%d/%d",
-        threshold,
-        int(np.count_nonzero(fiber_region_mask)),
-        int(fiber_region_mask.size),
-        int(np.count_nonzero(fiber_region_mask & marker_pixels)),
-        int(np.count_nonzero(marker_pixels)),
-    )
-    conn8 = np.ones((3, 3), dtype=bool)
-    labels = watershed(
-        elev,
-        markers=markers,
-        mask=fiber_region_mask,
-        connectivity=conn8,
-    ).astype(np.uint16)
-    return labels
+def _assign_fragments_to_labels(fragments: list[FiberFragment], labels: np.ndarray) -> None:
+    """Set each fragment's `parent_fiber_id` to the label under most of its centerline points (0: none)."""
+    h, w = labels.shape
+    for fragment in fragments:
+        x, y = np.rint(np.concatenate(fragment.segment_centerlines_xy)).astype(np.intp).T
+        under = labels[np.clip(y, 0, h - 1), np.clip(x, 0, w - 1)]
+        counts = np.bincount(under[under > 0])
+        fragment.parent_fiber_id = int(counts.argmax()) if counts.size else 0
 
 
 def _prune_labels_by_foreground(
@@ -677,23 +596,6 @@ def _prune_labels_by_foreground(
         if label_id > 0 and float(np.mean(foreground_arr[pixels])) < threshold:
             pruned[pixels] = 0
     return pruned.astype(labels_arr.dtype, copy=False)
-
-
-def _render_markers(shape: tuple[int, int], segments: list[FiberFragment]) -> np.ndarray:
-    markers = np.zeros(shape, dtype=np.int32)
-    for seg in segments:
-        for polyline_xy in seg.segment_centerlines_xy:
-            pts = np.asarray(polyline_xy, dtype=np.float32)
-            pts_int = np.round(pts).astype(np.int32).reshape(-1, 1, 2)
-            cv2.polylines(
-                markers,
-                [pts_int],
-                isClosed=False,
-                color=int(seg.parent_fiber_id),
-                thickness=1,
-                lineType=cv2.LINE_8,
-            )
-    return markers
 
 
 # ------------------------------------------------------------------ #

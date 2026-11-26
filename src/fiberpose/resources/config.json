@@ -13,7 +13,7 @@
     "segmentation_mode": "watershed",
     "merge_expansion_factor": 0.7,
     "segmentation_expansion_factor": 1.0,
-    "watershed_grad_threshold": 0.3,
+    "watershed_mask_threshold": 0.5,
     "seg_threshold": 1,
     "min_segment_foreground_mean": 0.5,
     "sample_spacing": 5.0,

@@ -5,7 +5,7 @@
 - Covers GUI and CLI startup, segmentation, measurement, and batch execution/export.
 
 ## Runtime Modes and Flags
-- `segmentation_mode=watershed` makes `analysis.segment(...)` run a watershed inside a fiber mask (`watershed_grad_threshold` sets its gradient part).
+- `segmentation_mode=watershed` makes `analysis.segment(...)` label the fiber pieces with the alignment-merge watershed (`watershed.segment_fibers(dt)`); `watershed_mask_threshold` (default `0.5`) is the DT value above which pixels are labelled.
 - `segmentation_mode=radial_expansion` makes `analysis.segment(...)` rasterize the expanded ridge fragments.
 - `merge_expansion_factor` controls overlap-based ridge-fragment merging (default `0.7`).
 - `segmentation_expansion_factor` controls radial label expansion (default `1.0`).
@@ -53,16 +53,15 @@
 - pads to the model stride, runs `OnnxFiberposeModel.predict(...)` -> `(dt, foreground_prob)`; `nout != 2` uses the last channel as DT and has no foreground
 - smooths DT, computes gradients/laplacian; stored via `Frame.set_prediction_outputs(...)`
 2. If the frame's segmentation signature (prediction signature + `segmentation_params(config)`) matches, stop.
-3. Otherwise `clear_segmentation()` and run `analysis.segment(dt, dt_u8, gx, gy, foreground_prob, laplacian, **segmentation_params)`:
+3. Otherwise `clear_segmentation()` and run `analysis.segment(dt, dt_u8, gx, gy, foreground_prob, **segmentation_params)`:
 - `RidgeDetector.detect_ridges(...)` (raw ridge lines)
 - `_cut_polylines_by_foreground(...)` cuts each ridge where the foreground probability crosses `min_segment_foreground_mean`, so a ridge running from a fiber into a rejected object is split there (no foreground: nothing is cut)
 - `_group_detected_polylines_into_segmentation_fragments(...)` merges ridges whose `merge_expansion_factor * DT` disks overlap; pieces inside and outside the foreground are never merged
-- fragments outside the foreground only seed the watershed and are not measured or returned
+- fragments outside the foreground are not measured or returned
 - `_filter_measurement_centerlines(...)` derives measurement centerlines
 - `_filter_fragments_by_grad_quality(...)` drops fragments with unreliable DT gradients
-- watershed builds its mask from the DT gradient magnitude above the threshold or a negative Laplacian (ridge), keeps it only where the smoothed DT is positive, unions two 3x3 dilations of the centerline markers, then applies erode -> dilate; radial_expansion rasterizes the expanded fragments
-- the watershed is seeded with every detected fragment, so a filtered-out fiber keeps its own pixels instead of being flooded by its neighbours
-- foreground, when available, prunes labels; then the labels of the filtered-out fragments are removed; only fragments that keep a label are returned
+- watershed (`watershed.segment_fibers`) uses the DT alone: it floods `dt > watershed_mask_threshold` from the DT maxima into basins, then merges two touching basins when the vector joining their seed points runs along the fiber axis (DT structure tensor) on their collision line and at both seeds, and the line spans a fiber; regions under 40 px are dropped. Each fragment then takes the label under most of its centerline points. radial_expansion rasterizes the expanded fragments
+- foreground, when available, prunes labels; then the labels that hold no remaining fragment are removed; only fragments that keep a label are returned
 4. Store the labels and fragments via `set_segmentation_outputs(...)`. The pipeline draws no images.
 
 ## Per-Frame Measurement Flow
