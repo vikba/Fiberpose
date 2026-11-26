@@ -213,6 +213,7 @@ class MainWindow(QMainWindow):
 
         # Spinboxes
         self.sp_grad_magnitude_threshold.valueChanged.connect(self.sync_ui_to_config)
+        self.sp_foreground_threshold.valueChanged.connect(self.sync_ui_to_config)
 
         # Line Edits (Text boxes)
         # Note: We use `editingFinished` instead of `textChanged`.

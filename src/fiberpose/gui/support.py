@@ -137,6 +137,13 @@ class ConfigEditorDialog(QtWidgets.QDialog):
             "max": 5.0,
             "step": 0.05,
         },
+        "min_segment_foreground_mean": {
+            "label": "Min segment foreground probability",
+            "kind": "float",
+            "min": 0.0,
+            "max": 1.0,
+            "step": 0.05,
+        },
         "seg_threshold": {"label": "Pore DT threshold", "kind": "int", "min": 0, "max": 255, "step": 1},
         "sample_spacing": {"label": "Sample spacing (px)", "kind": "float", "min": 0.1, "max": 1e9, "step": 1.0},
         "grad_quality_points": {
@@ -501,6 +508,7 @@ class UiConfigBinder:
         prev_strict = bool(config.strict_centerlines)
         prev_mode = str(config.segmentation_mode)
         prev_gradient_threshold = float(config.watershed_grad_threshold)
+        prev_foreground_threshold = float(config.min_segment_foreground_mean)
 
         config.model_path = window.cb_model.currentText().strip()
         config.use_gpu = window.chb_usegpu.isChecked()
@@ -513,6 +521,7 @@ class UiConfigBinder:
             config.segmentation_mode = "watershed"
 
         config.watershed_grad_threshold = float(window.sp_grad_magnitude_threshold.value())
+        config.min_segment_foreground_mean = float(window.sp_foreground_threshold.value())
 
         prediction_changed = (
             prev_model_path != str(config.model_path)
@@ -524,6 +533,12 @@ class UiConfigBinder:
             or not math.isclose(
                 prev_gradient_threshold,
                 float(config.watershed_grad_threshold),
+                rel_tol=1e-9,
+                abs_tol=1e-9,
+            )
+            or not math.isclose(
+                prev_foreground_threshold,
+                float(config.min_segment_foreground_mean),
                 rel_tol=1e-9,
                 abs_tol=1e-9,
             )
@@ -569,6 +584,10 @@ class UiConfigBinder:
         window.sp_grad_magnitude_threshold.blockSignals(True)
         window.sp_grad_magnitude_threshold.setValue(float(config.watershed_grad_threshold))
         window.sp_grad_magnitude_threshold.blockSignals(False)
+
+        window.sp_foreground_threshold.blockSignals(True)
+        window.sp_foreground_threshold.setValue(float(config.min_segment_foreground_mean))
+        window.sp_foreground_threshold.blockSignals(False)
 
 
 @dataclass

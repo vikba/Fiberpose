@@ -255,6 +255,49 @@
               </layout>
              </item>
              <item>
+              <layout class="QHBoxLayout" name="foregroundRow">
+               <item>
+                <widget class="QLabel" name="label_foreground">
+                 <property name="text">
+                  <string>Foreground probability:</string>
+                 </property>
+                </widget>
+               </item>
+               <item>
+                <spacer name="foregroundSpacer">
+                 <property name="orientation">
+                  <enum>Qt::Orientation::Horizontal</enum>
+                 </property>
+                 <property name="sizeHint" stdset="0">
+                  <size>
+                   <width>0</width>
+                   <height>0</height>
+                  </size>
+                 </property>
+                </spacer>
+               </item>
+               <item>
+                <widget class="QDoubleSpinBox" name="sp_foreground_threshold">
+                 <property name="toolTip">
+                  <string>Minimum mean foreground probability a segment needs to be kept. 0 keeps every segment.</string>
+                 </property>
+                 <property name="decimals">
+                  <number>2</number>
+                 </property>
+                 <property name="maximum">
+                  <double>1.000000000000000</double>
+                 </property>
+                 <property name="singleStep">
+                  <double>0.050000000000000</double>
+                 </property>
+                 <property name="value">
+                  <double>0.500000000000000</double>
+                 </property>
+                </widget>
+               </item>
+              </layout>
+             </item>
+             <item>
               <layout class="QHBoxLayout" name="modeRow">
                <item>
                 <widget class="QRadioButton" name="rb_watershed">
